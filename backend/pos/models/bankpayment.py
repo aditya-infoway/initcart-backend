@@ -1,0 +1,105 @@
+#pos/models/bankpayment.py
+from django.db import models, transaction
+from django.core.exceptions import ValidationError
+from pos.models.branch import Branch
+from pos.models.account import Account
+
+
+class BankPayment(models.Model):
+    date = models.DateField()
+    voucher_no = models.CharField(max_length=50)
+
+    bank_account = models.ForeignKey(
+        Account, on_delete=models.CASCADE, related_name="bank_payments"
+    )
+    op_account = models.ForeignKey(
+        Account, on_delete=models.CASCADE, related_name="op_payments"
+    )   
+    branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
+
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    mode = models.CharField(max_length=20)
+
+    cheque_no = models.CharField(max_length=50, blank=True, null=True)
+    cheque_date = models.DateField(blank=True, null=True)
+    cheque_clear_date = models.DateField(blank=True, null=True)
+
+    narration = models.TextField(blank=True)
+    type = models.CharField(max_length=50, default="BP")
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    sales_return = models.ForeignKey(
+        'pos.SalesReturnMaster',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='bank_payments'
+    )
+    
+    purchase = models.ForeignKey(
+    'pos.PurchaseMaster',
+    on_delete=models.CASCADE,
+    null=True,
+    blank=True,
+    related_name='bank_payments'
+)
+
+    def clean(self):
+        """Validate only on CREATE"""
+        if self._state.adding:
+            if self.bank_account.current_balance < self.amount:
+                raise ValidationError(
+                    f"⚠ Bank account balance ({self.bank_account.current_balance}) "
+                    f"is less than the payment amount ({self.amount})."
+                )
+
+    # pos/models/bankpayment.py
+    def save(self, *args, **kwargs):
+        with transaction.atomic():
+            is_new = self._state.adding
+            self.full_clean()
+
+            if is_new:
+                # 🔻 BANK ACCOUNT (money goes OUT)
+                self.bank_account.current_balance -= self.amount
+                self.bank_account.save(update_fields=["current_balance"])
+
+                should_update_party = True
+
+                # ✅ FIX: Bank Purchase - Supplier balance nahi badalna
+                if self.purchase and self.purchase.terms.lower() != "credit":
+                    should_update_party = False
+                    print(f"Bank Purchase PBP - Supplier balance unchanged")
+
+                # ✅ FIX: Sales Return Bank (SRBP) - Customer balance nahi badalna
+                # Sirf Credit Sales Return me customer Dr badhega
+                if self.sales_return and self.type == "SRBP":
+                    should_update_party = False
+                    print(f"SRBP - Bank Sales Return, Customer balance unchanged")
+
+                if should_update_party:
+                    if self.op_account.current_drcr == "Dr":
+                        if self.amount > self.op_account.current_balance:
+                            self.op_account.current_balance = self.amount - self.op_account.current_balance
+                            self.op_account.current_drcr = "Cr"
+                        elif self.amount < self.op_account.current_balance:
+                            self.op_account.current_balance -= self.amount
+                        else:
+                            self.op_account.current_balance = 0
+                    else:
+                        if self.amount > self.op_account.current_balance:
+                            self.op_account.current_balance = self.amount - self.op_account.current_balance
+                            self.op_account.current_drcr = "Dr"
+                        elif self.amount < self.op_account.current_balance:
+                            self.op_account.current_balance -= self.amount
+                        else:
+                            self.op_account.current_balance = 0
+
+                    self.op_account.save(update_fields=["current_balance", "current_drcr"])
+                else:
+                    print(f"✅ Party balance NOT updated for SRBP/PBP")
+
+            super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.voucher_no} - {self.amount}"
