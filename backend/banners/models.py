@@ -115,5 +115,6 @@ class MobileDealCard(models.Model):
     class Meta:
         ordering = ['deal_type', 'order']
     
+    
     def __str__(self):
         return f"{self.get_deal_type_display()}: {self.product.product_name}"
