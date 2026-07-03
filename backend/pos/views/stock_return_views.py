@@ -683,6 +683,11 @@ class StockReturnCreateFromItemsView(APIView):
     ✅ FIX: Now saves hsnCode, taxSlab, size, color on StockReturnItem
        creation — these were missing before, causing HSN/GST to show
        blank in the return detail view.
+    ✅ FIX: purane StockTransferItem records me to_variant NULL ho sakta
+       hai (verify step pehle ye field save nahi karta tha). Ab yahan
+       barcode se dobara dhundte hain aur agar mil jaye toh to_variant
+       fix bhi kar dete hain. Agar phir bhi nahi milta, crash (500) hone
+       ke bajaye clean error message return hota hai.
     """
     permission_classes = [IsBranchRole]
     authentication_classes = [JWTAuthentication, SessionAuthentication]
@@ -779,10 +784,32 @@ class StockReturnCreateFromItemsView(APIView):
                 from_item = transfer_item.from_item
                 from_variant = transfer_item.from_variant
 
+                # ✅ FIX: branch_variant (to_variant) purane record me NULL ho
+                # sakta hai. Barcode se dobara dhundo; mil jaye toh
+                # transfer_item.to_variant ko yahi save bhi kar do taaki
+                # future me dobara dhundhna na pade.
+                branch_variant = transfer_item.to_variant
+                if not branch_variant:
+                    branch_variant = ItemVariants.objects.filter(
+                        barcode=transfer_item.from_barcode,
+                        item__branch=branch,
+                        item__created_by_superadmin=True,
+                    ).first()
+                    if branch_variant:
+                        transfer_item.to_variant = branch_variant
+                        transfer_item.save(update_fields=['to_variant'])
+
+                if not branch_variant:
+                    return_request.delete()
+                    return Response({
+                        'success': False,
+                        'message': f"'{transfer_item.from_item_name}' ke liye branch me matching item nahi mila. Ye purana/broken record hai, superadmin se check karwao."
+                    }, status=400)
+
                 StockReturnItem.objects.create(
                     return_request=return_request,
                     source_transfer_item=transfer_item,
-                    branch_variant=transfer_item.to_variant,
+                    branch_variant=branch_variant,
                     company_variant=transfer_item.from_variant,
                     item_name=transfer_item.from_item_name,
                     variant_info=transfer_item.from_variant_info,
@@ -799,4 +826,4 @@ class StockReturnCreateFromItemsView(APIView):
             'success': True,
             'message': f'Return {return_request.return_no} created successfully!',
             'data': StockReturnDetailSerializer(return_request).data
-        }, status=201)            
+        }, status=201)          

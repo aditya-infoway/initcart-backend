@@ -618,9 +618,14 @@ class VerifyStockTransferItemView(APIView):
             dest_variant.save(update_fields=['current_stock', 'purchasePrice'])
             
             # ✅ STEP 6: Mark as verified
+            # ✅ FIX: to_variant ab yahan save ho raha hai — pehle ye field
+            # kabhi save nahi hoti thi, isliye StockReturn create karte
+            # waqt purane records me to_variant NULL milta tha aur
+            # IntegrityError (branch_variant_id cannot be null) aata tha.
             item.is_stock_updated = True
             item.website_display_on_verify = website_display
-            item.save(update_fields=['is_stock_updated', 'website_display_on_verify'])
+            item.to_variant = dest_variant
+            item.save(update_fields=['is_stock_updated', 'website_display_on_verify', 'to_variant'])
             
             # ✅ STEP 7: If all items verified, mark transfer as completed
             if not transfer.items.filter(is_stock_updated=False).exists():
@@ -815,9 +820,15 @@ class VerifyAllStockTransferItemsView(APIView):
                 dest_variant.purchasePrice = from_variant.branchPrice
                 dest_variant.save(update_fields=['current_stock', 'purchasePrice'])
                 
+                # ✅ FIX: to_variant ab yahan bhi save ho raha hai — same bug
+                # jo VerifyStockTransferItemView me tha, "Verify All" button
+                # se verify hone wale items me bhi to_variant NULL reh jaata
+                # tha. Isse StockReturn create karte waqt IntegrityError
+                # (branch_variant_id cannot be null) aata tha.
                 item.is_stock_updated = True
                 item.website_display_on_verify = website_display
-                item.save(update_fields=['is_stock_updated', 'website_display_on_verify'])
+                item.to_variant = dest_variant
+                item.save(update_fields=['is_stock_updated', 'website_display_on_verify', 'to_variant'])
                 verified_count += 1
 
         if not transfer.items.filter(is_stock_updated=False).exists():
