@@ -19,6 +19,9 @@ from pos.serializers.stock_return_serializers import (
     ReturnItemStatusSerializer,
 )
 from pos.utils.pagination import StandardResultsSetPagination
+from django.db.models import Sum as SumModel
+from pos.models.branch import Branch
+from pos.models.stock_return import ReturnSequence, get_financial_year
 
 
 class IsSuperAdminRole(IsAuthenticated):
@@ -678,56 +681,51 @@ class VerifiedItemsForReturnView(APIView):
         
 class StockReturnCreateFromItemsView(APIView):
     """
-    Create return from multiple items with custom quantities
-    Branch can return less than or equal to max quantity
-    ✅ FIX: Now saves hsnCode, taxSlab, size, color on StockReturnItem
-       creation — these were missing before, causing HSN/GST to show
-       blank in the return detail view.
-    ✅ FIX: purane StockTransferItem records me to_variant NULL ho sakta
-       hai (verify step pehle ye field save nahi karta tha). Ab yahan
-       barcode se dobara dhundte hain aur agar mil jaye toh to_variant
-       fix bhi kar dete hain. Agar phir bhi nahi milta, crash (500) hone
-       ke bajaye clean error message return hota hai.
+    Create return from multiple items with custom quantities.
+    Branch can return less than or equal to REMAINING quantity
+    (original quantity minus whatever has already been returned).
+    Multiple separate return requests are allowed from the same
+    transfer, as long as remaining quantity is available.
     """
     permission_classes = [IsBranchRole]
     authentication_classes = [JWTAuthentication, SessionAuthentication]
-
+ 
     def post(self, request):
         user = request.user
         branch = getattr(user, 'branch', None)
         if not branch:
             return Response({'success': False, 'message': 'No branch assigned.'}, status=400)
-        
+ 
         items_data = request.data.get('items', [])  # List of {item_id, quantity}
         return_date = request.data.get('return_date')
         note = request.data.get('note', '')
-        
+ 
         if not items_data:
             return Response({'success': False, 'message': 'No items selected.'}, status=400)
-        
+ 
         # Get company branch
         from django.contrib.auth import get_user_model
         User = get_user_model()
         superadmin_user = User.objects.filter(role='superadmin').first()
         if not superadmin_user:
             return Response({'success': False, 'message': 'Superadmin not found.'}, status=400)
-        
+ 
         try:
             company_branch = Branch.objects.get(user=superadmin_user)
         except Branch.DoesNotExist:
             return Response({'success': False, 'message': 'Company branch not found.'}, status=400)
-        
-        # Get selected items with quantities
+ 
+        # Get selected items
         item_ids = [item['item_id'] for item in items_data]
         transfer_items = StockTransferItem.objects.filter(
             id__in=item_ids,
             transfer__to_branch=branch,
             is_stock_updated=True
         ).select_related('transfer', 'from_item', 'from_variant', 'to_variant')
-        
+ 
         if not transfer_items.exists():
             return Response({'success': False, 'message': 'No valid items found.'}, status=400)
-        
+ 
         # Check all items are from same transfer
         transfer_ids = set(item.transfer_id for item in transfer_items)
         if len(transfer_ids) > 1:
@@ -735,17 +733,25 @@ class StockReturnCreateFromItemsView(APIView):
                 'success': False,
                 'message': 'All items must be from the same transfer.'
             }, status=400)
-        
+ 
         transfer_id = transfer_ids.pop()
         source_transfer = StockTransfer.objects.get(id=transfer_id)
-        
-        # Check if return already exists
-        if StockReturn.objects.filter(source_transfer=source_transfer).exists():
-            return Response({
-                'success': False,
-                'message': 'Return already exists for this transfer.'
-            }, status=400)
-        
+ 
+        # ✅ FIX 1: All-or-nothing "return already exists" check REMOVED.
+        # Multiple partial returns from the same transfer are allowed —
+        # per-item remaining-quantity check below (FIX 2) is what actually
+        # prevents over-returning.
+ 
+        # ✅ FIX 2: Calculate how much of each transfer_item has ALREADY
+        # been returned across any previous return requests, so we can
+        # validate against the true remaining quantity.
+        already_returned_map = {}
+        prior_returns = StockReturnItem.objects.filter(
+            source_transfer_item__in=transfer_items
+        ).values('source_transfer_item_id').annotate(total=SumModel('quantity'))
+        for row in prior_returns:
+            already_returned_map[row['source_transfer_item_id']] = row['total'] or 0
+ 
         with transaction.atomic():
             # Create return
             return_request = StockReturn.objects.create(
@@ -758,36 +764,40 @@ class StockReturnCreateFromItemsView(APIView):
                 status='pending',
                 created_by=user,
             )
-                
+ 
+            any_item_created = False
+ 
             # Create return items with custom quantities
             for item_data in items_data:
                 item_id = item_data['item_id']
                 return_qty = item_data.get('quantity', 0)
-                
+ 
                 if return_qty <= 0:
                     continue
-                
+ 
                 transfer_item = next((item for item in transfer_items if item.id == item_id), None)
                 if not transfer_item:
                     continue
-                
-                # ✅ Check: Return quantity cannot exceed original quantity
-                if return_qty > transfer_item.quantity:
+ 
+                # ✅ FIX 2: check against REMAINING quantity, not original
+                already_returned = already_returned_map.get(transfer_item.id, 0)
+                remaining_qty = transfer_item.quantity - already_returned
+ 
+                if return_qty > remaining_qty:
                     return_request.delete()
                     return Response({
                         'success': False,
-                        'message': f'Return quantity ({return_qty}) cannot exceed original quantity ({transfer_item.quantity}) for {transfer_item.from_item_name}'
+                        'message': (
+                            f"Return quantity ({return_qty}) cannot exceed remaining "
+                            f"quantity ({remaining_qty}) for {transfer_item.from_item_name}"
+                        )
                     }, status=400)
-                
-                # ✅ FIX: pull HSN/GST from the source item, and size/color
-                # from the company variant — same as StockReturnCreateSerializer does.
+ 
                 from_item = transfer_item.from_item
                 from_variant = transfer_item.from_variant
-
-                # ✅ FIX: branch_variant (to_variant) purane record me NULL ho
-                # sakta hai. Barcode se dobara dhundo; mil jaye toh
-                # transfer_item.to_variant ko yahi save bhi kar do taaki
-                # future me dobara dhundhna na pade.
+ 
+                # branch_variant (to_variant) purane record me NULL ho sakta
+                # hai. Barcode se dobara dhundo; mil jaye toh save bhi kar do.
                 branch_variant = transfer_item.to_variant
                 if not branch_variant:
                     branch_variant = ItemVariants.objects.filter(
@@ -798,14 +808,17 @@ class StockReturnCreateFromItemsView(APIView):
                     if branch_variant:
                         transfer_item.to_variant = branch_variant
                         transfer_item.save(update_fields=['to_variant'])
-
+ 
                 if not branch_variant:
                     return_request.delete()
                     return Response({
                         'success': False,
-                        'message': f"'{transfer_item.from_item_name}' ke liye branch me matching item nahi mila. Ye purana/broken record hai, superadmin se check karwao."
+                        'message': (
+                            f"'{transfer_item.from_item_name}' ke liye branch me matching "
+                            f"item nahi mila. Ye purana/broken record hai, superadmin se check karwao."
+                        )
                     }, status=400)
-
+ 
                 StockReturnItem.objects.create(
                     return_request=return_request,
                     source_transfer_item=transfer_item,
@@ -821,9 +834,70 @@ class StockReturnCreateFromItemsView(APIView):
                     quantity=return_qty,
                     rate=transfer_item.rate,
                 )
-        
+                any_item_created = True
+ 
+            if not any_item_created:
+                return_request.delete()
+                return Response({
+                    'success': False,
+                    'message': 'No valid items with quantity > 0 to return.'
+                }, status=400)
+ 
         return Response({
             'success': True,
             'message': f'Return {return_request.return_no} created successfully!',
             'data': StockReturnDetailSerializer(return_request).data
-        }, status=201)          
+        }, status=201)   
+        
+class NextReturnNumberPreviewView(APIView):
+    """
+    GET /api/stock-returns/next-number-preview/
+    Response: { "success": true, "next_return_no": "SR/DMF/26-27/0010" }
+    """
+    permission_classes = []  # IsBranchRole wahi use karo jo baaki views mein hai
+    authentication_classes = [JWTAuthentication, SessionAuthentication]
+ 
+    def get(self, request):
+        from pos.views.stock_return_views import IsBranchRole
+        # ✅ Manual permission check (taaki import order issue na ho)
+        checker = IsBranchRole()
+        if not checker.has_permission(request, self):
+            return Response({'success': False, 'message': 'Not allowed.'}, status=403)
+ 
+        user = request.user
+ 
+        # Superadmin ke liye company branch, warna user ki apni branch
+        if user.role == 'superadmin':
+            branch = Branch.objects.filter(user=user).first()
+        else:
+            branch = getattr(user, 'branch', None)
+ 
+        if not branch:
+            return Response({'success': False, 'message': 'No branch assigned.'}, status=400)
+ 
+        from pos.models.settings import setting
+        settings_obj = setting.objects.filter(branch=branch).first()
+        prefix = getattr(settings_obj, 'SR', 'RTN') if settings_obj else 'RTN'
+ 
+        fy = get_financial_year()
+ 
+        branch_code = ""
+        if branch.branch_code:
+            branch_code = branch.branch_code.strip().upper()
+ 
+        # ✅ Sirf PADHTE hain, increment nahi karte — yeh sirf ek estimate hai
+        seq = ReturnSequence.objects.filter(financial_year=fy).first()
+        next_no = (seq.last_number if seq else 0) + 1
+        next_no_str = str(next_no).zfill(4)
+ 
+        if branch_code:
+            preview = f"{prefix}/{branch_code}/{fy}/{next_no_str}"
+        else:
+            preview = f"{prefix}/{fy}/{next_no_str}"
+ 
+        return Response({
+            'success': True,
+            'next_return_no': preview,
+        }) 
+        
+                     

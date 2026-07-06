@@ -33,7 +33,7 @@ class StockTransfer(models.Model):
     created_at    = models.DateTimeField(auto_now_add=True)
     updated_at    = models.DateTimeField(auto_now=True)
     
-    # ✅ ADD THESE FIELDS
+    #  ADD THESE FIELDS
     transfer_type = models.CharField(max_length=10, choices=TRANSFER_TYPE_CHOICES, default='manual')
     
     # ✅ Use string reference instead of direct import to avoid circular dependency

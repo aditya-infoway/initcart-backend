@@ -203,9 +203,26 @@ class ManualImportItemsFromExcel(APIView):
             }
             return mapping.get(val, "")
 
+# ===== NUMERIC-TEXT CLEANER (removes .0 from numeric-looking codes) =====
+        def clean_numeric_text_cell(x):
+            if pd.isna(x):
+                return None
+            if isinstance(x, float) and x.is_integer():
+                return str(int(x))
+            return str(x).strip()
+
         # ===== READ FILE =====
         try:
-            df = pd.read_excel(excel_file, sheet_name=0, header=0)
+            df = pd.read_excel(
+                excel_file,
+                sheet_name=0,
+                header=0,
+                converters={
+                    'BARCODE': clean_numeric_text_cell,
+                    'HSN_CODE': clean_numeric_text_cell,
+                    'HSN_CODE*': clean_numeric_text_cell,   # template star-header safety
+                }
+            )
         except Exception as e:
             return Response({"error": str(e)}, status=400)
 
@@ -227,6 +244,14 @@ class ManualImportItemsFromExcel(APIView):
         # ===== LOOKUPS — only GROUP and UNIT from DB =====
         group_map = {g.name: g.id for g in ItemGroup.objects.filter(branch=branch)}
         unit_map  = {u.symbol: u.id for u in ItemUnit.objects.filter(is_active=True)}
+        
+        # ✅ NEW: existing barcodes for THIS branch
+        existing_barcodes = set(
+            itemvariants.objects.filter(item__branch=branch)
+            .exclude(barcode__isnull=True)
+            .exclude(barcode="")
+            .values_list("barcode", flat=True)
+        )
 
         errors     = []
         items_data = defaultdict(lambda: {
@@ -375,7 +400,10 @@ class ManualImportItemsFromExcel(APIView):
             # ===== DUPLICATE BARCODE =====
             if barcode:
                 if barcode in used_barcodes:
-                    errors.append(f"Row {row_num}: Duplicate barcode '{barcode}'")
+                    errors.append(f"Row {row_num}: Duplicate barcode '{barcode}' (repeated in this file)")
+                    continue
+                if barcode in existing_barcodes:
+                    errors.append(f"Row {row_num}: Barcode '{barcode}' already exists in this branch")
                     continue
                 used_barcodes.add(barcode)
 

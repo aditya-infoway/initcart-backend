@@ -101,8 +101,8 @@ class BranchOrderItemReadSerializer(serializers.ModelSerializer):
     sales_price = serializers.SerializerMethodField()
     mrp = serializers.SerializerMethodField()
     branch_price = serializers.FloatField(read_only=True)
-    
-
+    sent_quantity = serializers.IntegerField(read_only=True)
+    remaining_quantity = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = BranchOrderItem
@@ -111,10 +111,11 @@ class BranchOrderItemReadSerializer(serializers.ModelSerializer):
             'size', 'color', 'hsnCode', 'taxSlab',
             'global_item_code',
             'requested_quantity', 'approved_quantity',
+            'sent_quantity', 'remaining_quantity',
             'is_removed_by_admin', 'admin_note',
             'is_transferred', 'rate',
             'purchase_price', 'sales_price', 'mrp',
-            'branch_price',  # ✅ ADD THIS
+            'branch_price',
             'source_item_id', 'source_variant_id',
         ]
 
@@ -129,7 +130,6 @@ class BranchOrderItemReadSerializer(serializers.ModelSerializer):
             return obj.source_variant.mrp
         except Exception:
             return None
-
 
 class BranchOrderListSerializer(serializers.ModelSerializer):
     branch_name = serializers.CharField(source='branch.branch_name', read_only=True)
@@ -180,6 +180,8 @@ class AdminOrderItemAdjustSerializer(serializers.Serializer):
 class AdminProcessOrderSerializer(serializers.Serializer):
     """
     Superadmin order items adjust karke stock transfer create karta hai.
+    Multi-round support: agar poori qty ek baar mein nahi bheji,
+    baaki bachi (remaining_quantity) baad mein phir se process ki ja sakti hai.
     """
     transfer_date = serializers.DateField()
     note = serializers.CharField(required=False, allow_blank=True)
@@ -215,36 +217,51 @@ class AdminProcessOrderSerializer(serializers.Serializer):
         adj_map = {adj['item_id']: adj for adj in items_adjustments}
 
         active_items = []
+        round_qty_map = {}
+
         for order_item in instance.items.all():
             adj = adj_map.get(order_item.id)
-            if adj:
-                if adj.get('is_removed'):
-                    order_item.is_removed_by_admin = True
-                    order_item.admin_note = adj.get('admin_note', '')
-                    order_item.approved_quantity = 0
-                    order_item.save()
-                    continue
-                else:
-                    order_item.approved_quantity = adj['approved_quantity']
-                    order_item.admin_note = adj.get('admin_note', '')
-                    order_item.save()
+            if not adj:
+                continue
 
-            if not order_item.is_removed_by_admin and (order_item.approved_quantity or 0) > 0:
-                active_items.append(order_item)
+            if adj.get('is_removed'):
+                order_item.is_removed_by_admin = True
+                order_item.admin_note = adj.get('admin_note', '')
+                order_item.save()
+                continue
+
+            round_qty = adj.get('approved_quantity') or 0
+            if round_qty <= 0:
+                continue
+
+            remaining = order_item.remaining_quantity
+            if round_qty > remaining:
+                raise serializers.ValidationError(
+                    f"'{order_item.item_name}' ke liye sirf {remaining} qty baaki hai "
+                    f"(Requested: {order_item.requested_quantity}, already sent: {order_item.sent_quantity or 0}). "
+                    f"Aap {round_qty} bhejne ki koshish kar rahe ho."
+                )
+
+            order_item.approved_quantity = round_qty
+            order_item.admin_note = adj.get('admin_note', '')
+            order_item.save()
+
+            active_items.append(order_item)
+            round_qty_map[order_item.id] = round_qty
 
         if not active_items:
             raise serializers.ValidationError(
-                "No active items to transfer. All items removed or have 0 quantity."
+                "Is round mein bhejne layak koi item nahi mila. "
+                "Ho sakta hai sab already fully sent ho ya sabki quantity 0 di gayi ho."
             )
 
-        # Stock Transfer create karo - ✅ WITHOUT STOCK DEDUCTION
         transfer = StockTransfer.objects.create(
             from_branch=from_branch,
             to_branch=to_branch,
             transfer_date=transfer_date,
             note=note or f"Order: {instance.order_id}",
             created_by=user,
-            status='completed',  # ✅ Directly completed so branch can verify
+            status='completed',
             transfer_type='order',
             source_order=instance,
         )
@@ -252,13 +269,10 @@ class AdminProcessOrderSerializer(serializers.Serializer):
         created_items_cache = {}
 
         for order_item in active_items:
+            round_qty = round_qty_map[order_item.id]
             from_variant = order_item.source_variant
             from_item = order_item.source_item
 
-            # ✅ NO STOCK CHECK AND NO STOCK DEDUCTION HERE
-            # Stock will be deducted only during verification
-
-            # Destination mein item create karo (agar nahi hai)
             item_cache_key = from_item.id
             if item_cache_key not in created_items_cache:
                 dest_item = create_full_item_in_destination(from_item, to_branch)
@@ -266,7 +280,6 @@ class AdminProcessOrderSerializer(serializers.Serializer):
             else:
                 dest_item = created_items_cache[item_cache_key]
 
-            # Destination variant find karo
             dest_variant = ItemVariants.objects.filter(
                 item=dest_item,
                 size=from_variant.size,
@@ -289,7 +302,6 @@ class AdminProcessOrderSerializer(serializers.Serializer):
                     srno=from_variant.srno,
                 )
 
-            # Transfer item create - ✅ rate mein branch_price store karo
             StockTransferItem.objects.create(
                 transfer=transfer,
                 from_item=from_item,
@@ -297,24 +309,30 @@ class AdminProcessOrderSerializer(serializers.Serializer):
                 from_item_name=from_item.itemName,
                 from_variant_info=variant_info_str(from_variant),
                 from_barcode=from_variant.barcode,
-                quantity=order_item.approved_quantity,
-                rate=order_item.branch_price or order_item.rate,  # ✅ branch_price as rate
+                quantity=round_qty,
+                rate=order_item.branch_price or order_item.rate,
                 to_variant=dest_variant,
             )
 
-            order_item.is_transferred = True
-            order_item.save()
+            order_item.sent_quantity = (order_item.sent_quantity or 0) + round_qty
+            order_item.is_transferred = order_item.is_fully_sent
+            order_item.save(update_fields=['sent_quantity', 'is_transferred'])
 
-        all_items = instance.items.all()
-        removed_count = all_items.filter(is_removed_by_admin=True).count()
-        total_count = all_items.count()
+        all_items = list(instance.items.all())
+        total_count = len(all_items)
+        removed_count = sum(1 for i in all_items if i.is_removed_by_admin)
+        fully_sent_count = sum(1 for i in all_items if not i.is_removed_by_admin and i.is_fully_sent)
+        any_sent = any((i.sent_quantity or 0) > 0 for i in all_items)
+        done_count = removed_count + fully_sent_count
 
-        if removed_count == 0:
+        if removed_count == total_count:
+            instance.status = 'cancelled'
+        elif done_count == total_count:
             instance.status = 'sent'
-        elif removed_count < total_count:
+        elif any_sent:
             instance.status = 'partially_sent'
         else:
-            instance.status = 'cancelled'
+            instance.status = 'processing'
 
         instance.linked_transfer = transfer
         instance.save()

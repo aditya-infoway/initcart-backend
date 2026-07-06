@@ -412,6 +412,7 @@ class GeneratedBarcodesListView(APIView):
                 "variant_id":    v.id,
                 "item_id":       v.item.id,
                 "item_name":     v.item.itemName,
+                "entry_type":    v.item.entry_type,
                 "hsn_code":      v.item.hsnCode or "",
                 "size":          v.size or "",
                 "color":         v.color or "",
@@ -439,3 +440,260 @@ class GeneratedBarcodesListView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+        
+        
+# pos/views/barcode_views.py - Add this new view
+
+class UpdateExistingBarcodeView(APIView):
+    """
+    PUT /api/pos/barcodes/update/<variant_id>/
+    Body: { "barcode": "NEW_BARCODE" }
+    
+    Permission Rules:
+    - Superadmin: Can update ANY item (company or manual) in their branch
+    - Normal Branch: Can ONLY update manual items (entry_type='manual')
+    - Only ADD/UPDATE operation - no deletion of existing barcode
+    
+    Returns:
+    - 200: Success with updated barcode
+    - 400: Validation errors
+    - 403: Permission denied
+    - 404: Variant not found
+    """
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [JWTAuthentication, SessionAuthentication]
+
+    def put(self, request, variant_id):
+        user = request.user
+        branch = getattr(user, "branch", None)
+        
+        if not branch:
+            return Response(
+                {"success": False, "message": "No branch associated with this user"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Get the variant
+        try:
+            variant = itemvariants.objects.get(id=variant_id, item__branch=branch)
+        except itemvariants.DoesNotExist:
+            return Response(
+                {"success": False, "message": "Variant not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # ─── PERMISSION CHECK ──────────────────────────────────────
+        is_superadmin = user.role == 'superadmin'
+        item = variant.item
+
+        if is_superadmin:
+            # Superadmin can update ANY item in their branch
+            pass  # Allowed
+        else:
+            # Normal branch: ONLY manual items
+            if item.entry_type != 'manual':
+                return Response(
+                    {
+                        "success": False,
+                        "message": (
+                            f"Permission denied: Cannot update barcode for '{item.entry_type}' type item. "
+                            "Only manual items can be updated by normal branch users."
+                        )
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            
+            # Also check that this branch actually created this item
+            if item.created_by_superadmin:
+                return Response(
+                    {
+                        "success": False,
+                        "message": "Permission denied: This is a superadmin-created item."
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        # ─── GET NEW BARCODE ──────────────────────────────────────
+        new_barcode = request.data.get("barcode", "").strip()
+        
+        if not new_barcode:
+            return Response(
+                {"success": False, "message": "barcode field is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Validate barcode format
+        if not new_barcode.isalnum():
+            return Response(
+                {"success": False, "message": "Barcode must be alphanumeric only"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Check if barcode already exists in this branch (excluding current variant)
+        if itemvariants.objects.filter(
+            barcode=new_barcode, 
+            item__branch=branch
+        ).exclude(id=variant_id).exists():
+            return Response(
+                {
+                    "success": False,
+                    "message": f"Barcode '{new_barcode}' already in use in this branch"
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ─── UPDATE BARCODE ──────────────────────────────────────
+        # Store old barcode for response (optional)
+        old_barcode = variant.barcode
+
+        # IMPORTANT: Only update if new barcode is different
+        if old_barcode == new_barcode:
+            return Response(
+                {
+                    "success": True,
+                    "variant_id": variant.id,
+                    "barcode": new_barcode,
+                    "message": "Barcode unchanged (same value)",
+                    "updated": False,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        # Save new barcode
+        variant.barcode = new_barcode
+        variant.save(update_fields=["barcode"])
+
+        return Response(
+            {
+                "success": True,
+                "variant_id": variant.id,
+                "item_name": variant.item.itemName,
+                "entry_type": variant.item.entry_type,
+                "old_barcode": old_barcode or None,
+                "new_barcode": new_barcode,
+                "updated": True,
+                "message": "Barcode updated successfully",
+            },
+            status=status.HTTP_200_OK,
+        )
+        
+        
+# pos/views/barcode_views.py - Add this for bulk updates
+
+class BulkUpdateBarcodesView(APIView):
+    """
+    POST /api/pos/barcodes/bulk-update/
+    Body: {
+        "updates": [
+            {"variant_id": 1, "barcode": "NEW001"},
+            {"variant_id": 2, "barcode": "NEW002"}
+        ]
+    }
+    
+    Updates multiple barcodes in one request.
+    Respects same permission rules as single update.
+    """
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [JWTAuthentication, SessionAuthentication]
+
+    def post(self, request):
+        user = request.user
+        branch = getattr(user, "branch", None)
+        
+        if not branch:
+            return Response(
+                {"success": False, "message": "No branch associated"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        updates = request.data.get("updates", [])
+        if not updates:
+            return Response(
+                {"success": False, "message": "updates list is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        is_superadmin = user.role == 'superadmin'
+        results = []
+        errors = []
+
+        for update in updates:
+            variant_id = update.get("variant_id")
+            new_barcode = update.get("barcode", "").strip()
+
+            if not variant_id:
+                errors.append({"variant_id": None, "message": "variant_id missing"})
+                continue
+
+            if not new_barcode:
+                errors.append({"variant_id": variant_id, "message": "barcode missing"})
+                continue
+
+            try:
+                variant = itemvariants.objects.get(id=variant_id, item__branch=branch)
+            except itemvariants.DoesNotExist:
+                errors.append({"variant_id": variant_id, "message": "Variant not found"})
+                continue
+
+            # Permission check
+            item = variant.item
+            if not is_superadmin and item.entry_type != 'manual':
+                errors.append({
+                    "variant_id": variant_id,
+                    "message": f"Cannot update {item.entry_type} type item"
+                })
+                continue
+
+            if not is_superadmin and item.created_by_superadmin:
+                errors.append({
+                    "variant_id": variant_id,
+                    "message": "Cannot update superadmin-created item"
+                })
+                continue
+
+            # Validate format
+            if not new_barcode.isalnum():
+                errors.append({
+                    "variant_id": variant_id,
+                    "message": "Barcode must be alphanumeric"
+                })
+                continue
+
+            # Check uniqueness
+            if itemvariants.objects.filter(
+                barcode=new_barcode,
+                item__branch=branch
+            ).exclude(id=variant_id).exists():
+                errors.append({
+                    "variant_id": variant_id,
+                    "message": f"Barcode '{new_barcode}' already in use"
+                })
+                continue
+
+            old_barcode = variant.barcode
+            if old_barcode != new_barcode:
+                variant.barcode = new_barcode
+                variant.save(update_fields=["barcode"])
+                updated = True
+            else:
+                updated = False
+
+            results.append({
+                "variant_id": variant_id,
+                "item_name": variant.item.itemName,
+                "old_barcode": old_barcode or None,
+                "new_barcode": new_barcode,
+                "updated": updated,
+                "success": True,
+            })
+
+        return Response(
+            {
+                "success": True,
+                "results": results,
+                "errors": errors,
+                "total_processed": len(results) + len(errors),
+                "updated_count": len([r for r in results if r.get("updated")]),
+            },
+            status=status.HTTP_200_OK,
+        )                
