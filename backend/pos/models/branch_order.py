@@ -1,12 +1,63 @@
 # pos/models/branch_order.py
-# NEW FILE — Branch Order Tracking Module
+# UPDATED FILE — Branch Order Tracking Module
+# Order-number logic ab ek dedicated OrderSequence counter se atomically generate hota hai,
+# taaki chahe kitni bhi branches ek saath order karein, serial number kabhi duplicate/clash na ho
+# aur sequence hamesha global chale (branch_code set ho ya na ho).
 
-from django.db import models
+from django.db import models, transaction
 from django.contrib.auth import get_user_model
 from pos.models.branch import Branch
 from pos.models.items import items as Items, itemvariants as ItemVariants
 
 User = get_user_model()
+
+
+def get_financial_year(now=None):
+    """
+    April-March financial year string banata hai, e.g. "26-27"
+    """
+    from datetime import datetime
+    now = now or datetime.now()
+    year = now.year
+    if now.month >= 4:
+        fy_start, fy_end = year, year + 1
+    else:
+        fy_start, fy_end = year - 1, year
+    return f"{str(fy_start)[2:]}-{str(fy_end)[2:]}"
+
+
+class OrderSequence(models.Model):
+    """
+    Har financial year ke liye ek hi row — global running counter.
+    Order number generate karte waqt is row ko `select_for_update()`
+    se DB-level lock karke atomically increment karte hain.
+    Isse concurrent requests (do branches ek hi second mein order karein)
+    mein bhi kabhi duplicate ya skipped number nahi banega.
+    """
+    financial_year = models.CharField(max_length=10, unique=True)  # e.g. "26-27"
+    last_number = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        verbose_name = "Order Sequence"
+        verbose_name_plural = "Order Sequences"
+
+    def __str__(self):
+        return f"FY {self.financial_year} → last used: {self.last_number}"
+
+    @classmethod
+    def get_next_number(cls, financial_year: str) -> int:
+        """
+        Atomically FY ka agla number nikaalta hai aur turant save karta hai.
+        Yeh method hamesha ek transaction.atomic() block ke andar call hona chahiye
+        (BranchOrder.save() mein already wrapped hai).
+        """
+        seq, _ = cls.objects.select_for_update().get_or_create(
+            financial_year=financial_year,
+            defaults={'last_number': 0},
+        )
+        seq.last_number += 1
+        seq.save(update_fields=['last_number'])
+        return seq.last_number
 
 
 class BranchOrder(models.Model):
@@ -21,7 +72,7 @@ class BranchOrder(models.Model):
         ('cancelled', 'Cancelled'),
     ]
 
-    order_id = models.CharField(max_length=50, unique=True)  # e.g. ORD/25-26/0001
+    order_id = models.CharField(max_length=50, unique=True)  # e.g. ORD/TRW/26-27/0001
     branch = models.ForeignKey(
         Branch,
         on_delete=models.PROTECT,
@@ -56,47 +107,34 @@ class BranchOrder(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.order_id:
-            from datetime import datetime
-            now = datetime.now()
-            year = now.year
-            if now.month >= 4:
-                fy_start, fy_end = year, year + 1
-            else:
-                fy_start, fy_end = year - 1, year
-            fy = f"{str(fy_start)[2:]}-{str(fy_end)[2:]}"
+            fy = get_financial_year()
 
-            # Branch's own code — only affects DISPLAY format, never the counter
+            # Branch's own code — sirf DISPLAY format ko affect karta hai, counter ko nahi
             branch_code = ""
             if self.branch_id and self.branch and self.branch.branch_code:
                 branch_code = self.branch.branch_code.strip().upper()
 
-            # ✅ ONE global counter per FY, shared across ALL branches,
-            #    regardless of whether branch_code is set or blank
-            fy_marker = f"/{fy}/"
-            last = BranchOrder.objects.filter(
-                order_id__contains=fy_marker
-            ).order_by('-id').first()
+            # ✅ Ek hi global, atomic counter per FY — sab branches ke liye shared,
+            #    chahe branch_code set ho ya blank ho. select_for_update() ki wajah se
+            #    concurrent requests bhi safe hain (koi duplicate/skip nahi hoga).
+            with transaction.atomic():
+                next_no = OrderSequence.get_next_number(fy)
+                next_no_str = str(next_no).zfill(4)
 
-            last_no = 0
-            if last and last.order_id:
-                try:
-                    last_no = int(last.order_id.split('/')[-1])
-                except (ValueError, IndexError):
-                    last_no = 0
+                if branch_code:
+                    self.order_id = f"ORD/{branch_code}/{fy}/{next_no_str}"
+                else:
+                    self.order_id = f"ORD/{fy}/{next_no_str}"
 
-            next_no = str(last_no + 1).zfill(4)
-
-            if branch_code:
-                self.order_id = f"ORD/{branch_code}/{fy}/{next_no}"
-            else:
-                self.order_id = f"ORD/{fy}/{next_no}"
+                super().save(*args, **kwargs)
+            return
 
         super().save(*args, **kwargs)
+
 
 class BranchOrderItem(models.Model):
     """
     Order ki ek item — superadmin ke company item + variant ka reference.
-    Global code se future orders mein same item identify hogi.
     """
     order = models.ForeignKey(
         BranchOrder,
@@ -104,7 +142,6 @@ class BranchOrderItem(models.Model):
         related_name='items'
     )
 
-    # Source item — superadmin ke branch ka company item
     source_item = models.ForeignKey(
         Items,
         on_delete=models.PROTECT,
@@ -116,36 +153,32 @@ class BranchOrderItem(models.Model):
         related_name='order_references'
     )
 
-    # Snapshot fields (item delete hone par bhi data rahe)
     item_name = models.CharField(max_length=255)
-    variant_info = models.CharField(max_length=100, blank=True, null=True)  # "Red / XL"
+    variant_info = models.CharField(max_length=100, blank=True, null=True)
     barcode = models.CharField(max_length=100, blank=True, null=True)
     size = models.CharField(max_length=50, blank=True, null=True)
     color = models.CharField(max_length=50, blank=True, null=True)
     hsnCode = models.CharField(max_length=50, blank=True, null=True)
     taxSlab = models.CharField(max_length=20, blank=True, null=True)
 
-    # Global Item Code — yeh same variant ka consistent identifier hai
-    # Barcode se generate hota hai; barcode same hoga toh same item match hogi
     global_item_code = models.CharField(max_length=100, blank=True, null=True, db_index=True)
 
-    # Branch ne kitna manga
     requested_quantity = models.IntegerField(default=0)
-    # Superadmin ne kitna approve kiya / bheja (adjust kar sakta hai)
+
+    # Ab yeh field sirf "is round mein kitna approve/send kiya" store karta hai
     approved_quantity = models.IntegerField(default=0, null=True, blank=True)
 
-    # Superadmin ne is item ko order se hataya
+    # ✅ NEW FIELD — cumulative: ab tak total kitni qty dispatch ho chuki hai (sab rounds milakar)
+    sent_quantity = models.IntegerField(default=0)
+
     is_removed_by_admin = models.BooleanField(default=False)
     admin_note = models.CharField(max_length=255, blank=True, null=True)
-    
-    branch_price = models.FloatField(default=0) 
-    rate = models.FloatField(default=0) 
 
-    # Kya yeh item stock transfer mein chali gayi
-    is_transferred = models.BooleanField(default=False)
-
-    # Rate
+    branch_price = models.FloatField(default=0)
     rate = models.FloatField(default=0)
+
+    # Ab sirf True hoga jab FULL requested_quantity dispatch ho chuki ho
+    is_transferred = models.BooleanField(default=False)
 
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -155,14 +188,26 @@ class BranchOrderItem(models.Model):
     def __str__(self):
         return f"{self.order.order_id} | {self.item_name} x {self.requested_quantity}"
 
+    @property
+    def remaining_quantity(self):
+        """Is item ki kitni quantity abhi bhi bhejni baaki hai. Removed item ke liye 0."""
+        if self.is_removed_by_admin:
+            return 0
+        remaining = self.requested_quantity - (self.sent_quantity or 0)
+        return max(0, remaining)
+
+    @property
+    def is_fully_sent(self):
+        return (self.sent_quantity or 0) >= self.requested_quantity
+
     def save(self, *args, **kwargs):
-        # Global item code = barcode if available, else item_id-variant_id
         if not self.global_item_code:
             if self.barcode:
                 self.global_item_code = f"GIC-{self.barcode}"
             else:
                 self.global_item_code = f"GIC-{self.source_item_id}-{self.source_variant_id}"
-              #  Auto-set branch_price from source variant if not set
+
         if not self.branch_price and self.source_variant:
-            self.branch_price = self.source_variant.branchPrice or 0        
+            self.branch_price = self.source_variant.branchPrice or 0
+
         super().save(*args, **kwargs)

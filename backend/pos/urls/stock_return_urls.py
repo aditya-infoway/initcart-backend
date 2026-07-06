@@ -11,6 +11,8 @@ from pos.views.stock_return_views import (
     AdminReturnListView,
     VerifiedItemsForReturnView,
     StockReturnCreateFromItemsView,
+    NextReturnNumberPreviewView,
+
 )
 
 urlpatterns = [
@@ -64,4 +66,7 @@ urlpatterns = [
     path('stock-returns/verified-items/', VerifiedItemsForReturnView.as_view(), name='verified-items'),
     
     path('stock-returns/create-from-items/', StockReturnCreateFromItemsView.as_view(), name='return-create-from-items'),
+    
+    path('stock-returns/next-number-preview/', NextReturnNumberPreviewView.as_view(), name='next-return-number-preview'),
+    
 ]

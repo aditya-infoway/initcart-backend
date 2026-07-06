@@ -45,7 +45,9 @@ from pos.views.barcode_views import (
     BulkGenerateBarcodeView,
     UpdateVariantStockView,
     CheckBarcodeAvailabilityView,
-    GeneratedBarcodesListView
+    GeneratedBarcodesListView,
+    UpdateExistingBarcodeView,
+    BulkUpdateBarcodesView,
 )
 
 from pos.views.unit_calculation_views import UnitPriceCalculationAPI, GetUnitsByTypeAPI
@@ -129,6 +131,11 @@ urlpatterns = [
     path('barcodes/check/',CheckBarcodeAvailabilityView.as_view(),  name='barcode-check'),
     
     path('barcodes/generated/', GeneratedBarcodesListView.as_view(), name='barcode-generated-list'),
+    
+    path('barcodes/update/<int:variant_id>/', UpdateExistingBarcodeView.as_view(), name='barcode-update'),
+    
+    # Bulk update multiple barcodes
+    path('barcodes/bulk-update/', BulkUpdateBarcodesView.as_view(), name='barcode-bulk-update'),
     
     path('sales-bill-wise-profit/', SalesBillWiseProfitReportAPIView.as_view(), name='sales-bill-wise-profit'),
 ]
