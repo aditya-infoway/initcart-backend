@@ -42,7 +42,8 @@ from pos.models.contra import Contra
 from pos.models.journalentries import JournalEntry
 from pos.models.salesreturn import SalesReturnMaster
 from pos.models.purchasereturn import PurchaseReturnMaster
-
+from pos.models.stock_transfer import StockTransfer
+from pos.models.stock_return import StockReturn
 
 class LedgerAccountSerializer(serializers.ModelSerializer):
     class Meta:
@@ -353,7 +354,308 @@ class LedgerReportSerializer:
                     "debit": Decimal("0"),
                     "credit": D(br.amount),
                 })
+# ═══════════════════════════════════════════════════════════════════
+        # SUNDRY DEBITOR (Internal / branch-to-branch)
+        # Stock Transfer → Cr (branch ka due badha)
+        # Payment received FROM branch → Dr (due kam hua)
+        # Payment paid TO branch (refund/advance) → Cr (due badha)
+        # ═══════════════════════════════════════════════════════════════════
+        elif group in ("Customer - Sundry Debitor", "Sundry Debitor(Internal)"):
+            linked_branch = getattr(account, 'linked_as_debitor_branch', None)
+            if linked_branch:
+                for t in df(
+                    StockTransfer.objects.filter(
+                        to_branch=linked_branch,
+                        from_branch=branch,
+                        status__in=['pending', 'completed'],
+                    ),
+                    field="transfer_date",
+                ):
+                    from pos.views.stock_transfer_receipt_views import get_transfer_total
+                    total = get_transfer_total(t)
+                    if total and total > 0:
+                        entries.append({
+                            "date": t.transfer_date,
+                            "created_at": t.created_at,
+                            "voucher": t.transfer_no,
+                            "type": "ST",
+                            "particulars": f"Stock Transfer – {t.transfer_no}",
+                            "debit": Decimal("0"),
+                            "credit": D(total),
+                        })
+            if linked_branch:
+                for r in df(
+                    StockReturn.objects.filter(
+                        branch=linked_branch,
+                        to_branch=branch,
+                        status='received',
+                    ).prefetch_related('items'),
+                    field="return_date",
+                ):
+                    r_total = sum(
+                        (D(i.net_amount) for i in r.items.all()), Decimal("0")
+                    )
+                    if r_total > 0:
+                        entries.append({
+                            "date": r.return_date,
+                            "created_at": r.created_at,
+                            "voucher": r.return_no,
+                            "type": "STR",
+                            "particulars": f"Stock Return Received – {r.return_no}",
+                            "debit": r_total,
+                            "credit": Decimal("0"),
+                        })    
+            for cr in df(
+                CashReceipt.objects.filter(op_account=account, branch=branch)
+                .select_related("cash_account")
+            ):
+                entries.append({
+                    "date": cr.date, "created_at": cr.created_at,
+                    "voucher": cr.voucher_no, "type": cr.type,
+                    "particulars": f"Cash Receipt (Branch Settlement) – {cr.cash_account.account_name}",
+                    "debit": D(cr.amount), "credit": Decimal("0"),
+                })
+            for br in df(
+                BankReceipt.objects.filter(op_account=account, branch=branch)
+                .select_related("bank_account")
+            ):
+                entries.append({
+                    "date": br.date, "created_at": br.created_at,
+                    "voucher": br.voucher_no, "type": br.type,
+                    "particulars": f"Bank Receipt (Branch Settlement) – {br.bank_account.account_name}",
+                    "debit": D(br.amount), "credit": Decimal("0"),
+                })
+            for cp in df(
+                CashPayment.objects.filter(op_account=account, branch=branch)
+                .select_related("cash_account")
+            ):
+                entries.append({
+                    "date": cp.date, "created_at": cp.created_at,
+                    "voucher": cp.voucher_no, "type": cp.type,
+                    "particulars": f"Cash Payment (Branch Settlement) – {cp.cash_account.account_name}",
+                    "debit": Decimal("0"), "credit": D(cp.amount),
+                })
+            for bp in df(
+                BankPayment.objects.filter(op_account=account, branch=branch)
+                .select_related("bank_account")
+            ):
+                entries.append({
+                    "date": bp.date, "created_at": bp.created_at,
+                    "voucher": bp.voucher_no, "type": bp.type,
+                    "particulars": f"Bank Payment (Branch Settlement) – {bp.bank_account.account_name}",
+                    "debit": Decimal("0"), "credit": D(bp.amount),
+                })
 
+        # ═══════════════════════════════════════════════════════════════════
+        # SUNDRY CREDITOR (Internal / branch-to-branch)
+        # Stock Transfer → Cr (branch ka due badha)
+        # Payment received FROM branch → Dr (due kam hua)
+        # Payment paid TO branch → Cr (due badha)
+        # ═══════════════════════════════════════════════════════════════════
+        elif group in ("Supplier - Sundry Creditor", "Sundry Creditor(Internal)"):
+            linked_branch = getattr(account, 'linked_as_creditor_branch', None)
+            if linked_branch:
+                for t in df(
+                    StockTransfer.objects.filter(
+                        to_branch=linked_branch,
+                        from_branch=branch,
+                        status__in=['pending', 'completed'],
+                    ),
+                    field="transfer_date",
+                ):
+                    from pos.views.stock_transfer_receipt_views import get_transfer_total
+                    total = get_transfer_total(t)
+                    if total and total > 0:
+                        entries.append({
+                            "date": t.transfer_date,
+                            "created_at": t.created_at,
+                            "voucher": t.transfer_no,
+                            "type": "ST",
+                            "particulars": f"Stock Transfer – {t.transfer_no}",
+                            "debit": Decimal("0"),
+                            "credit": D(total),
+                        })
+            if linked_branch:
+                for r in df(
+                    StockReturn.objects.filter(
+                        branch=linked_branch,
+                        to_branch=branch,
+                        status='received',
+                    ).prefetch_related('items'),
+                    field="return_date",
+                ):
+                    r_total = sum(
+                        (D(i.net_amount) for i in r.items.all()), Decimal("0")
+                    )
+                    if r_total > 0:
+                        entries.append({
+                            "date": r.return_date,
+                            "created_at": r.created_at,
+                            "voucher": r.return_no,
+                            "type": "STR",
+                            "particulars": f"Stock Return Received – {r.return_no}",
+                            "debit": r_total,
+                            "credit": Decimal("0"),
+                        })    
+            for cr in df(
+                CashReceipt.objects.filter(op_account=account, branch=branch)
+                .select_related("cash_account")
+            ):
+                entries.append({
+                    "date": cr.date, "created_at": cr.created_at,
+                    "voucher": cr.voucher_no, "type": cr.type,
+                    "particulars": f"Cash Receipt (Branch Settlement) – {cr.cash_account.account_name}",
+                    "debit": D(cr.amount), "credit": Decimal("0"),
+                })
+            for br in df(
+                BankReceipt.objects.filter(op_account=account, branch=branch)
+                .select_related("bank_account")
+            ):
+                entries.append({
+                    "date": br.date, "created_at": br.created_at,
+                    "voucher": br.voucher_no, "type": br.type,
+                    "particulars": f"Bank Receipt (Branch Settlement) – {br.bank_account.account_name}",
+                    "debit": D(br.amount), "credit": Decimal("0"),
+                })
+            for cp in df(
+                CashPayment.objects.filter(op_account=account, branch=branch)
+                .select_related("cash_account")
+            ):
+                entries.append({
+                    "date": cp.date, "created_at": cp.created_at,
+                    "voucher": cp.voucher_no, "type": cp.type,
+                    "particulars": f"Cash Payment (Branch Settlement) – {cp.cash_account.account_name}",
+                    "debit": Decimal("0"), "credit": D(cp.amount),
+                })
+            for bp in df(
+                BankPayment.objects.filter(op_account=account, branch=branch)
+                .select_related("bank_account")
+            ):
+                entries.append({
+                    "date": bp.date, "created_at": bp.created_at,
+                    "voucher": bp.voucher_no, "type": bp.type,
+                    "particulars": f"Bank Payment (Branch Settlement) – {bp.bank_account.account_name}",
+                    "debit": Decimal("0"), "credit": D(bp.amount),
+                })
+                
+        # ═══════════════════════════════════════════════════════════════════
+        # SUNDRY CREDITOR (Main) — branch's own liability account for stock
+        # received from Head Office. 
+        #   Dr (+) → Stock Received (all items of a transfer fully verified)
+        #   Cr (+) → Cash/Bank Payment (branch pays against stock received)
+        # ═══════════════════════════════════════════════════════════════════
+        elif group == "Sundry Creditor(Main)":
+            #  Stock Received → DEBIT (liability increase)
+            for t in df(
+                StockTransfer.objects.filter(
+                    to_branch=branch,
+                    status__in=['pending', 'completed'],
+                ).prefetch_related('items'),
+                field="transfer_date",
+            ):
+                all_items = list(t.items.all())
+                if all_items and all(i.is_stock_updated for i in all_items):
+                    from pos.views.stock_transfer_receipt_views import get_transfer_total
+                    total = get_transfer_total(t)
+                    if total and total > 0:
+                        entries.append({
+                            "date": t.transfer_date,
+                            "created_at": t.created_at,
+                            "voucher": t.transfer_no,
+                            "type": "ST",
+                            "particulars": f"Stock Received – {t.transfer_no}",
+                            "debit": D(total),
+                            "credit": Decimal("0"),
+                        })
+
+            # Cash Payment → CREDIT (liability decrease)
+            for cp in df(
+                CashPayment.objects.filter(
+                    op_account=account,
+                    branch=branch,
+                    type="STCP"
+                ).select_related("cash_account")
+            ):
+                entries.append({
+                    "date": cp.date,
+                    "created_at": cp.created_at,
+                    "voucher": cp.voucher_no,
+                    "type": "STCP",
+                    "particulars": f"Cash Payment against Stock Received – {cp.cash_account.account_name}",
+                    "debit": Decimal("0"),
+                    "credit": D(cp.amount),
+                })
+
+            # Bank Payment → CREDIT (liability decrease)
+            for bp in df(
+                BankPayment.objects.filter(
+                    op_account=account,
+                    branch=branch,
+                    type="STBP"
+                ).select_related("bank_account")
+            ):
+                entries.append({
+                    "date": bp.date,
+                    "created_at": bp.created_at,
+                    "voucher": bp.voucher_no,
+                    "type": "STBP",
+                    "particulars": f"Bank Payment against Stock Received – {bp.bank_account.account_name}",
+                    "debit": Decimal("0"),
+                    "credit": D(bp.amount),
+                })    
+            
+            # Stock Return → CREDIT (liability decrease) — as soon as return
+            # is created, until cancelled/rejected
+            for r in df(
+                StockReturn.objects.filter(
+                    branch=branch,
+                    status__in=['packaging_ready','received'],
+                ).prefetch_related('items'),
+                field="return_date",
+            ):
+                total = sum((D(i.net_amount) for i in r.items.all()), Decimal("0"))
+                if total > 0:
+                    entries.append({
+                        "date": r.return_date,
+                        "created_at": r.created_at,
+                        "voucher": r.return_no,
+                        "type": "STR",
+                        "particulars": f"Stock Returned – {r.return_no}",
+                        "debit": Decimal("0"),
+                        "credit": total,
+                    })
+
+            # Cash Receipt (money IN from company against return) → DEBIT
+            for cr in df(
+                CashReceipt.objects.filter(
+                    op_account=account, branch=branch, type="STRCR"
+                ).select_related("cash_account")
+            ):
+                entries.append({
+                    "date": cr.date,
+                    "created_at": cr.created_at,
+                    "voucher": cr.voucher_no,
+                    "type": "STRCR",
+                    "particulars": f"Cash Receipt against Stock Return – {cr.cash_account.account_name}",
+                    "debit": D(cr.amount),
+                    "credit": Decimal("0"),
+                })
+
+            # Bank Receipt (money IN from company against return) → DEBIT   
+            for br in df(
+                BankReceipt.objects.filter(
+                    op_account=account, branch=branch, type="STRBR"
+                ).select_related("bank_account")
+            ):
+                entries.append({
+                    "date": br.date,
+                    "created_at": br.created_at,
+                    "voucher": br.voucher_no,
+                    "type": "STRBR",
+                    "particulars": f"Bank Receipt against Stock Return – {br.bank_account.account_name}",
+                    "debit": D(br.amount),
+                    "credit": Decimal("0"),
+                })      
         # ═══════════════════════════════════════════════════════════════════
         # CASH IN HAND — PERFECT RULES
         # ═══════════════════════════════════════════════════════════════════

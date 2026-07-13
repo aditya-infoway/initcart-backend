@@ -1,4 +1,6 @@
 #pos/models/bankpayment.py
+# ✅ UPDATED — stock_transfer FK added for "Stock Received" payments
+
 from django.db import models, transaction
 from django.core.exceptions import ValidationError
 from pos.models.branch import Branch
@@ -37,12 +39,20 @@ class BankPayment(models.Model):
     )
     
     purchase = models.ForeignKey(
-    'pos.PurchaseMaster',
-    on_delete=models.CASCADE,
-    null=True,
-    blank=True,
-    related_name='bank_payments'
-)
+        'pos.PurchaseMaster',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='bank_payments'
+    )
+
+    # ✅ NEW — Stock Received link (branch → superadmin's "Sundry Creditor(Main)")
+    stock_transfer = models.ForeignKey(
+        'pos.StockTransfer',
+        on_delete=models.CASCADE,
+        null=True, blank=True,
+        related_name='bank_payments'
+    )
 
     def clean(self):
         """Validate only on CREATE"""
@@ -53,7 +63,6 @@ class BankPayment(models.Model):
                     f"is less than the payment amount ({self.amount})."
                 )
 
-    # pos/models/bankpayment.py
     def save(self, *args, **kwargs):
         with transaction.atomic():
             is_new = self._state.adding
@@ -72,10 +81,12 @@ class BankPayment(models.Model):
                     print(f"Bank Purchase PBP - Supplier balance unchanged")
 
                 # ✅ FIX: Sales Return Bank (SRBP) - Customer balance nahi badalna
-                # Sirf Credit Sales Return me customer Dr badhega
                 if self.sales_return and self.type == "SRBP":
                     should_update_party = False
                     print(f"SRBP - Bank Sales Return, Customer balance unchanged")
+
+                # ✅ Stock Received payment (STBP) → default should_update_party
+                # =True already covers reducing Sundry Creditor(Main) balance.
 
                 if should_update_party:
                     if self.op_account.current_drcr == "Dr":
@@ -103,3 +114,5 @@ class BankPayment(models.Model):
 
     def __str__(self):
         return f"{self.voucher_no} - {self.amount}"
+    
+    

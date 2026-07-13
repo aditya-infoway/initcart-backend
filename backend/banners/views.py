@@ -16,35 +16,31 @@ from django.contrib.auth import get_user_model
 from .models import SuperAdminProfile
 from .serializers import SuperAdminProfileSerializer,initAdminFooterSerializer
 
+from django.core.cache import cache
+
 class CombinedBannersAPI(APIView):
-    """
-    Get all banners including:
-    1. Regular banners from SliderImage
-    2. Deal of the Day banners (hero banner placement)
-    Combined into a single slider
-    """
     permission_classes = [AllowAny]
-    
+
     def get(self, request):
+        cache_key = "combined_banners_data"
+        cached_data = cache.get(cache_key)
+        if cached_data is not None:
+            return Response(cached_data, status=status.HTTP_200_OK)
+
         banners = []
-        
-        # =========================================
-        # 1. Deal of the Day Hero Banners (with full details)
-        # =========================================
         now = timezone.now()
-        
-        # Get active Deal of the Day campaigns
+
         deal_of_day_campaigns = Campaign.objects.filter(
             campaign_type='Deal of the Day',
             status='Active',
             start_datetime__lte=now,
             end_datetime__gte=now
         )
-        
+
         if deal_of_day_campaigns.exists():
             campaign = deal_of_day_campaigns.first()
-            
-            # Get approved campaign products with banner placement
+
+            # ✅ prefetch product.stocks taaki loop me extra query na lage
             banner_products = CampaignProduct.objects.filter(
                 participation__campaign=campaign,
                 status='Approved',
@@ -53,28 +49,24 @@ class CombinedBannersAPI(APIView):
                 banner_title__isnull=False
             ).exclude(
                 banner_image=''
-            ).select_related('product', 'participation__vendor')
-            
-            # Convert to banner format with FULL DETAILS
-            for product in banner_products:
+            ).select_related(
+                'product', 'participation__vendor'
+            ).prefetch_related('product__stocks')
 
+            for product in banner_products:
                 product_url = product.banner_button_url
                 if not product_url and product.product:
                     product_url = f"/product/{product.product.id}/"
 
-                # Get variant image
-                variant_image_url = None
-                if product.product:
-                    stock = product.product.stocks.first()
-                    if stock and stock.variant_image:
-                        variant_image_url = request.build_absolute_uri(stock.variant_image.url)
-
-                # Decide banner image
                 banner_image_url = None
                 if product.banner_image:
+                    # ✅ banner_image hai toh stock query karo hi mat
                     banner_image_url = request.build_absolute_uri(product.banner_image.url)
-                elif variant_image_url:
-                    banner_image_url = variant_image_url
+                elif product.product:
+                    # ✅ prefetch_related ki wajah se ye ab cached list se aayega, DB hit nahi karega
+                    stocks = list(product.product.stocks.all())
+                    if stocks and stocks[0].variant_image:
+                        banner_image_url = request.build_absolute_uri(stocks[0].variant_image.url)
 
                 banners.append({
                     'id': f"deal_{product.id}",
@@ -87,38 +79,29 @@ class CombinedBannersAPI(APIView):
                     'product_id': product.product.id if product.product else None,
                     'campaign_id': campaign.id,
                     'campaign_name': campaign.campaign_name,
-                    'sort_order': 1  # Deal of the Day banners पहले दिखेंगे
+                    'sort_order': 1
                 })
-        
-        # =========================================
-        # 2. Regular Banners from SliderImage (सिर्फ image)
-        # =========================================
+
         try:
             regular_banners = SliderImage.objects.all().order_by('-id')
-            
             for banner in regular_banners:
                 if banner.image:
                     banners.append({
                         'id': f"regular_{banner.id}",
                         'type': 'regular',
                         'image': request.build_absolute_uri(banner.image.url),
-                        'title': '',  # खाली - सिर्फ image दिखेगी
-                        'subtitle': '',  # खाली
-                        'button_text': '',  # खाली
-                        'button_url': '',  # खाली
-                        'product_id': None,
-                        'campaign_id': None,
-                        'campaign_name': None,
-                        'sort_order': 2  # Regular banners बाद में दिखेंगे
+                        'title': '', 'subtitle': '', 'button_text': '', 'button_url': '',
+                        'product_id': None, 'campaign_id': None, 'campaign_name': None,
+                        'sort_order': 2
                     })
         except Exception as e:
             print(f"Error fetching regular banners: {e}")
-        
-        # =========================================
-        # 3. Sort banners - Deal of the Day first
-        # =========================================
+
         banners.sort(key=lambda x: x.get('sort_order', 999))
-        
+
+        # ✅ 60 second cache — banners itni jaldi change nahi hote
+        cache.set(cache_key, banners, 60)
+
         return Response(banners, status=status.HTTP_200_OK)
 
 class SliderImageUploadView(APIView):

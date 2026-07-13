@@ -25,3 +25,7 @@ class CashPaymentSerializer(serializers.ModelSerializer):
         print(f"Creating CashPayment with type: {validated_data.get('type')}")
         
         return super().create(validated_data)
+    
+    
+    
+    

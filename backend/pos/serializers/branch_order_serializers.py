@@ -4,6 +4,8 @@
 from rest_framework import serializers
 from pos.models.branch_order import BranchOrder, BranchOrderItem
 from pos.models.items import items as Items, itemvariants as ItemVariants
+from pos.utils.gst_calc import calculate_gst_split
+from pos.models.settings import setting as SettingModel
 
 
 def variant_info_str(variant):
@@ -33,62 +35,69 @@ class BranchOrderCreateSerializer(serializers.Serializer):
         return value
 
     def create(self, validated_data):
-        from pos.models.branch import Branch
-        request = self.context['request']
-        user = request.user
-        items_data = validated_data.pop('items')
+            from pos.models.branch import Branch
+            request = self.context['request']
+            user = request.user
+            items_data = validated_data.pop('items')
 
-        branch = getattr(user, 'branch', None)
-        if not branch:
-            raise serializers.ValidationError("User has no branch assigned.")
+            branch = getattr(user, 'branch', None)
+            if not branch:
+                raise serializers.ValidationError("User has no branch assigned.")
 
-        order = BranchOrder.objects.create(
-            branch=branch,
-            created_by=user,
-            note=validated_data.get('note', ''),
-            status='pending',
-        )
-
-        for item_data in items_data:
-            variant_id = item_data['source_variant_id']
-            try:
-                variant = ItemVariants.objects.select_related('item').get(
-                    id=variant_id,
-                    item__entry_type='company',
-                    item__created_by_superadmin=True,
-                )
-            except ItemVariants.DoesNotExist:
-                order.delete()
-                raise serializers.ValidationError(
-                    f"Variant {variant_id} not found or not a company item."
-                )
-
-            source_item = variant.item
-            barcode = variant.barcode or ''
-            global_code = f"GIC-{barcode}" if barcode else f"GIC-{source_item.id}-{variant.id}"
-            
-            # ✅ Calculate branch_price
-            branch_price = variant.branchPrice or variant.salesPrice or 0
-
-            BranchOrderItem.objects.create(
-                order=order,
-                source_item=source_item,
-                source_variant=variant,
-                item_name=source_item.itemName,
-                variant_info=variant_info_str(variant),
-                barcode=barcode,
-                size=variant.size,
-                color=variant.color,
-                hsnCode=source_item.hsnCode,
-                taxSlab=source_item.taxSlab,
-                global_item_code=global_code,
-                requested_quantity=item_data['requested_quantity'],
-                approved_quantity=item_data['requested_quantity'],
-                rate=variant.branchPrice,
-                branch_price=branch_price,  # ✅ Save branch_price
+            order = BranchOrder.objects.create(
+                branch=branch,
+                created_by=user,
+                note=validated_data.get('note', ''),
+                status='pending',
             )
 
-        return order
+            for item_data in items_data:
+                variant_id = item_data['source_variant_id']
+                try:
+                    variant = ItemVariants.objects.select_related('item').get(
+                        id=variant_id,
+                        item__entry_type='company',
+                        item__created_by_superadmin=True,
+                    )
+                except ItemVariants.DoesNotExist:
+                    order.delete()
+                    raise serializers.ValidationError(
+                        f"Variant {variant_id} not found or not a company item."
+                    )
+
+                source_item = variant.item
+                barcode = variant.barcode or ''
+                global_code = f"GIC-{barcode}" if barcode else f"GIC-{source_item.id}-{variant.id}"
+
+                # ✅ Branch price sirf reference ke liye store hoti hai — GST yaha calculate NAHI hoti.
+                # Order REQUEST stage par sirf quantity request hoti hai. GST (toggle-based)
+                # sirf tab calculate hogi jab superadmin isse process/SEND karega
+                # (dekho: AdminProcessOrderSerializer.update)
+                branch_price = variant.branchPrice or variant.salesPrice or 0
+                tax_percent = source_item.taxSlab or "0"
+
+                BranchOrderItem.objects.create(
+                    order=order,
+                    source_item=source_item,
+                    source_variant=variant,
+                    item_name=source_item.itemName,
+                    variant_info=variant_info_str(variant),
+                    barcode=barcode,
+                    size=variant.size,
+                    color=variant.color,
+                    hsnCode=source_item.hsnCode,
+                    taxSlab=source_item.taxSlab,
+                    global_item_code=global_code,
+                    requested_quantity=item_data['requested_quantity'],
+                    approved_quantity=item_data['requested_quantity'],
+                    rate=variant.branchPrice,
+                    branch_price=branch_price,
+                    tax_percent=tax_percent,
+                    # basic_amount / tax_amount / cgst / sgst / igst / net_amount — default 0
+                    # yaha intentionally set NAHI kiye — request stage par GST show nahi hogi
+                )
+
+            return order
 
 
 # ─────────────────────────────────────────────
@@ -117,6 +126,7 @@ class BranchOrderItemReadSerializer(serializers.ModelSerializer):
             'purchase_price', 'sales_price', 'mrp',
             'branch_price',
             'source_item_id', 'source_variant_id',
+            'tax_percent', 'basic_amount', 'tax_amount', 'cgst', 'sgst', 'igst', 'net_amount',
         ]
 
     def get_sales_price(self, obj):
@@ -150,6 +160,7 @@ class BranchOrderListSerializer(serializers.ModelSerializer):
 
 class BranchOrderDetailSerializer(serializers.ModelSerializer):
     branch_name = serializers.CharField(source='branch.branch_name', read_only=True)
+    branch_id = serializers.IntegerField(source='branch.id', read_only=True)
     items = BranchOrderItemReadSerializer(many=True, read_only=True)
     linked_transfer_no = serializers.CharField(
         source='linked_transfer.transfer_no', read_only=True
@@ -158,7 +169,7 @@ class BranchOrderDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = BranchOrder
         fields = [
-            'id', 'order_id', 'branch_name', 'status',
+            'id', 'order_id', 'branch_name', 'status','branch_id',
             'order_date', 'note', 'items',
             'linked_transfer_no', 'created_at', 'updated_at',
         ]
@@ -266,6 +277,10 @@ class AdminProcessOrderSerializer(serializers.Serializer):
             source_order=instance,
         )
 
+        settings_obj = SettingModel.objects.filter(branch=from_branch).first()
+        gst_toggle = getattr(settings_obj, "stock_transfer_gst_toggle", False)
+        same_state = (from_branch.state or "") == (to_branch.state or "")
+
         created_items_cache = {}
 
         for order_item in active_items:
@@ -301,6 +316,13 @@ class AdminProcessOrderSerializer(serializers.Serializer):
                     color=from_variant.color,
                     srno=from_variant.srno,
                 )
+                
+            branch_price = order_item.branch_price or order_item.rate or (from_variant.branchPrice or 0)
+            tax_percent = order_item.tax_percent or from_item.taxSlab or "0"
+
+            gst_result = calculate_gst_split(
+                branch_price, round_qty, tax_percent, gst_toggle, same_state
+            )
 
             StockTransferItem.objects.create(
                 transfer=transfer,
@@ -310,8 +332,15 @@ class AdminProcessOrderSerializer(serializers.Serializer):
                 from_variant_info=variant_info_str(from_variant),
                 from_barcode=from_variant.barcode,
                 quantity=round_qty,
-                rate=order_item.branch_price or order_item.rate,
+                rate=branch_price,
                 to_variant=dest_variant,
+                tax_percent=tax_percent,
+                basic_amount=gst_result["basic_amount"],
+                tax_amount=gst_result["tax_amount"],
+                cgst=gst_result["cgst"],
+                sgst=gst_result["sgst"],
+                igst=gst_result["igst"],
+                net_amount=gst_result["net_amount"],
             )
 
             order_item.sent_quantity = (order_item.sent_quantity or 0) + round_qty

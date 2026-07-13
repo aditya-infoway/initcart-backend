@@ -9,6 +9,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from django.db import transaction
 from django.db.models import Sum
+from rest_framework import status
+from django.db import models
+from pos.models.account import Account
 
 from pos.models.stock_transfer import StockTransfer, StockTransferItem
 from pos.models.branch import Branch
@@ -20,6 +23,8 @@ from pos.serializers.stock_transfer_serializers import (
     variant_info_str,
 )
 from pos.utils.pagination import StandardResultsSetPagination
+from pos.models.settings import setting as SettingModel
+from pos.utils.gst_calc import calculate_gst_split
 
 class IsSuperAdminRole(IsAuthenticated):
     def has_permission(self, request, view):
@@ -188,6 +193,60 @@ class StockTransferPreviewView(APIView):
         })
 
 
+
+
+class StockTransferItemTaxAPIView(APIView):
+    """
+    GST preview for Stock Transfer (Manual + Order Tracking) — branch_price par
+    Purchase jaisa hi toggle-based inclusive/exclusive calculation.
+    """
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from_variant_id = request.data.get("from_variant_id")
+        to_branch_id = request.data.get("to_branch_id")
+        quantity = request.data.get("quantity", 1)
+
+        if not from_variant_id or not to_branch_id:
+            return Response({"error": "from_variant_id and to_branch_id are required"}, status=400)
+
+        try:
+            from_variant = ItemVariants.objects.select_related("item", "item__branch").get(id=from_variant_id)
+        except ItemVariants.DoesNotExist:
+            return Response({"error": "Variant not found"}, status=404)
+
+        try:
+            to_branch = Branch.objects.get(id=to_branch_id)
+        except Branch.DoesNotExist:
+            return Response({"error": "Destination branch not found"}, status=404)
+
+        from_branch = from_variant.item.branch
+        rate = from_variant.branchPrice or 0
+        tax_percent = from_variant.item.taxSlab or "0"
+
+        settings_obj = SettingModel.objects.filter(branch=from_branch).first()
+        gst_toggle = getattr(settings_obj, "stock_transfer_gst_toggle", False)
+        same_state = (from_branch.state or "") == (to_branch.state or "")
+
+        result = calculate_gst_split(rate, quantity, tax_percent, gst_toggle, same_state)
+
+        return Response({
+            "from_variant_id": from_variant.id,
+            "item_name": from_variant.item.itemName,
+            "rate": float(rate),
+            "quantity": quantity,
+            "tax_percent": float(str(tax_percent).replace("%", "") or 0),
+            "gst_toggle": gst_toggle,
+            "from_branch_state": from_branch.state,
+            "to_branch_state": to_branch.state,
+            "basic_amount": float(result["basic_amount"]),
+            "tax_amount": float(result["tax_amount"]),
+            "cgst": float(result["cgst"]),
+            "sgst": float(result["sgst"]),
+            "igst": float(result["igst"]),
+            "net_amount": float(result["net_amount"]),
+        }, status=status.HTTP_200_OK)
 # ════════════════════════════════════════════════════════════
 # MY BRANCH ITEMS (Super Admin ke transferrable items)
 # ════════════════════════════════════════════════════════════
@@ -220,6 +279,9 @@ class MyBranchItemsView(APIView):
                 except (ValueError, TypeError):
                     gst_rate = 0.0
 
+                # ✅ Calculate branch_price
+                branch_price = v.branchPrice or 0
+
                 variants.append({
                     'variant_id':     v.id,
                     'variant_label':  variant_label,
@@ -229,6 +291,7 @@ class MyBranchItemsView(APIView):
                     'barcode':        v.barcode or "",
                     'current_stock':  (v.current_stock or 0) if (v.current_stock or 0) > 0 else (v.opStock or 0),
                     'purchase_price': v.purchasePrice or 0,
+                    'branch_price':   branch_price,  # ✅ ADD THIS - IMPORTANT!
                     'sales_price':    v.salesPrice or 0,
                     'opStock':        v.opStock or 0,
                     'hsnCode':        item.hsnCode or "",
@@ -482,6 +545,14 @@ class TransferItemDetailView(APIView):
                 'branch_price': float(branch_price),
                 'sales_price': float(sales_price),
                 'mrp': float(mrp),
+                # ✅ GST breakup — verify page par summary dikhane ke liye
+                'tax_percent': item.tax_percent or "0",
+                'basic_amount': float(item.basic_amount or 0),
+                'tax_amount': float(item.tax_amount or 0),
+                'cgst': float(item.cgst or 0),
+                'sgst': float(item.sgst or 0),
+                'igst': float(item.igst or 0),
+                'net_amount': float(item.net_amount or 0),
             })
 
         return Response({
@@ -525,6 +596,14 @@ class VerifyStockTransferItemView(APIView):
             branch = Branch.objects.get(user=request.user)
         except Branch.DoesNotExist:
             return Response({'success': False, 'message': 'Branch not found'}, status=404)
+        
+                # ✅ NEW — Sundry Creditor(Main) account mandatory before any verification
+        if not Account.objects.filter(branch=branch, group='Sundry Creditor(Main)').exists():
+            return Response({
+                'success': False,
+                'error_code': 'NO_SUNDRY_CREDITOR_ACCOUNT',
+                'message': 'Please create a Sundry Creditor(Main) account before verifying stock.'
+            }, status=400)
 
         try:
             transfer = StockTransfer.objects.get(id=transfer_id, to_branch=branch)
@@ -721,7 +800,14 @@ class VerifyAllStockTransferItemsView(APIView):
             branch = Branch.objects.get(user=request.user)
         except Branch.DoesNotExist:
             return Response({'success': False, 'message': 'Branch not found'}, status=404)
-
+        
+        if not Account.objects.filter(branch=branch, group='Sundry Creditor(Main)').exists():
+            return Response({
+                'success': False,
+                'error_code': 'NO_SUNDRY_CREDITOR_ACCOUNT',
+                'message': 'Please create a Sundry Creditor(Main) account before verifying stock.'
+            }, status=400)
+            
         try:
             transfer = StockTransfer.objects.get(id=transfer_id, to_branch=branch)
         except StockTransfer.DoesNotExist:
@@ -744,7 +830,7 @@ class VerifyAllStockTransferItemsView(APIView):
             for item in pending_items:
                 from_variant = item.from_variant
                 
-                # ✅ Check available stock with opStock fallback
+                # Check available stock with opStock fallback
                 available_stock = from_variant.current_stock or 0
                 if available_stock <= 0:
                     available_stock = from_variant.opStock or 0
@@ -887,3 +973,4 @@ class MyBranchVariantsView(APIView):
             'variant_count': len(data),
             'data':          data,
         })
+           

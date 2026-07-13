@@ -12,12 +12,17 @@ class Account(models.Model):
         ('Supplier', 'Supplier'),
         ('Bank Account', 'Bank Account'),
         ('Case In Hand', 'Case In Hand'),
+        ('Customer - Sundry Debitor', 'Customer - Sundry Debitor'),
+        ('Supplier - Sundry Creditor', 'Supplier - Sundry Creditor'),
+        ('Sundry Debitor(Internal)', 'Sundry Debitor(Internal)'),
+        ('Sundry Creditor(Internal)', 'Sundry Creditor(Internal)'),
+        ('Sundry Creditor(Main)', 'Sundry Creditor(Main)'),
     )
 
     # Basic Information
     account_name = models.CharField(max_length=100)
     branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
-    group = models.CharField(max_length=20, choices=GROUP_CHOICES)
+    group = models.CharField(max_length=50, choices=GROUP_CHOICES)
     opening_balance = models.DecimalField(max_digits=25, decimal_places=2, default=0)
     drcr = models.CharField(max_length=2, choices=DRCR_CHOICES)
 

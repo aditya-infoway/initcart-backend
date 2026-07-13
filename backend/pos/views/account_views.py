@@ -166,5 +166,57 @@ class CustomerCreateView(APIView):
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
-    
+from ecommerce.permissions import IsSuperAdmin
+from pos.models.branch import Branch
+
+
+class BranchLinkableAccountsAPIView(APIView):
+    """
+    GET /api/branch-linkable-accounts/?branch_id=<id optional>
+    Sirf superadmin. Already kisi branch se linked accounts exclude ho jayenge,
+    except agar ?branch_id diya hai (edit mode) — tab uss branch ke apne current
+    selections wapas dikhenge taaki dropdown me apna hi selection dikhta rahe.
+    """
+    permission_classes = [IsSuperAdmin]
+
+    def get(self, request):
+        branch_id = request.query_params.get('branch_id', '').strip()
+
+        linked_debitor_ids = set(
+            Branch.objects.exclude(sundry_debitor_account__isnull=True)
+            .values_list('sundry_debitor_account_id', flat=True)
+        )
+        linked_creditor_ids = set(
+            Branch.objects.exclude(sundry_creditor_account__isnull=True)
+            .values_list('sundry_creditor_account_id', flat=True)
+        )
+        all_linked_ids = linked_debitor_ids | linked_creditor_ids
+
+        if branch_id:
+            try:
+                current = Branch.objects.get(id=branch_id)
+                all_linked_ids.discard(current.sundry_debitor_account_id)
+                all_linked_ids.discard(current.sundry_creditor_account_id)
+            except Branch.DoesNotExist:
+                pass
+
+        debitor_qs = Account.objects.filter(
+            group__in=['Customer - Sundry Debitor', 'Sundry Debitor(Internal)']
+        ).exclude(id__in=all_linked_ids).order_by('account_name')
+
+        creditor_qs = Account.objects.filter(
+            group__in=['Supplier - Sundry Creditor', 'Sundry Creditor(Internal)']
+        ).exclude(id__in=all_linked_ids).order_by('account_name')
+
+        return Response({
+            "debitor_accounts": [
+                {"id": a.id, "account_name": a.account_name, "group": a.group} for a in debitor_qs
+            ],
+            "creditor_accounts": [
+                {"id": a.id, "account_name": a.account_name, "group": a.group} for a in creditor_qs
+            ],
+        })
+        
+        
+            
     

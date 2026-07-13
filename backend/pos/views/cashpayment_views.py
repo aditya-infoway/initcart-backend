@@ -127,3 +127,6 @@ class CashPaymentCreateView(APIView):
         # Print validation errors for debugging
         print("Validation errors:", serializer.errors)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    
+    

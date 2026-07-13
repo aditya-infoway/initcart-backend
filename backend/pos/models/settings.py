@@ -16,4 +16,5 @@ class setting(models.Model):
     JE = models.CharField(max_length=50, blank=True, null=True, default="JE")
     gst_toggle = models.BooleanField(blank=True, null=True, default=False)
     sales_gst_toggle = models.BooleanField(blank=True, null=True, default=False)
+    stock_transfer_gst_toggle = models.BooleanField(max_length=50,blank=True, null=True, default=False)
     contra = models.CharField(max_length=50 , blank=True, null=True, default="CT")

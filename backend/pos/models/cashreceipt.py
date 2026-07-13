@@ -1,12 +1,19 @@
+# pos/models/cashreceipt.py
+# ✅ UPDATED — Stock Transfer Cash Receipt (STCR) support added
+
 from django.db import models, transaction
 from pos.models.account import Account
 from pos.models.branch import Branch
+from decimal import Decimal
+
 
 class CashReceipt(models.Model):
     TYPE_CHOICES = [
         ('CR', 'Cash Receipt'),
         ('SCR', 'Sales Cash Receipt'),
-        ('PRCR', 'Purchase Return Cash Receipt'),  # ✅ ADD
+        ('PRCR', 'Purchase Return Cash Receipt'),
+        ('STCR', 'Stock Transfer Cash Receipt'),  # ✅ ADD
+        ('STRCR', 'Stock Return Cash Receipt'),
     ]
 
     branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
@@ -28,6 +35,18 @@ class CashReceipt(models.Model):
         'pos.SalesMaster', on_delete=models.SET_NULL, null=True, blank=True
     )
 
+    # ✅ NEW — Stock Transfer link (superadmin → branch receivable)
+    stock_transfer = models.ForeignKey(
+        'pos.StockTransfer',
+        on_delete=models.CASCADE,
+        null=True, blank=True,
+        related_name='cash_receipts'
+    )
+        # ✅ NEW — Stock Return link (company → branch refund)
+    stock_return = models.ForeignKey(
+        'pos.StockReturn', on_delete=models.CASCADE, null=True, blank=True, related_name='cash_receipts'
+    )
+
     def __str__(self):
         return f"{self.voucher_no} - {self.amount}"
 
@@ -41,43 +60,48 @@ class CashReceipt(models.Model):
             is_new = self._state.adding
 
             if is_new:
-                # 🔺 CASH ACCOUNT (money comes IN)
-                self.cash_account.current_balance += self.amount
+
+                self.cash_account.current_balance += Decimal(str(self.amount))
                 self.cash_account.save(update_fields=["current_balance"])
 
                 should_update_party = False
 
-                # ✅ Credit Sale payment → Customer Dr kam karo
                 if self.sales_entry and self.sales_entry.payment_terms.lower() == "credit":
                     should_update_party = True
                 elif self.type == "SCR" and not self.sales_entry:
                     should_update_party = True
 
-                # ✅ Purchase Return receipt — party balance NAHI badle
-                # (Credit PR mein view se already handle hota hai)
-                # (Cash/Bank PR mein supplier balance change hi nahi hota)
+                if self.stock_transfer:
+                    should_update_party = True
+                    
+                if self.stock_return:       
+                    should_update_party = True    
+
                 if self.purchase_return:
                     should_update_party = False
                     print(f"ℹ️ PRCR - Purchase Return receipt, party balance unchanged")
 
                 if should_update_party:
-                    print(f"💰 Updating party balance for credit payment")
+                   
+                    amount_decimal = Decimal(str(self.amount))
+                    current_balance = Decimal(str(self.op_account.current_balance))
+                    
                     if self.op_account.current_drcr == "Cr":
-                        if self.amount > self.op_account.current_balance:
-                            self.op_account.current_balance = self.amount - self.op_account.current_balance
+                        if amount_decimal > current_balance:
+                            self.op_account.current_balance = amount_decimal - current_balance
                             self.op_account.current_drcr = "Dr"
-                        elif self.amount < self.op_account.current_balance:
-                            self.op_account.current_balance -= self.amount
+                        elif amount_decimal < current_balance:
+                            self.op_account.current_balance = current_balance - amount_decimal
                         else:
-                            self.op_account.current_balance = 0
+                            self.op_account.current_balance = Decimal('0.00')
                     else:  # Dr
-                        if self.amount > self.op_account.current_balance:
-                            self.op_account.current_balance = self.amount - self.op_account.current_balance
+                        if amount_decimal > current_balance:
+                            self.op_account.current_balance = amount_decimal - current_balance
                             self.op_account.current_drcr = "Cr"
-                        elif self.amount < self.op_account.current_balance:
-                            self.op_account.current_balance -= self.amount
+                        elif amount_decimal < current_balance:
+                            self.op_account.current_balance = current_balance - amount_decimal
                         else:
-                            self.op_account.current_balance = 0
+                            self.op_account.current_balance = Decimal('0.00')
 
                     self.op_account.save(update_fields=["current_balance", "current_drcr"])
                     print(f"✅ Party balance updated: {self.op_account.current_balance} {self.op_account.current_drcr}")

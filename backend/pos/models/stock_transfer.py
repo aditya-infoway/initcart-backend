@@ -36,7 +36,7 @@ class StockTransfer(models.Model):
     #  ADD THESE FIELDS
     transfer_type = models.CharField(max_length=10, choices=TRANSFER_TYPE_CHOICES, default='manual')
     
-    # ✅ Use string reference instead of direct import to avoid circular dependency
+    #  Use string reference instead of direct import to avoid circular dependency
     source_order = models.ForeignKey(
         'pos.BranchOrder',  # ← String reference, not direct import
         on_delete=models.SET_NULL,
@@ -104,6 +104,7 @@ class StockTransferItem(models.Model):
         on_delete=models.PROTECT,
         related_name='transfer_outgoing',
     )
+    
     # Snapshot fields
     from_item_name    = models.CharField(max_length=255)
     from_variant_info = models.CharField(max_length=100, blank=True, null=True)
@@ -123,6 +124,15 @@ class StockTransferItem(models.Model):
     
     # ✅ Stock verification flag
     is_stock_updated = models.BooleanField(default=False)
+    
+    # ✅ NEW — GST breakup (branch_price par, toggle ke hisaab se inclusive/exclusive)
+    tax_percent  = models.CharField(max_length=20, blank=True, null=True, default="0")
+    basic_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0,  blank=True, null=True,)
+    tax_amount   = models.DecimalField(max_digits=12, decimal_places=2, default=0,  blank=True, null=True,)
+    cgst         = models.DecimalField(max_digits=10, decimal_places=2, default=0, blank=True, null=True,)
+    sgst         = models.DecimalField(max_digits=10, decimal_places=2, default=0, blank=True, null=True,)
+    igst         = models.DecimalField(max_digits=10, decimal_places=2, default=0, blank=True, null=True,)
+    net_amount   = models.DecimalField(max_digits=12, decimal_places=2, default=0,blank=True, null=True,)
 
     website_display_on_verify = models.BooleanField(default=False)
     class Meta:

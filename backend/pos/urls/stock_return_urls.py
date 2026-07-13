@@ -15,6 +15,18 @@ from pos.views.stock_return_views import (
 
 )
 
+from pos.views.stock_return_receipt_views import (
+     StockReturnCreditBillsView,
+     ReceiveStockReturnBillBankView,
+     ReceiveStockReturnBillCashView,
+)
+
+from pos.views.stock_return_refund_views import (
+     StockReturnRefundBillsView,
+     PayStockReturnBillBankView,
+     PayStockReturnBillCashView
+)
+
 urlpatterns = [
 
     
@@ -69,4 +81,11 @@ urlpatterns = [
     
     path('stock-returns/next-number-preview/', NextReturnNumberPreviewView.as_view(), name='next-return-number-preview'),
     
+    path('stock-return-credit-bills/', StockReturnCreditBillsView.as_view()),
+    path('receive-stock-return-bill-cash/', ReceiveStockReturnBillCashView.as_view()),
+    path('receive-stock-return-bill-bank/', ReceiveStockReturnBillBankView.as_view()),
+
+    path('stock-return-refund-bills/', StockReturnRefundBillsView.as_view(), name='stock-return-refund-bills'),
+    path('pay-stock-return-bill-cash/', PayStockReturnBillCashView.as_view(), name='pay-stock-return-bill-cash'),
+    path('pay-stock-return-bill-bank/', PayStockReturnBillBankView.as_view(), name='pay-stock-return-bill-bank'),
 ]

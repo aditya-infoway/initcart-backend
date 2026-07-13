@@ -99,7 +99,7 @@ def generate_voucher(request):
     next_no = last_no + 1
     voucher_no = f"{pattern}{str(next_no).zfill(4)}"
 
-    print(f" Branch: {branch.branch_name} - Next SI Voucher: {voucher_no} (last: {last_no})")
+    
 
     return Response({
         "voucher_no": voucher_no,
@@ -156,7 +156,7 @@ class SalesEntryCreateAPIView(APIView):
             next_no += 1
             voucher_no = f"{pattern}{str(next_no).zfill(4)}"
 
-        print(f"🎫 SCR Voucher: {voucher_no} - Branch: {branch.branch_name}")
+        
         return voucher_no
 
     #  ReceiveSalesCreditBillBankAPIView ke andar
@@ -191,14 +191,12 @@ class SalesEntryCreateAPIView(APIView):
             next_no += 1
             voucher_no = f"{pattern}{str(next_no).zfill(4)}"
 
-        print(f"🎫 SBR Voucher: {voucher_no} - Branch: {branch.branch_name}")
+       
         return voucher_no
 
     @transaction.atomic
     def post(self, request):
-        print("=" * 60)
-        print("🔥 SALES ENTRY API - VERSION 2.0")
-        print("=" * 60)
+
         
         try:
             # GET BRANCH
@@ -208,7 +206,7 @@ class SalesEntryCreateAPIView(APIView):
             except Branch.DoesNotExist:
                 return Response({"error": "No branch found"}, status=400)
             
-            print(f"📍 Branch: {branch.branch_name} (ID: {branch.id})")
+            
             
             data = request.data
             items_data = data.get("items", [])
@@ -235,7 +233,7 @@ class SalesEntryCreateAPIView(APIView):
                 frightcharge=Decimal(str(data.get("frightcharge", 0))),
                 roundamount=Decimal(str(data.get("roundamount", 0))),
             )
-            print(f" Sales created: {sales.bill_no}")
+            
 
             # CREATE ITEMS
             for it in items_data:
@@ -258,7 +256,7 @@ class SalesEntryCreateAPIView(APIView):
                     igst=Decimal(str(it.get("igst", "0"))),
                     gst_toggle_status=sales_gst_toggle,
                 )
-            print(f" {len(items_data)} items created")
+            
 
             # CREATE RECEIPT
             payment_terms = data["payment_terms"].lower()
@@ -266,7 +264,7 @@ class SalesEntryCreateAPIView(APIView):
             receipt_id = None
             receipt_voucher = None
             
-            print(f"🔍 Attempting receipt creation - Terms: {payment_terms}")
+            
             
             if payment_terms == "cash":
                 cash_id = data.get("cash_account")
@@ -287,7 +285,7 @@ class SalesEntryCreateAPIView(APIView):
                         receipt_created = True
                         receipt_id = receipt.id
                         receipt_voucher = voucher
-                        print(f" SCR CREATED: {receipt_id} - {voucher}")
+                       
                     except Exception as e:
                         print(f"❌ SCR FAILED: {e}")
                         
@@ -311,7 +309,7 @@ class SalesEntryCreateAPIView(APIView):
                         receipt_created = True
                         receipt_id = receipt.id
                         receipt_voucher = voucher
-                        print(f" SBR CREATED: {receipt_id} - {voucher}")
+                       
                     except Exception as e:
                         print(f" SBR FAILED: {e}")
             else:
@@ -328,7 +326,7 @@ class SalesEntryCreateAPIView(APIView):
                 response_data["receipt_id"] = receipt_id
                 response_data["receipt_voucher"] = receipt_voucher
 
-            print(f"📤 Response: {response_data}")
+            
             return Response(response_data, status=201)
 
         except Exception as e:
@@ -375,14 +373,12 @@ class SalesEntryCreateAPIView(APIView):
             next_no += 1
             voucher_no = f"{pattern}{str(next_no).zfill(4)}"
 
-        print(f"🎫 SBR Voucher: {voucher_no} - Branch: {branch.branch_name}")
+       
         return voucher_no
         
     @transaction.atomic
     def post(self, request):
-        print("=" * 60)
-        print("🔥 SALES ENTRY API - VERSION 3.0 (with MLM)")
-        print("=" * 60)
+
 
         try:
             # ── GET BRANCH ──────────────────────────────────────────────
@@ -392,7 +388,7 @@ class SalesEntryCreateAPIView(APIView):
             except Branch.DoesNotExist:
                 return Response({"error": "No branch found"}, status=400)
 
-            print(f"📍 Branch: {branch.branch_name} (ID: {branch.id})")
+            
 
             data = request.data
             items_data = data.get("items", [])
@@ -413,7 +409,7 @@ class SalesEntryCreateAPIView(APIView):
                     #  TRY 1: referral_code (UUID) se match
                     try:
                         referral_agent = UserModel.objects.get(referral_code=referral_code)
-                        print(f"  🔗 Referral matched by code: {referral_code} → {referral_agent.username}")
+                        
                     except UserModel.DoesNotExist:
                         pass
 
@@ -422,7 +418,7 @@ class SalesEntryCreateAPIView(APIView):
                         try:
                             agent = Agent.objects.get(contact_number=referral_code)
                             referral_agent = agent.user
-                            print(f"  🔗 Referral matched by mobile (Agent): {referral_code} → {referral_agent.username}")
+                          
                         except Agent.DoesNotExist:
                             pass
 
@@ -430,16 +426,16 @@ class SalesEntryCreateAPIView(APIView):
                     if not referral_agent:
                         try:
                             referral_agent = UserModel.objects.get(phone=referral_code)
-                            print(f"  🔗 Referral matched by phone (User): {referral_code} → {referral_agent.username}")
+                            
                         except UserModel.DoesNotExist:
                             pass
 
                     if not referral_agent:
-                        print(f"  ⚠ Referral not found: {referral_code} → treating as walk-in")
+                        
                         referral_code = None
 
                 except Exception as e:
-                    print(f"  ⚠ Referral lookup error: {e}")
+                    
                     referral_code = None
 
             # ── CREATE SALES MASTER ─────────────────────────────────────
@@ -462,7 +458,7 @@ class SalesEntryCreateAPIView(APIView):
                 referral_code=referral_code,
                 referral_agent=referral_agent,
             )
-            print(f"Sales created: {sales.bill_no}")
+           
 
             # ── CREATE ITEMS ────────────────────────────────────────────
             for it in items_data:
@@ -485,7 +481,7 @@ class SalesEntryCreateAPIView(APIView):
                     igst=Decimal(str(it.get("igst", "0"))),
                     gst_toggle_status=sales_gst_toggle,
                 )
-            print(f" {len(items_data)} items created")
+           
 
             # ── CREATE RECEIPT ──────────────────────────────────────────
             payment_terms = data["payment_terms"].lower()
@@ -506,9 +502,9 @@ class SalesEntryCreateAPIView(APIView):
                                 type="SCR",
                                 sales_entry=sales,
                             )
-                            print(f" SCR created: {scr_voucher}")
+                            
                         except Exception as e:
-                            print(f"❌ SCR failed: {e}")
+                            print(f" SCR failed: {e}")
 
                 elif payment_terms == "bank":
                     bank_account_id = data.get("bank_account")
@@ -527,7 +523,7 @@ class SalesEntryCreateAPIView(APIView):
                                 type="SBR",
                                 sales_entry=sales,
                             )
-                            print(f"SBR created: {sbr_voucher}")
+                            
                         except Exception as e:
                             print(f"❌ SBR failed: {e}")
             except Exception as e:
@@ -556,7 +552,7 @@ class SalesEntryCreateAPIView(APIView):
                     print(" MLM distribution complete")
 
             except Exception as mlm_err:
-                print(f"❌ MLM error (sale NOT rolled back): {mlm_err}")
+               
                 import traceback
                 traceback.print_exc()
 
@@ -570,7 +566,7 @@ class SalesEntryCreateAPIView(APIView):
             }, status=201)
 
         except Exception as e:
-            print(f"❌ FATAL: {e}")
+    
             import traceback
             traceback.print_exc()
             return Response({"error": str(e)}, status=500)
@@ -941,7 +937,7 @@ class ReceiveSalesCreditBillCashAPIView(APIView):
             ).aggregate(total=DjangoSum('amount'))['total'] or Decimal('0')
 
             pending = sales_bill.grand_total - total_received
-            print(f"  Bill {sales_bill.bill_no}: Grand={sales_bill.grand_total}, Received={total_received}, Pending={pending}")
+           
 
             if pending <= Decimal('0.005') and not sales_bill.mlm_commission_processed:
                 try:
@@ -958,9 +954,9 @@ class ReceiveSalesCreditBillCashAPIView(APIView):
                     )
                     sales_bill.mlm_commission_processed = True
                     sales_bill.save(update_fields=["mlm_commission_processed"])
-                    print(f"   MLM distributed after full payment: {sales_bill.bill_no}")
+                   
                 except Exception as mlm_err:
-                    print(f"  ❌ MLM error on credit payment: {mlm_err}")
+                   pass
 
             return Response({
                 'success': True,
@@ -1091,12 +1087,12 @@ class SalesCreditBillsAPIView(APIView):
                     # Not paid or partially paid → Pending return
                     unsettled = sr.grand_total - sr_payments
                     credit_returns_unsettled += unsettled
-                    print(f"  SR {sr.return_no}: Unsettled ₹{unsettled} (Grand: ₹{sr.grand_total}, Paid: ₹{sr_payments})")
+                    
             
             # 🔥 Pending = Grand - Receipts - Unsettled Credit Returns
             pending_amount = bill.grand_total - total_paid - credit_returns_unsettled
             
-            print(f"📋 SI {bill.bill_no}: Grand={bill.grand_total}, Paid={total_paid}, UnsettledCreditReturns={credit_returns_unsettled}, Pending={pending_amount}")
+           
  
             if pending_amount > Decimal('0.005'):
                 bills_data.append({
@@ -1164,7 +1160,7 @@ class ReceiveSalesCreditBillBankAPIView(APIView):
             ).aggregate(total=DjangoSum('amount'))['total'] or Decimal('0')
 
             pending = sales_bill.grand_total - total_received
-            print(f"  Bill {sales_bill.bill_no}: Grand={sales_bill.grand_total}, Received={total_received}, Pending={pending}")
+           
 
             if pending <= Decimal('0.005') and not sales_bill.mlm_commission_processed:
                 try:
@@ -1181,10 +1177,9 @@ class ReceiveSalesCreditBillBankAPIView(APIView):
                     )
                     sales_bill.mlm_commission_processed = True
                     sales_bill.save(update_fields=["mlm_commission_processed"])
-                    print(f"   MLM distributed after full payment: {sales_bill.bill_no}")
+                 
                 except Exception as mlm_err:
-                    print(f"  ❌ MLM error on credit payment: {mlm_err}")
-
+                   pass
 
             
             return Response({

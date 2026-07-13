@@ -118,3 +118,6 @@ class CashReceiptCreateView(APIView):
                 return Response({"detail": e.messages}, status=status.HTTP_400_BAD_REQUEST)
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+     
+     
+     

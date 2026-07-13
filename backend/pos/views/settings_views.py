@@ -270,5 +270,26 @@ class GenerateVoucherView(APIView):
             "voucher_type": voucher_type
         })
         
-        
+
+
+
+class StockTransferTaxApplyUpdateView(APIView):
+    """Stock Transfer / Order Tracking GST toggle — Purchase/Sales toggle jaisa hi."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        obj = setting.objects.filter(branch=request.user.branch).first()
+        return Response({
+            "stock_transfer_gst_toggle": int(obj.stock_transfer_gst_toggle) if obj else 0
+        })
+
+    def patch(self, request):
+        obj = ensure_branch_setting(request.user.branch)
+        value = request.data.get("stock_transfer_gst_toggle")
+        if isinstance(value, str):
+            value = value.lower() in ["true", "1", "yes", "on"]
+        if value is not None:
+            obj.stock_transfer_gst_toggle = bool(value)
+            obj.save()
+        return Response({"stock_transfer_gst_toggle": obj.stock_transfer_gst_toggle})        
         
