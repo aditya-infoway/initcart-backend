@@ -5,6 +5,7 @@ from pos.models.items import items, itemvariants
 from pos.models.branch import Branch
 from pos.models.branch_order import BranchOrder
 from django.db import transaction
+from pos.utils.gst_calc import calculate_gst_split
 
 
 def variant_info_str(variant):
@@ -32,6 +33,7 @@ class StockReturnItemReadSerializer(serializers.ModelSerializer):
             'is_packaging_ready', 'is_returned_to_company',
             'status', 'company_stock', 'branch_stock',
             'branch_variant_id', 'company_variant_id',
+            'tax_percent', 'basic_amount', 'tax_amount', 'cgst', 'sgst', 'igst', 'net_amount',
         ]
     
     def get_status(self, obj):
@@ -220,6 +222,12 @@ class StockReturnCreateSerializer(serializers.Serializer):
             
             company_variant = transfer_item.from_variant
             
+            tax_percent = getattr(transfer_item.from_item, 'taxSlab', '0') or "0"
+            same_state = (branch.state or "") == (company_branch.state or "")
+            gst_result = calculate_gst_split(
+                transfer_item.rate, transfer_item.quantity, tax_percent, False, same_state
+            )
+            
             # Create return item with full quantity (can't return more than received)
             StockReturnItem.objects.create(
                 return_request=return_request,
@@ -232,9 +240,16 @@ class StockReturnCreateSerializer(serializers.Serializer):
                 size=getattr(company_variant, 'size', ''),
                 color=getattr(company_variant, 'color', ''),
                 hsnCode=getattr(transfer_item.from_item, 'hsnCode', ''),
-                taxSlab=getattr(transfer_item.from_item, 'taxSlab', ''),
+                taxSlab=tax_percent,
                 quantity=transfer_item.quantity,
                 rate=transfer_item.rate,
+                tax_percent=tax_percent,
+                basic_amount=gst_result["basic_amount"],
+                tax_amount=gst_result["tax_amount"],
+                cgst=gst_result["cgst"],
+                sgst=gst_result["sgst"],
+                igst=gst_result["igst"],
+                net_amount=gst_result["net_amount"],
             )
         
         return return_request
@@ -262,3 +277,6 @@ class ReturnItemStatusSerializer(serializers.Serializer):
         required=True
     )
     is_packaging_ready = serializers.BooleanField(default=True)
+    
+    
+    

@@ -22,6 +22,7 @@ from pos.utils.pagination import StandardResultsSetPagination
 from django.db.models import Sum as SumModel
 from pos.models.branch import Branch
 from pos.models.stock_return import ReturnSequence, get_financial_year
+from pos.utils.gst_calc import calculate_gst_split
 
 
 class IsSuperAdminRole(IsAuthenticated):
@@ -814,11 +815,17 @@ class StockReturnCreateFromItemsView(APIView):
                     return Response({
                         'success': False,
                         'message': (
-                            f"'{transfer_item.from_item_name}' ke liye branch me matching "
-                            f"item nahi mila. Ye purana/broken record hai, superadmin se check karwao."
+                            f"'{transfer_item.from_item_name}'  no matching in branch "
+                            f"no item found."
                         )
                     }, status=400)
  
+                tax_percent = getattr(from_item, 'taxSlab', '0') or "0"
+                same_state = (branch.state or "") == (company_branch.state or "")
+                gst_result = calculate_gst_split(
+                    transfer_item.rate, return_qty, tax_percent, False, same_state
+                )
+
                 StockReturnItem.objects.create(
                     return_request=return_request,
                     source_transfer_item=transfer_item,
@@ -830,9 +837,16 @@ class StockReturnCreateFromItemsView(APIView):
                     size=getattr(from_variant, 'size', '') or '',
                     color=getattr(from_variant, 'color', '') or '',
                     hsnCode=getattr(from_item, 'hsnCode', '') or '',
-                    taxSlab=getattr(from_item, 'taxSlab', '') or '',
+                    taxSlab=tax_percent,
                     quantity=return_qty,
                     rate=transfer_item.rate,
+                    tax_percent=tax_percent,
+                    basic_amount=gst_result["basic_amount"],
+                    tax_amount=gst_result["tax_amount"],
+                    cgst=gst_result["cgst"],
+                    sgst=gst_result["sgst"],
+                    igst=gst_result["igst"],
+                    net_amount=gst_result["net_amount"],
                 )
                 any_item_created = True
  
@@ -852,7 +866,13 @@ class StockReturnCreateFromItemsView(APIView):
 class NextReturnNumberPreviewView(APIView):
     """
     GET /api/stock-returns/next-number-preview/
-    Response: { "success": true, "next_return_no": "SR/DMF/26-27/0010" }
+    Response: {
+      "success": true,
+      "next_return_no": "SR/DMF/26-27/0010",
+      "same_state": true   // ✅ NEW — branch.state vs company Branch.state,
+                            //    same comparison calculate_gst_split() uses.
+                            //    null if company branch/superadmin not found.
+    }
     """
     permission_classes = []  # IsBranchRole wahi use karo jo baaki views mein hai
     authentication_classes = [JWTAuthentication, SessionAuthentication]
@@ -894,10 +914,26 @@ class NextReturnNumberPreviewView(APIView):
             preview = f"{prefix}/{branch_code}/{fy}/{next_no_str}"
         else:
             preview = f"{prefix}/{fy}/{next_no_str}"
+
+        # ✅ NEW — same_state flag so the frontend GST summary can show the
+        # correct CGST+SGST (same state) vs IGST (different state) split
+        # BEFORE the return is actually created. Exact same comparison
+        # StockReturnCreateFromItemsView.post() uses when it later calls
+        # calculate_gst_split(..., same_state=...).
+        same_state = None
+        from django.contrib.auth import get_user_model
+        UserModel = get_user_model()
+        superadmin_user = UserModel.objects.filter(role='superadmin').first()
+        if superadmin_user:
+            company_branch = Branch.objects.filter(user=superadmin_user).first()
+            if company_branch:
+                same_state = (
+                    (branch.state or '').strip().lower()
+                    == (company_branch.state or '').strip().lower()
+                )
  
         return Response({
             'success': True,
             'next_return_no': preview,
-        }) 
-        
-                     
+            'same_state': same_state,
+        })

@@ -125,21 +125,15 @@ class PurchaseCreateView(APIView):
 
             terms = purchase.terms.strip().lower() if purchase.terms else ""
 
-            print(f"\n{'='*50}")
-            print(f"📦 Purchase Created: {purchase.billNo}")
-            print(f"   Terms: {terms}")
-            print(f"   Amount: ₹{purchase.grand_total}")
-            print(f"{'='*50}")
 
             # ✅ CREDIT PURCHASE - Supplier का Cr balance बढ़ाएं
             if terms == "credit":
-                print("💰 CREDIT PURCHASE - Updating Supplier Balance")
+
                 
                 if purchase.partyName:
                     # Supplier का Cr balance बढ़ता है (हमें Supplier को पैसा देना है)
                     purchase.update_balance(purchase.partyName, purchase.grand_total, "Cr")
-                    print(f"   ✅ Supplier '{purchase.partyName.account_name}' Cr balance increased by ₹{purchase.grand_total}")
-                    print(f"   New Balance: ₹{purchase.partyName.current_balance} {purchase.partyName.current_drcr}")
+
                 else:
                     print(f"   ⚠️ No party assigned to this purchase")
 
@@ -165,15 +159,12 @@ class PurchaseCreateView(APIView):
                         purchase=purchase  # ✅ IMPORTANT: Link to purchase
                     )
 
-                    print(f"   ✅ PCP CREATED: ID={cash.id}, Voucher={pcp_voucher}")
-                    print(f"   Cash Account: {cash_account.account_name} decreased by ₹{purchase.grand_total}")
-                    print(f"   Supplier Balance: UNCHANGED")
                 else:
-                    print(f"   ⚠️ Missing cash account or party")
+                 pass
 
             # 🏦 BANK PURCHASE - PBP बनाएं (Supplier balance नहीं बदलेगा)
             elif terms == "bank":
-                print("🏦 BANK PURCHASE - Creating PBP (Supplier balance unchanged)")
+              
 
                 bank_account = purchase.bank_account
 
@@ -192,17 +183,6 @@ class PurchaseCreateView(APIView):
                         type="PBP",
                         purchase=purchase  # ✅ IMPORTANT: Link to purchase
                     )
-
-                    print(f"   ✅ PBP CREATED: ID={bank.id}, Voucher={pbp_voucher}")
-                    print(f"   Bank Account: {bank_account.account_name} decreased by ₹{purchase.grand_total}")
-                    print(f"   Supplier Balance: UNCHANGED")
-                else:
-                    print(f"   ⚠️ Missing bank account or party")
-            
-            else:
-                print(f"   ⚠️ Unknown terms: {terms}")
-
-            print(f"{'='*50}\n")
 
         return Response(serializer.data, status=status.HTTP_201_CREATED)
     

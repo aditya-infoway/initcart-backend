@@ -178,6 +178,14 @@ class StockReturnItem(models.Model):
     color = models.CharField(max_length=50, blank=True, null=True)
     hsnCode = models.CharField(max_length=50, blank=True, null=True)
     taxSlab = models.CharField(max_length=20, blank=True, null=True)
+    tax_percent  = models.CharField(max_length=20, blank=True, null=True, default="0")
+    basic_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    tax_amount   = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    cgst         = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    sgst         = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    igst         = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    net_amount   = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
 
     # Quantity and rate
     quantity = models.IntegerField(default=0)

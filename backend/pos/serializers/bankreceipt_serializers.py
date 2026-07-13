@@ -21,3 +21,6 @@ class BankReceiptSerializer(serializers.ModelSerializer):
         if branch:
             validated_data["branch"] = branch
         return super().create(validated_data)
+    
+    
+    

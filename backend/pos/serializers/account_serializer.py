@@ -7,6 +7,20 @@ class AccountSerializer(serializers.ModelSerializer):
     class Meta:
         model = Account
         fields = '__all__'
+    
+    def validate(self, attrs):
+        group = attrs.get('group') or getattr(self.instance, 'group', None)
+        branch = attrs.get('branch') or getattr(self.instance, 'branch', None)
+
+        if group == 'Sundry Creditor(Main)' and branch:
+            qs = Account.objects.filter(branch=branch, group='Sundry Creditor(Main)')
+            if self.instance:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError({
+                    "group": "This branch already has a Sundry Creditor(Main) account. Only one is allowed per branch."
+                })
+        return attrs    
 
     def validate_mobile(self, value):
         if value and not re.match(r'^[0-9]{10}$', value):
@@ -33,7 +47,7 @@ class AccountSerializer(serializers.ModelSerializer):
             "opening_balance", 0
         )
         return super().create(validated_data)
-
+    
 
 class SupplierSerializer(serializers.ModelSerializer):
     class Meta:

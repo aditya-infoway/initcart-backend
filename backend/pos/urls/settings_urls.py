@@ -1,5 +1,5 @@
 from django.urls import path
-from pos.views.settings_views import SettingCreateView,GenerateVoucherView, SettingUpdateView, TaxApplyUpdateView, SalesTaxApplyUpdateView
+from pos.views.settings_views import SettingCreateView,GenerateVoucherView, SettingUpdateView, TaxApplyUpdateView, SalesTaxApplyUpdateView, StockTransferTaxApplyUpdateView
 
 urlpatterns = [
     # urls.py
@@ -8,5 +8,6 @@ urlpatterns = [
     path("tax-apply-update/", TaxApplyUpdateView.as_view()),
     path("voucher/generate/", GenerateVoucherView.as_view(), name="voucher-generate"),
     path('sales-tax-apply-update/', SalesTaxApplyUpdateView.as_view()),
+    path('stock-transfer-tax-apply-update/', StockTransferTaxApplyUpdateView.as_view()),
 
 ]

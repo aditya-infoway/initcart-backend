@@ -32,26 +32,77 @@ from ecommerce.serializers.public_serializers import (  # Import public serializ
     ProductCouponSerializer,
 
 )
+from rest_framework import generics, filters
+from rest_framework.pagination import PageNumberPagination
+
+class ProductPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 100
 
 
-# Update existing views to use PublicProductSerializer
 class PublicProductListAPI(generics.ListAPIView):
-    """Get all approved products"""
+    """Get all approved products - with server-side filters + pagination"""
     serializer_class = PublicProductSerializer
     permission_classes = [AllowAny]
-    queryset = Product.objects.filter(status="approved")
-    
+    pagination_class = ProductPagination
+
     def get_queryset(self):
-        return Product.objects.filter(status="approved").select_related(
+        queryset = Product.objects.filter(status="approved")
+
+        # Category filter (comma-separated ids)
+        category_ids = self.request.query_params.get('category_ids')
+        if category_ids:
+            ids = [int(i) for i in category_ids.split(',') if i.strip().isdigit()]
+            if ids:
+                queryset = queryset.filter(category_id__in=ids)
+
+        # Brand filter
+        brand_ids = self.request.query_params.get('brand_ids')
+        if brand_ids:
+            ids = [int(i) for i in brand_ids.split(',') if i.strip().isdigit()]
+            if ids:
+                queryset = queryset.filter(brand_id__in=ids)
+
+        # Condition filter
+        conditions = self.request.query_params.get('conditions')
+        if conditions:
+            cond_list = [c.strip() for c in conditions.split(',') if c.strip()]
+            if cond_list:
+                queryset = queryset.filter(product_condition__in=cond_list)
+
+        # Vendor / product name search
+        vendor_search = self.request.query_params.get('vendor_search')
+        if vendor_search:
+            queryset = queryset.filter(
+                Q(vendor__business_name__icontains=vendor_search) |
+                Q(product_name__icontains=vendor_search)
+            )
+
+        # Price filter
+        min_price = self.request.query_params.get('min_price')
+        max_price = self.request.query_params.get('max_price')
+        if min_price or max_price:
+            stock_filter = Q()
+            if min_price:
+                stock_filter &= Q(final_price__gte=min_price)
+            if max_price:
+                stock_filter &= Q(final_price__lte=max_price)
+            matching_ids = ProductStock.objects.filter(stock_filter).values_list('product_id', flat=True)
+            queryset = queryset.filter(id__in=matching_ids)
+
+        queryset = queryset.select_related(
             'vendor', 'brand', 'category', 'subcategory', 'subsubcategory'
         ).prefetch_related('stocks', 'gallery').order_by('-created_at')
-        
+
+        return queryset.distinct()
+
     def get_serializer_context(self):
-        """Add request to serializer context for absolute URLs"""
         context = super().get_serializer_context()
         context['request'] = self.request
         return context
-
+    
+    
 class PublicProductDetailAPI(generics.RetrieveAPIView):
     """Get single product details"""
     serializer_class = PublicProductSerializer

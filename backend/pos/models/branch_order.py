@@ -176,6 +176,14 @@ class BranchOrderItem(models.Model):
 
     branch_price = models.FloatField(default=0)
     rate = models.FloatField(default=0)
+    # ✅ NEW — GST breakup (branch_price par, toggle-based, requested_quantity ke hisaab se)
+    tax_percent  = models.CharField(max_length=20, blank=True, null=True, default="0")
+    basic_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    tax_amount   = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    cgst         = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    sgst         = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    igst         = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    net_amount   = models.DecimalField(max_digits=12, decimal_places=2, default=0)
 
     # Ab sirf True hoga jab FULL requested_quantity dispatch ho chuki ho
     is_transferred = models.BooleanField(default=False)

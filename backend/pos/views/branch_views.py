@@ -17,6 +17,7 @@ from rest_framework_simplejwt.tokens import AccessToken
 from django.contrib.auth import authenticate
 from django.db import models
 from django.contrib.auth import get_user_model
+
 from pos.models.settings import setting
 from pos.views.settings_views import ensure_branch_setting
 
@@ -382,7 +383,7 @@ class BranchLogoutViewset(APIView):
         if not user:
             return Response({"success": False, "message": "User not found"}, status=status.HTTP_401_UNAUTHORIZED)
 
-        print(f" Logout API hit by: {user.username}")
+        
 
         # -------------------------
         #  CRITICAL: Branch logout update - Reset is_logged_in
@@ -392,7 +393,7 @@ class BranchLogoutViewset(APIView):
             branch.is_logged_in = False  #  Important: Reset this flag
             branch.last_active = None    #  Also reset last_active
             branch.save(update_fields=["is_logged_in", "last_active"])
-            print(" Branch DB updated - is_logged_in set to False")
+            
         except Branch.DoesNotExist:
             return Response({"success": False, "message": "Branch not found"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -403,7 +404,7 @@ class BranchLogoutViewset(APIView):
             if refresh_token:
                 token = RefreshToken(refresh_token)
                 token.blacklist()
-                print("Refresh token blacklisted")
+                
             else:
                 # Try to get refresh token from request data
                 data = request.data if isinstance(request.data, dict) else {}
@@ -411,7 +412,7 @@ class BranchLogoutViewset(APIView):
                 if refresh_token:
                     token = RefreshToken(refresh_token)
                     token.blacklist()
-                    print(" Refresh token blacklisted")
+                    
         except Exception as e:
             print("Token blacklist error:", e)
 
@@ -449,16 +450,17 @@ class BranchHeartbeatView(APIView):
             print(f" Heartbeat received for branch: {branch.branch_name}")
             
         except Branch.DoesNotExist:
-            print(f" Heartbeat: Branch not found for user {request.user.username}")
+            
             return Response({"error": "Branch not found"}, status=404)
         except Exception as e:
-            print(f" Heartbeat error: {e}")
+            
             return Response({"error": str(e)}, status=500)
 
         return Response({"success": True, "message": "Heartbeat received"})
 
 
-# Branch Me (Profile)
+# pos/views/branch_views.py - Update BranchMeView
+
 class BranchMeView(APIView):
     authentication_classes = [JWTAuthentication, SessionAuthentication]
     permission_classes = [IsAuthenticated]
@@ -475,7 +477,7 @@ class BranchMeView(APIView):
         return Response({"success": True, "data": serializer.data})
 
     def patch(self, request):
-        """Branch updates its own limited profile (for now just branch_code)"""
+        """Branch updates its own limited profile"""
         try:
             branch = Branch.objects.get(user=request.user)
         except Branch.DoesNotExist:
@@ -484,17 +486,26 @@ class BranchMeView(APIView):
                 status=404
             )
 
-        allowed_fields = {"branch_code"}
+        # ✅ Allow more fields for superadmin
+        allowed_fields = {
+            "branch_code", "city", "state", "country", "address", 
+            "phone", "owner_name", "bank_name", "account_number", 
+            "ifsc_code", "upi_id"
+        }
         data = {k: v for k, v in request.data.items() if k in allowed_fields}
+        
         if not data:
-            return Response({"success": False, "message": "No editable fields provided."}, status=400)
+            return Response(
+                {"success": False, "message": "No editable fields provided."}, 
+                status=400
+            )
 
         serializer = BranchUpdateSerializer(branch, data=data, partial=True)
         if serializer.is_valid():
             serializer.save()
             return Response({
                 "success": True,
-                "message": "Branch code updated successfully!",
+                "message": "Profile updated successfully!",
                 "data": BranchDetailSerializer(branch).data
             })
         return Response({"success": False, "errors": serializer.errors}, status=400)

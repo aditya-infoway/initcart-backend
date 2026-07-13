@@ -57,6 +57,7 @@ class Branch(models.Model):
     phone = models.CharField(max_length=20)
     password = models.CharField(max_length=255, null=True)
     address = models.TextField(blank=True, null=True)
+    country = models.CharField(max_length=100, blank=True, null=True) 
     city = models.CharField(max_length=100, blank=True, null=True)
     state = models.CharField(max_length=100, blank=True, null=True)
     pincode = models.CharField(max_length=20, blank=True, null=True)
@@ -73,6 +74,22 @@ class Branch(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     is_logged_in = models.BooleanField(default=False)
     last_active = models.DateTimeField(auto_now=True)
+    sundry_debitor_account = models.OneToOneField(
+        'pos.Account',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='linked_as_debitor_branch',
+        help_text="Account representing this branch as a debitor (receivable) for other branches' books"
+    )
+    sundry_creditor_account = models.OneToOneField(
+        'pos.Account',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='linked_as_creditor_branch',
+        help_text="Account representing this branch as a creditor (payable) for other branches' books"
+    )
 
     def __str__(self):
         return self.branch_name
@@ -146,3 +163,6 @@ def delete_branch_user(sender, instance, **kwargs):
             print(f" User already deleted for branch '{instance.branch_name}'")
         except Exception as e:
             print(f" Error deleting user for branch '{instance.branch_name}': {str(e)}")
+            
+            
+            

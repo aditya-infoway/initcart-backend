@@ -1,4 +1,8 @@
 #pos/models/cashpayment.py
+# ✅ UPDATED — stock_transfer FK added for "Stock Received" payments
+# (branch pays superadmin against a received Stock Transfer, party is
+# always that branch's own single "Sundry Creditor(Main)" account)
+
 from django.db import models, transaction
 from django.core.exceptions import ValidationError
 from pos.models.branch import Branch
@@ -32,12 +36,20 @@ class CashPayment(models.Model):
     )
     
     purchase = models.ForeignKey(
-    'pos.PurchaseMaster',
-    on_delete=models.CASCADE,
-    null=True,
-    blank=True,
-    related_name='cash_payments'
-)
+        'pos.PurchaseMaster',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='cash_payments'
+    )
+
+    # ✅ NEW — Stock Received link (branch → superadmin's "Sundry Creditor(Main)")
+    stock_transfer = models.ForeignKey(
+        'pos.StockTransfer',
+        on_delete=models.CASCADE,
+        null=True, blank=True,
+        related_name='cash_payments'
+    )
 
     def clean(self):
         """Validate only on CREATE"""
@@ -72,6 +84,10 @@ class CashPayment(models.Model):
                     should_update_party = False
                     print(f"SRCP - Cash Sales Return, Customer balance unchanged")
 
+                # ✅ Stock Received payment (STCP) → Sundry Creditor(Main) ka
+                # Cr due kam karo — default should_update_party=True already
+                # covers this, no special-case needed.
+
                 if should_update_party:
                     if self.op_account.current_drcr == "Dr":
                         if self.amount > self.op_account.current_balance:
@@ -98,3 +114,6 @@ class CashPayment(models.Model):
 
     def __str__(self):
         return f"{self.voucher_no} - {self.amount}"
+    
+    
+    

@@ -132,14 +132,12 @@ class SalesReturnCreateAPIView(APIView):
 
             customer = Account.objects.select_for_update().get(pk=sales_return.customer.pk)
 
-            print(f" Credit SR - Customer: {customer.account_name} | "
-                f"Balance: {customer.current_balance} {customer.current_drcr} | "
-                f"Return: ₹{sales_return.grand_total}")
+
 
             # Credit Sales Return = Customer Dr kam karo (Cr transaction)
             SM.update_balance(customer, sales_return.grand_total, "Cr")
 
-            print(f" After SR - Customer: {customer.current_balance} {customer.current_drcr}")
+    
 
         alert_messages = []
         
@@ -160,7 +158,7 @@ class SalesReturnCreateAPIView(APIView):
                     
                     if qty > max_returnable:
                         alert_messages.append(
-                            f"⚠ {sales_item.item_name.itemName} - "
+                            f"{sales_item.item_name.itemName} - "
                             f"Can only return {max_returnable} (already returned {already_returned})"
                         )
                         continue
@@ -218,7 +216,7 @@ class SalesReturnCreateAPIView(APIView):
                     # 🔥 Check if sufficient balance
                     if cash_account.current_balance < sales_return.grand_total:
                         payment_error = f"Insufficient balance in {cash_account.account_name}. Available: ₹{cash_account.current_balance}, Required: ₹{sales_return.grand_total}"
-                        print(f"❌ {payment_error}")
+                       
                     else:
                         srcp_voucher = self.generate_cash_payment_voucher(request.user.branch)
                         
@@ -234,13 +232,13 @@ class SalesReturnCreateAPIView(APIView):
                             type="SRCP",
                             sales_return=sales_return
                         )
-                        print(f"✅ SRCP CREATED: {cash_payment.id} - Voucher: {srcp_voucher}")
+                   
                         
                 except Account.DoesNotExist:
                     payment_error = "Selected cash account not found"
                 except Exception as e:
                     payment_error = f"Payment failed: {str(e)}"
-                    print(f"❌ SRCP error: {e}")
+                 
         
         elif payment_terms == "bank":
             bank_account_id = data.get('bank_account')
@@ -252,7 +250,7 @@ class SalesReturnCreateAPIView(APIView):
                     # 🔥 Check if sufficient balance
                     if bank_account.current_balance < sales_return.grand_total:
                         payment_error = f"Insufficient balance in {bank_account.account_name}. Available: ₹{bank_account.current_balance}, Required: ₹{sales_return.grand_total}"
-                        print(f"❌ {payment_error}")
+                        
                     else:
                         srbp_voucher = self.generate_bank_payment_voucher(request.user.branch)
                         
@@ -268,13 +266,13 @@ class SalesReturnCreateAPIView(APIView):
                             type="SRBP",
                             sales_return=sales_return
                         )
-                        print(f"✅ SRBP CREATED: {bank_payment.id} - Voucher: {srbp_voucher}")
+                        
                         
                 except Account.DoesNotExist:
                     payment_error = "Selected bank account not found"
                 except Exception as e:
                     payment_error = f"Payment failed: {str(e)}"
-                    print(f"❌ SRBP error: {e}")
+                 
         
         response = {
             "message": "Sales Return Created Successfully",
@@ -709,24 +707,24 @@ class SalesReturnCreditBillsAPIView(APIView):
             if original_bill_terms in ["cash", "bank"]:
                 # Original CASH/BANK + Return CREDIT → Always show
                 show_bill = True
-                print(f"  ✅ SHOW SR {bill.return_no}: Original {original_bill_terms}")
+                
                 
             elif original_bill_terms == "credit":
                 # Original CREDIT tha
                 if original_bill_received > 0:
                     # SCR/SBR receipt already done → Return pending hai
                     show_bill = True
-                    print(f"  ✅ SHOW SR {bill.return_no}: Original Credit + SCR/SBR received ₹{original_bill_received}")
+                    
                 elif total_paid > 0:
                     # SRCP/SRBP payment already kiya → Return pending hai
                     show_bill = True
-                    print(f"  ✅ SHOW SR {bill.return_no}: Original Credit + SRCP/SRBP paid ₹{total_paid}")
+                
                 else:
                     # Auto-adjusted via customer balance
                     show_bill = False
-                    print(f"  ⏭️ SKIP SR {bill.return_no}: Original Credit + No receipt/payment (auto-adjusted)")
+                    
             
-            print(f"  SR {bill.return_no}: Grand={bill.grand_total}, Paid={total_paid}, Pending={pending_amount}, OriginalTerms={original_bill_terms}, OriginalReceived={original_bill_received}, Show={show_bill}")
+           
             
             if show_bill and pending_amount > 0:
                 bills_data.append({

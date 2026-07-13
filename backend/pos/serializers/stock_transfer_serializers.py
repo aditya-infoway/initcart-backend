@@ -5,6 +5,8 @@ from rest_framework import serializers
 from pos.models.stock_transfer import StockTransfer, StockTransferItem
 from pos.models.branch import Branch
 from pos.models.items import items as Items, itemvariants as ItemVariants
+from pos.utils.gst_calc import calculate_gst_split
+from pos.models.settings import setting
 
 
 def variant_info_str(variant):
@@ -165,12 +167,16 @@ class StockTransferCreateSerializer(serializers.Serializer):
 
             # Validate sufficient stock
             available = from_variant.current_stock or 0
+            if available <= 0:
+                available = from_variant.opStock or 0
+            
             if available < item_data['quantity']:
                 transfer.delete()
                 raise serializers.ValidationError(
                     f"Insufficient stock for '{from_item.itemName} ({variant_info_str(from_variant)})'. "
                     f"Available: {available}, Requested: {item_data['quantity']}"
                 )
+
 
             item_cache_key = from_item.id
             if item_cache_key not in created_items_cache:
@@ -200,10 +206,20 @@ class StockTransferCreateSerializer(serializers.Serializer):
                     color=from_variant.color,
                     srno=from_variant.srno,
                 )
-
+                
             # ✅ SIRF BRANCH PRICE - NO SALES PRICE FALLBACK
             branch_price = from_variant.branchPrice or 0
 
+                        # ✅ NEW — GST calculation on branch_price (toggle-based)
+            settings_obj = setting.objects.filter(branch=from_branch).first()
+            gst_toggle = getattr(settings_obj, 'stock_transfer_gst_toggle', False)
+            same_state = (from_branch.state or "") == (to_branch.state or "")
+            tax_percent = from_item.taxSlab or "0"
+
+            gst_result = calculate_gst_split(
+                branch_price, item_data['quantity'], tax_percent, gst_toggle, same_state
+            )
+            
             StockTransferItem.objects.create(
                 transfer=transfer,
                 from_item=from_item,
@@ -213,6 +229,13 @@ class StockTransferCreateSerializer(serializers.Serializer):
                 from_barcode=from_variant.barcode,
                 quantity=item_data['quantity'],
                 rate=branch_price,  # ✅ Sirf branch price
+                tax_percent=tax_percent,
+                basic_amount=gst_result["basic_amount"],
+                tax_amount=gst_result["tax_amount"],
+                cgst=gst_result["cgst"],
+                sgst=gst_result["sgst"],
+                igst=gst_result["igst"],
+                net_amount=gst_result["net_amount"],
             )
 
         return transfer

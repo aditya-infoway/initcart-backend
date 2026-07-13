@@ -3,92 +3,63 @@ from rest_framework import serializers
 from django.contrib.auth.hashers import make_password
 from django.contrib.auth import get_user_model
 from pos.models.branch import Branch
+from pos.models.account import Account
 
 User = get_user_model()
 
 
+DEBITOR_GROUPS = ['Customer - Sundry Debitor', 'Sundry Debitor(Internal)']
+CREDITOR_GROUPS = ['Supplier - Sundry Creditor', 'Sundry Creditor(Internal)']
 
-#  BRANCH CREATE BY ADMIN
+
 class BranchCreateSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True)
+    sundry_debitor_account = serializers.PrimaryKeyRelatedField(
+        queryset=Account.objects.filter(group__in=DEBITOR_GROUPS),
+        required=False, allow_null=True
+    )
+    sundry_creditor_account = serializers.PrimaryKeyRelatedField(
+        queryset=Account.objects.filter(group__in=CREDITOR_GROUPS),
+        required=False, allow_null=True
+    )
 
     class Meta:
         model = Branch
         fields = [
             "branch_type", "branch_name", "owner_name",
             "email", "phone", "password",
-            "address", "city", "state", "pincode",
+            "address", "city", "state", "country", "pincode",
             "bank_name", "account_number", "ifsc_code", "upi_id",
             "licence_file", "gst_certificate", "branch_logo", "id_proof",
-            "status"
+            "status", "sundry_debitor_account", "sundry_creditor_account",
         ]
         extra_kwargs = {"password": {"write_only": True}}
 
     def validate(self, attrs):
-        if Branch.objects.filter(email=attrs["email"]).exists():
-            raise serializers.ValidationError({"email": "Branch with this email already exists."})
-        return attrs
+            if Branch.objects.filter(email=attrs["email"]).exists():
+                raise serializers.ValidationError({"email": "Branch with this email already exists."})
 
+            debitor = attrs.get("sundry_debitor_account")
+            creditor = attrs.get("sundry_creditor_account")
+            if debitor and creditor:
+                raise serializers.ValidationError({
+                    "sundry_creditor_account": "only one linked account allowed —  Debitor or Creditor, not both ."
+                })
+            return attrs
     def create(self, validated_data):
         raw_password = validated_data.pop("password")
 
-        # Create Django User with branch role
         user = User.objects.create_user(
             username=validated_data["email"],
             email=validated_data["email"],
             password=raw_password,
-            role="branch",  # Important: Set role as 'branch'
+            role="branch",
             first_name=validated_data.get("owner_name", "").split()[0] or "",
             last_name=" ".join(validated_data.get("owner_name", "").split()[1:]) or ""
         )
 
-        # IMPORTANT: Don't hash password for Branch model - keep it for reference only
-        # Or better, don't store password in Branch model at all
-        validated_data["password"] = raw_password  # Store plain password for login check
-        # OR remove this line completely if you want to use user authentication only
-
-        # Create Branch with user link
+        validated_data["password"] = make_password(raw_password)  # ✅ hashed, plain-text wala dead block hata diya
         branch = Branch.objects.create(user=user, **validated_data)
-
-        return branch
-    password = serializers.CharField(write_only=True, required=True)
-
-    class Meta:
-        model = Branch
-        fields = [
-            "branch_type", "branch_name", "owner_name",
-            "email", "phone", "password",
-            "address", "city", "state", "pincode",
-            "bank_name", "account_number", "ifsc_code", "upi_id",
-            "licence_file", "gst_certificate", "branch_logo", "id_proof",
-            "status"
-        ]
-        extra_kwargs = {"password": {"write_only": True}}
-
-    def validate(self, attrs):
-        if Branch.objects.filter(email=attrs["email"]).exists():
-            raise serializers.ValidationError({"email": "Branch with this email already exists."})
-        return attrs
-
-    def create(self, validated_data):
-        raw_password = validated_data.pop("password")
-
-        # Create Django User with branch role
-        user = User.objects.create_user(
-            username=validated_data["email"],
-            email=validated_data["email"],
-            password=raw_password,
-            role="branch",  # Important: Set role as 'branch'
-            first_name=validated_data.get("owner_name", "").split()[0] or "",
-            last_name=" ".join(validated_data.get("owner_name", "").split()[1:]) or ""
-        )
-
-        # Hash password for Branch model
-        validated_data["password"] = make_password(raw_password)
-
-        # Create Branch with user link
-        branch = Branch.objects.create(user=user, **validated_data)
-
         return branch
 
 #  BRANCH LIST SERIALIZER
@@ -96,13 +67,20 @@ class BranchListSerializer(serializers.ModelSerializer):
     branch_logo_url = serializers.SerializerMethodField()
     created_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
     updated_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
+    sundry_debitor_account_name = serializers.CharField(
+        source="sundry_debitor_account.account_name", read_only=True, default=None
+    )
+    sundry_creditor_account_name = serializers.CharField(
+        source="sundry_creditor_account.account_name", read_only=True, default=None
+    )
 
     class Meta:
         model = Branch
         fields = [
             "id", "branch_name", "branch_type", "owner_name",
             "email", "phone", "status", "city", "state",
-            "branch_logo", "branch_logo_url", "created_at", "updated_at"
+            "branch_logo", "branch_logo_url", "created_at", "updated_at",
+            "sundry_debitor_account_name","sundry_creditor_account_name",
         ]
 
     def get_branch_logo_url(self, obj):
@@ -115,6 +93,12 @@ class BranchDetailSerializer(serializers.ModelSerializer):
     branch_logo_url = serializers.SerializerMethodField()
     licence_file_url = serializers.SerializerMethodField()
     gst_certificate_url = serializers.SerializerMethodField()
+    sundry_debitor_account_name = serializers.CharField(
+        source="sundry_debitor_account.account_name", read_only=True, default=None
+    )
+    sundry_creditor_account_name = serializers.CharField(
+        source="sundry_creditor_account.account_name", read_only=True, default=None
+    )
     id_proof_url = serializers.SerializerMethodField()
     created_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
     updated_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
@@ -147,31 +131,43 @@ class BranchDetailSerializer(serializers.ModelSerializer):
 #  BRANCH UPDATE SERIALIZEr
 
 class BranchUpdateSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(
-        write_only=True, 
-        required=False, 
-        allow_blank=True
-    )
+    password = serializers.CharField(write_only=True, required=False, allow_blank=True)
     branch_code = serializers.CharField(required=False, allow_blank=True, max_length=3)
+    sundry_debitor_account = serializers.PrimaryKeyRelatedField(
+        queryset=Account.objects.filter(group__in=DEBITOR_GROUPS),
+        required=False, allow_null=True
+    )
+    sundry_creditor_account = serializers.PrimaryKeyRelatedField(
+        queryset=Account.objects.filter(group__in=CREDITOR_GROUPS),
+        required=False, allow_null=True
+    )
 
     class Meta:
         model = Branch
         fields = [
             "branch_type", "branch_name", "owner_name", "phone",
-            "address", "city", "state", "pincode",
+            "address", "city", "state", "country", "pincode",
             "bank_name", "account_number", "ifsc_code", "upi_id",
             "licence_file", "gst_certificate", "branch_logo", "id_proof",
             "status", "password", "branch_code",
+            "sundry_debitor_account", "sundry_creditor_account",
         ]
+
+    def validate(self, attrs):
+        debitor = attrs.get("sundry_debitor_account")
+        creditor = attrs.get("sundry_creditor_account")
+        if debitor and creditor and debitor.id == creditor.id:
+            raise serializers.ValidationError({
+                "sundry_creditor_account": "Same account cannot be used as both debitor and creditor."
+            })
+        return attrs
 
     def validate_branch_code(self, value):
         code = (value or "").strip().upper()
         if not code:
-            return ""  # blank allowed -> becomes None on save
-
+            return ""
         if len(code) != 3 or not code.isalpha():
             raise serializers.ValidationError("Branch code must be exactly 3 letters (A-Z).")
-
         qs = Branch.objects.filter(branch_code=code)
         if self.instance:
             qs = qs.exclude(pk=self.instance.pk)
@@ -197,3 +193,6 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
 
         instance.save()
         return instance
+    
+    
+    
