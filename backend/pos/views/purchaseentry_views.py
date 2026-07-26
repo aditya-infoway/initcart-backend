@@ -280,7 +280,7 @@ class PurchaseItemDelete(APIView):
             return Response({"success": True}, status=status.HTTP_204_NO_CONTENT)
         except PurchaseItem.DoesNotExist:
             return Response({"error": "Item not found"}, status=status.HTTP_404_NOT_FOUND)
-# pos/views/purchaseentry_views.py - Update PurchaseItemListAllAPIView
+
 
 class PurchaseItemListAllAPIView(APIView):
     permission_classes = [IsAuthenticated]

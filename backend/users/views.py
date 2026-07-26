@@ -7,6 +7,8 @@ from rest_framework.permissions import IsAuthenticated
 from django.http import JsonResponse
 from django.core.cache import cache
 from .models import User
+from django.contrib.auth.hashers import make_password  # already check_password hai, make_password add karo
+from django.db.models import Q
 
 
 def handler429(request, exception):
@@ -156,3 +158,69 @@ class AgentReferralLinkAPIView(APIView):
             "referral_code": user.referral_code,
             "referral_link": referral_link
         })
+        
+        
+class SuperAdminChangeCredentialsView(APIView):
+    """
+    Superadmin panel ka email/password badalne ke liye.
+    Sirf User model (superadmin panel login) affect hota hai —
+    Branch.password (branch panel login) is se bilkul untouched rehta hai.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request):
+        user = request.user
+
+        if getattr(user, "role", None) != "superadmin":
+            return Response(
+                {"success": False, "message": "Only Super Admin can perform this action."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        current_password = (request.data.get("current_password") or "").strip()
+        new_password = (request.data.get("new_password") or "").strip()
+        new_email = (request.data.get("new_email") or "").strip().lower()
+
+        if not current_password:
+            return Response(
+                {"success": False, "message": "Current password is required."},
+                status=400,
+            )
+
+        if not user.check_password(current_password):
+            return Response(
+                {"success": False, "message": "Current password is incorrect."},
+                status=400,
+            )
+
+        updated = False
+
+        if new_email and new_email != user.email:
+            if User.objects.filter(email=new_email).exclude(pk=user.pk).exists():
+                return Response(
+                    {"success": False, "message": "This email is already in use."},
+                    status=400,
+                )
+            user.email = new_email
+            user.username = new_email  # login username bhi sync rakho
+            updated = True
+
+        if new_password:
+            if len(new_password) < 6:
+                return Response(
+                    {"success": False, "message": "New password must be at least 6 characters."},
+                    status=400,
+                )
+            user.set_password(new_password)
+            updated = True
+
+        if not updated:
+            return Response({"success": False, "message": "Nothing to update."}, status=400)
+
+        user.save()
+
+        return Response({
+            "success": True,
+            "message": "Super Admin login credentials updated successfully.",
+            "email": user.email,
+        })        

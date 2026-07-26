@@ -297,33 +297,67 @@ class SuperAdminProfileAPI(APIView):
 
         data = SuperAdminProfileSerializer(
             obj,
-            context={"request": request}
+            context={"request": request}  # ✅ Context pass karo
         ).data
 
         data["joinDate"] = request.user.date_joined.date()
         return Response(data)
 
     def post(self, request):
-        if SuperAdminProfile.objects.exists():
-            return Response({"error": "Already exists"}, status=400)
+        obj = SuperAdminProfile.objects.first()
+        if obj:
+            # Already exists, update it instead
+            ser = SuperAdminProfileSerializer(
+                obj, 
+                data=request.data, 
+                partial=True,
+                context={"request": request}  # ✅ ADD THIS
+            )
+            ser.is_valid(raise_exception=True)
+            ser.save()
+            return Response({
+                "success": True,
+                "message": "Profile updated successfully",
+                "data": ser.data
+            }, status=status.HTTP_200_OK)
 
-        ser = SuperAdminProfileSerializer(data=request.data)
+        # Create new profile
+        ser = SuperAdminProfileSerializer(
+            data=request.data,
+            context={"request": request}  # ✅ ADD THIS
+        )
         ser.is_valid(raise_exception=True)
         ser.save()
-        return Response(ser.data)
+        return Response({
+            "success": True,
+            "message": "Profile created successfully",
+            "data": ser.data
+        }, status=status.HTTP_201_CREATED)
 
     def put(self, request):
         obj = SuperAdminProfile.objects.first()
         if not obj:
-            # create if not exists
-            ser = SuperAdminProfileSerializer(data=request.data)
+            # Create if not exists
+            ser = SuperAdminProfileSerializer(
+                data=request.data,
+                context={"request": request}  # ✅ ADD THIS
+            )
         else:
-            # update
-            ser = SuperAdminProfileSerializer(obj, data=request.data, partial=True)
+            # Update existing
+            ser = SuperAdminProfileSerializer(
+                obj, 
+                data=request.data, 
+                partial=True,
+                context={"request": request}  # ✅ ADD THIS
+            )
 
         ser.is_valid(raise_exception=True)
         ser.save()
-        return Response(ser.data)
+        return Response({
+            "success": True,
+            "message": "Profile updated successfully",
+            "data": ser.data
+        })
 
 
 
@@ -335,9 +369,11 @@ class initAdminDetailsView(APIView):
             return Response({}, status=200)
 
         return Response(
-            initAdminFooterSerializer(obj).data
+            initAdminFooterSerializer(
+                obj,
+                context={"request": request}  # ✅ ADD THIS
+            ).data
         )
-        
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status

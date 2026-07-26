@@ -23,8 +23,9 @@ urlpatterns = [
 
     #  Ecommerce Vendor APIs (All vendor,,vendor requests  and approvals for  this urls use this for all  approvals  brand, wallet, withdrawal endpoints)
     path("api/ecommerce/", include("ecommerce.urls.vendor_urls")),
+    path("api/", include("ecommerce.urls.document_urls")),
 
-    #public urls
+    #public urls    
     path("ecommerce/",include("ecommerce.urls.public_urls")),
     
     # Optional: DRF’s browsable API login/logout (useful in admin testing)
@@ -78,6 +79,10 @@ urlpatterns = [
     path('api/pos/', include("pos.urls.branch_order_urls")),
     path('api/pos/', include("pos.urls.pos_mlm_urls")),
     path('api/pos/', include("pos.urls.stock_return_urls")),
+    path('api/pos/', include('pos.urls.b2b_transfer_urls')),
+    path('api/pos/', include('pos.urls.schemeoffer_urls')),
+    path('api/pos/', include("pos.urls.b2b_stock_return_urls")),
+    path('api/pos/', include("pos.urls.b2b_sales_urls")),
     # Super Admin Order Management  
     path('api/ecommerce/', include('ecommerce.urls.superadmin_order_urls')),
     

@@ -34,6 +34,7 @@ class Account(models.Model):
     pincode = models.CharField(max_length=6, blank=True)
     phone = models.CharField(max_length=15, blank=True)
     mobile = models.CharField(max_length=10, blank=True)
+    email = models.EmailField(max_length=254, blank=True, null=True)
     
     current_balance = models.DecimalField(max_digits=25, decimal_places=2, default=0)
     current_drcr = models.CharField(max_length=2, choices=DRCR_CHOICES, blank=True, null=True)

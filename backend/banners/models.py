@@ -42,6 +42,14 @@ class SuperAdminProfile(models.Model):
         blank=True,
         null=True
     )
+    
+        # ✅ NEW: Brochure PDF field
+    brochure_pdf = models.FileField(
+        upload_to="brochures/",
+        blank=True,
+        null=True,
+        help_text="Upload company brochure (PDF only)"
+    )
 
     youtube = models.URLField(blank=True)
     instagram = models.URLField(blank=True)

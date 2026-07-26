@@ -71,6 +71,7 @@ class AccountviewSerializer(serializers.ModelSerializer):
             "country",
             "state",
             "city",
+            "email",
             "pincode",
             "phone",
             "mobile",

@@ -25,6 +25,7 @@ from pos.models.settings import setting
 from pos.utils.pagination import StandardResultsSetPagination
 from django.db.utils import IntegrityError
 import time
+from pos.utils.sales_bill_display import get_display_branch_for_sale
 
 def calculate_gst(taxable, tax_percent, branch_state, party_state):
     """
@@ -405,7 +406,7 @@ class SalesEntryCreateAPIView(APIView):
                 try:
                     from users.models import User as UserModel
                     from mlm.models.agent import Agent
-
+  
                     #  TRY 1: referral_code (UUID) se match
                     try:
                         referral_agent = UserModel.objects.get(referral_code=referral_code)
@@ -482,6 +483,16 @@ class SalesEntryCreateAPIView(APIView):
                     gst_toggle_status=sales_gst_toggle,
                 )
            
+            # ── EMAIL RECEIPT TO CUSTOMER ──────────────────────────────
+            try:
+                from pos.utils.receipt_email import send_sale_receipt_email
+                ok, msg = send_sale_receipt_email(sales)
+                if not ok:
+                    print(f" Receipt email not sent: {msg}")
+                else:
+                    print(f" Receipt email sent to {sales.customer.email}")
+            except Exception as e:
+                print(f" Receipt email error: {e}")
 
             # ── CREATE RECEIPT ──────────────────────────────────────────
             payment_terms = data["payment_terms"].lower()
@@ -525,9 +536,9 @@ class SalesEntryCreateAPIView(APIView):
                             )
                             
                         except Exception as e:
-                            print(f"❌ SBR failed: {e}")
+                            print(f" SBR failed: {e}")
             except Exception as e:
-                print(f"⚠ Receipt failed but sale saved: {e}")
+                print(f" Receipt failed but sale saved: {e}")
 
             # ── MLM / PROFIT DISTRIBUTION ──────────────────────────────
             try:
@@ -538,7 +549,7 @@ class SalesEntryCreateAPIView(APIView):
                 payment_terms_lower = data["payment_terms"].lower()
 
                 if payment_terms_lower == "credit":
-                    print("   Credit sale — MLM skip, tab distribute hoga jab fully paid ho")
+                    print("   Credit sale — MLM skip, distributes when bills was fully paid")
                 else:
                     distribute_pos_profit(
                         pos_sale=sales,
@@ -694,10 +705,6 @@ class SalesItemTaxAPIView(APIView):
             "net_amount":           float(net_amount),
         }, status=200)
 
-# salesentry_views.py - Update SaleItemSearchAPIView
-
-# salesentry_views.py - SaleItemSearchAPIView
-
 class SaleItemSearchAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -749,20 +756,20 @@ class SaleItemSearchAPIView(APIView):
 
             if unit_supports_fractional:
                 if current_stock > 0:
-                    #  FIX: Dono float hain ab, division safe hai
+                    
                     per_unit_price = sales_price 
                 else:
-                    #  FIX: Stock 0 hai - opStock se try karo, warna salesPrice hi use karo
+              
                     op_stock = float(variant.opStock) if variant.opStock and variant.opStock > 0 else 0
                     if op_stock > 0:
                         per_unit_price = sales_price 
                     else:
-                        # Stock nahi hai toh salesPrice directly per-unit maano
+                       
                         per_unit_price = sales_price
             else:
                 per_unit_price = sales_price
             
-            # Apply search filter — barcode bhi include hai ab
+
             if search:
                 search_lower = search.lower()
                 match = (
@@ -783,8 +790,8 @@ class SaleItemSearchAPIView(APIView):
                 "itemId": item.id,
                 "itemName": item.itemName,
                 "hsnCode": item.hsnCode or "",
-                "salesPrice": float(sales_price),  # Total price (120 for 10 KG)
-                "per_unit_price": float(per_unit_price),  # Per unit price (12 for KG)
+                "salesPrice": float(sales_price), 
+                "per_unit_price": float(per_unit_price), 
                 "current_stock": float(current_stock),
                 "unit": unit_symbol,
                 "unit_name": unit_name,
@@ -838,10 +845,10 @@ class SaleReceiptView(APIView):
 
     def get(self, request, sale_id):
         from django.shortcuts import get_object_or_404
-        
+
         try:
             sale = get_object_or_404(SalesMaster, id=sale_id, branch=request.user.branch)
-            branch = sale.branch
+            branch = get_display_branch_for_sale(sale.branch)  
             customer = sale.customer
 
             data = {
