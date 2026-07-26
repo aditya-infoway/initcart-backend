@@ -329,7 +329,7 @@ class UplineTreeAPIView(APIView):
                     "is_direct_parent": sib.id == request.user.id
                 })
         
-        return Response({
+        return Response({   
             "max_levels": max_levels,
             "upline_count": len(upline_tree),
             "root": {

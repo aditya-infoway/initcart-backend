@@ -182,7 +182,7 @@ class PayStockReturnBillCashView(APIView):
                 amount=amount,
                 narration=f"Refund against Stock Return {stock_return.return_no}",
                 type='STRCP',
-                # ✅ No stock_return FK — using narration + type for tracking
+                #  No stock_return FK — using narration + type for tracking
             )
 
         remaining = pending_amount - amount

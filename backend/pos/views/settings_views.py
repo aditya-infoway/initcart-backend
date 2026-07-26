@@ -8,6 +8,8 @@ from rest_framework.permissions import IsAuthenticated
 from django.db import transaction
 from django.core.exceptions import ValidationError
 from datetime import datetime  # correct
+from pos.models.sales_bill_display_setting import SalesBillDisplaySetting
+from pos.serializers.sales_bill_display_serializers import SalesBillDisplaySettingSerializer
 
 from pos.models.settings import setting
 from pos.models.bankpayment import BankPayment
@@ -19,6 +21,7 @@ from pos.models.salesentry import SalesMaster
 from pos.models.contra import Contra
 from pos.models.journalentries import JournalMaster
 from pos.serializers.settings_serializers import SettingSerializers
+
 def ensure_branch_setting(branch):
     """Ensure that a branch has settings, create if not exists"""
     obj = setting.objects.filter(branch=branch).first()
@@ -292,4 +295,31 @@ class StockTransferTaxApplyUpdateView(APIView):
             obj.stock_transfer_gst_toggle = bool(value)
             obj.save()
         return Response({"stock_transfer_gst_toggle": obj.stock_transfer_gst_toggle})        
+        
+
+class SalesBillDisplaySettingView(APIView):
+    """
+    GET  -> sabhi authenticated users dekh sakte (read-only info ke liye, harmless)
+    PATCH -> sirf superadmin update kar sakta hai
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        obj = SalesBillDisplaySetting.get_solo()
+        serializer = SalesBillDisplaySettingSerializer(obj)
+        return Response(serializer.data)
+
+    def patch(self, request):
+        if getattr(request.user, "role", None) != "superadmin":
+            return Response(
+                {"error": "Only superadmin can update this setting"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        obj = SalesBillDisplaySetting.get_solo()
+        serializer = SalesBillDisplaySettingSerializer(obj, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)        
         

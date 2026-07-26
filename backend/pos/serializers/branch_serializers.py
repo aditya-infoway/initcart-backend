@@ -32,6 +32,7 @@ class BranchCreateSerializer(serializers.ModelSerializer):
             "bank_name", "account_number", "ifsc_code", "upi_id",
             "licence_file", "gst_certificate", "branch_logo", "id_proof",
             "status", "sundry_debitor_account", "sundry_creditor_account",
+            "ownership_type",
         ]
         extra_kwargs = {"password": {"write_only": True}}
 
@@ -81,6 +82,7 @@ class BranchListSerializer(serializers.ModelSerializer):
             "email", "phone", "status", "city", "state",
             "branch_logo", "branch_logo_url", "created_at", "updated_at",
             "sundry_debitor_account_name","sundry_creditor_account_name",
+            "ownership_type",
         ]
 
     def get_branch_logo_url(self, obj):
@@ -132,6 +134,7 @@ class BranchDetailSerializer(serializers.ModelSerializer):
 
 class BranchUpdateSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    email = serializers.EmailField(required=False)
     branch_code = serializers.CharField(required=False, allow_blank=True, max_length=3)
     sundry_debitor_account = serializers.PrimaryKeyRelatedField(
         queryset=Account.objects.filter(group__in=DEBITOR_GROUPS),
@@ -146,13 +149,22 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
         model = Branch
         fields = [
             "branch_type", "branch_name", "owner_name", "phone",
-            "address", "city", "state", "country", "pincode",
+            "address", "city", "state", "country", "pincode","email",
             "bank_name", "account_number", "ifsc_code", "upi_id",
             "licence_file", "gst_certificate", "branch_logo", "id_proof",
             "status", "password", "branch_code",
             "sundry_debitor_account", "sundry_creditor_account",
+            "ownership_type",
         ]
 
+    def validate_email(self, value):
+        qs = Branch.objects.filter(email=value)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError("This email is already used by another branch.")
+        return value
+    
     def validate(self, attrs):
         debitor = attrs.get("sundry_debitor_account")
         creditor = attrs.get("sundry_creditor_account")

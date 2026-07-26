@@ -90,7 +90,7 @@ class OrderListAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     
     def get(self, request):
-        # ✅ Allow customers and both user types
+        #  Allow customers and both user types
         if not request.user.is_customer():
             return Response({
                 'success': False,

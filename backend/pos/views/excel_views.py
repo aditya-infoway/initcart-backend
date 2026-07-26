@@ -52,7 +52,7 @@ class DownloadExcelTemplate(APIView):
             {"header": "GROUP_NAME", "width": 30},
             {"header": "UNIT_NAME*", "width": 20},
             {"header": "HSN_CODE*", "width": 20},
-            {"header": "TAX_SLAB", "width": 15},
+            {"header": "TAX_SLAB*", "width": 15},
             {"header": "WEBSITE_DISPLAY", "width": 20},
         ]
 
@@ -68,6 +68,11 @@ class DownloadExcelTemplate(APIView):
 
         all_headers = main_columns + [{"header": col, "width": 20} for col in variant_columns]
 
+        # FIX: max_row must be defined BEFORE it's used below (was previously
+        # defined later in the "APPLY NORMAL DROPDOWN" section, which caused
+        # UnboundLocalError when the TAX_SLAB text-format block ran first).
+        max_row = 500
+
         # ===== HEADERS =====
         for col_idx, col in enumerate(all_headers, 1):
             cell = ws_data.cell(row=1, column=col_idx, value=col["header"])
@@ -75,6 +80,15 @@ class DownloadExcelTemplate(APIView):
             cell.font = header_font
             cell.border = thin_border
             ws_data.column_dimensions[get_column_letter(col_idx)].width = col["width"]
+
+        # Force TAX_SLAB column to TEXT format so Excel never auto-converts
+        # plain numbers like "5" into "500%" on save.
+        for col_idx, col in enumerate(all_headers, 1):
+            header = col["header"].replace("*", "")
+            if header == "TAX_SLAB":
+                col_letter = get_column_letter(col_idx)
+                for row_num in range(2, max_row + 1):
+                    ws_data.cell(row=row_num, column=col_idx).number_format = '@'
 
         # ws_data.append(["Example Product"] + [""] * (len(all_headers) - 1))
         # ws_data.append([
@@ -105,7 +119,7 @@ class DownloadExcelTemplate(APIView):
             ws_data.column_dimensions[col_letter].hidden = True
 
         # ===== APPLY NORMAL DROPDOWN =====
-        max_row = 500
+        # (max_row already defined above - removed duplicate definition here)
 
         for col_idx, col in enumerate(all_headers, 1):
             col_letter = get_column_letter(col_idx)
@@ -253,13 +267,13 @@ class ImportItemsFromExcel(APIView):
             return False
 
         def clean(val):
-            """Convert to string safely — returns '' for None/NaN."""
+            """Convert to string safely - returns '' for None/NaN."""
             if is_empty(val):
                 return ""
             return str(val).strip()
 
         def to_float(val):
-            """Parse float safely — returns None for None/NaN/empty."""
+            """Parse float safely - returns None for None/NaN/empty."""
             try:
                 if is_empty(val):
                     return None
@@ -269,7 +283,7 @@ class ImportItemsFromExcel(APIView):
                 return None
 
         def to_int(val):
-            """Parse int safely — returns None for None/NaN/empty."""
+            """Parse int safely - returns None for None/NaN/empty."""
             try:
                 if is_empty(val):
                     return None
@@ -279,17 +293,42 @@ class ImportItemsFromExcel(APIView):
                 return None
 
         def normalize_tax(val):
+            """
+            Normalize a raw TAX_SLAB cell value into one of the allowed
+            slab strings: '5%', '12%', '18%', '28%', 'Tax Free'.
+            Returns '' if the value is empty OR doesn't match any known slab
+            (caller is responsible for treating '' as invalid when required).
+            """
             if is_empty(val):
                 return ""
-            val = str(val).strip().replace(" ", "").replace(".0", "").upper()
+            raw = str(val).strip().upper()
+            raw = raw.replace(" ", "")
+
+            # Safely strip a trailing ".0"/".00" etc. WITHOUT corrupting the
+            # string (old version used raw.replace(".0", "") which could
+            # mangle values like "18.00" into "180").
+            if "." in raw and "%" not in raw:
+                try:
+                    num = float(raw)
+                    raw = str(int(num)) if num == int(num) else str(num)
+                except ValueError:
+                    pass
+            elif "." in raw and "%" in raw:
+                number_part = raw.replace("%", "")
+                try:
+                    num = float(number_part)
+                    raw = (str(int(num)) if num == int(num) else str(num)) + "%"
+                except ValueError:
+                    pass
+
             mapping = {
                 "5": "5%", "5%": "5%",
                 "12": "12%", "12%": "12%",
                 "18": "18%", "18%": "18%",
                 "28": "28%", "28%": "28%",
-                "TAXFREE": "Tax Free", "TAXFREE%": "Tax Free"
+                "TAXFREE": "Tax Free", "TAXFREE%": "Tax Free", "TAX_FREE": "Tax Free",
             }
-            return mapping.get(val, "")
+            return mapping.get(raw, "")
 
 # ===== NUMERIC-TEXT CLEANER (removes .0 from numeric-looking codes) =====
         def clean_numeric_text_cell(x):
@@ -323,7 +362,8 @@ class ImportItemsFromExcel(APIView):
                 "error": f"Invalid Excel format. Found columns: {list(df.columns)}"
             }, status=400)
 
-        required_cols = ['ITEM_NAME', 'HSN_CODE', 'UNIT_NAME', 'CATEGORY_NAME', 'PURCHASE_PRICE', 'SALES_PRICE', 'MRP']
+        # TAX_SLAB is now a required column (was optional before)
+        required_cols = ['ITEM_NAME', 'HSN_CODE', 'UNIT_NAME', 'CATEGORY_NAME', 'TAX_SLAB', 'PURCHASE_PRICE', 'SALES_PRICE', 'MRP']
         missing = [c for c in required_cols if c not in df.columns]
         if missing:
             return Response({"error": f"Missing columns: {', '.join(missing)}"}, status=400)
@@ -337,7 +377,7 @@ class ImportItemsFromExcel(APIView):
         subsub_map       = {clean(s.name).lower(): s.id for s in SubSubCategory.objects.all()}
         group_map        = {g.name: g.id for g in ItemGroup.objects.filter(branch=branch)}
         unit_map         = {u.symbol: u.id for u in ItemUnit.objects.filter(is_active=True)}
-        # ✅ NEW: existing barcodes for THIS branch (to validate duplicates during import)
+        # NEW: existing barcodes for THIS branch (to validate duplicates during import)
         existing_barcodes = set(
             itemvariants.objects.filter(item__branch=branch)
             .exclude(barcode__isnull=True)
@@ -371,16 +411,23 @@ class ImportItemsFromExcel(APIView):
             if all(is_empty(row.get(c)) for c in ['ITEM_NAME', 'PURCHASE_PRICE', 'SALES_PRICE', 'MRP']):
                 continue
 
-            # ===== ITEM FIELDS (only for first occurrence) =====
-            if not items_data[item_name]["item_fields"]:
-                val_category = clean(row.get('CATEGORY_NAME'))
-                val_subcat   = clean(row.get('SUB_CATEGORY_NAME'))
-                val_subsub   = clean(row.get('SUB_SUB_CATEGORY_NAME'))
-                val_brand    = clean(row.get('BRAND_NAME'))
-                val_group    = clean(row.get('GROUP_NAME'))
-                val_unit     = clean(row.get('UNIT_NAME'))
-                val_hsn      = clean(row.get('HSN_CODE'))
+            # If this item was already marked as having an error, skip its variant rows too
+            if items_data[item_name].get("has_error"):
+                continue
 
+            # ===== ITEM FIELDS (only for first occurrence) =====
+            val_category = clean(row.get('CATEGORY_NAME'))
+            val_subcat   = clean(row.get('SUB_CATEGORY_NAME'))
+            val_subsub   = clean(row.get('SUB_SUB_CATEGORY_NAME'))
+            val_brand    = clean(row.get('BRAND_NAME'))
+            val_group    = clean(row.get('GROUP_NAME'))
+            val_unit     = clean(row.get('UNIT_NAME'))
+            val_hsn      = clean(row.get('HSN_CODE'))
+            raw_tax      = row.get('TAX_SLAB')
+            val_tax      = normalize_tax(raw_tax)
+            val_website  = clean(row.get('WEBSITE_DISPLAY')).upper() == "YES"
+
+            if not items_data[item_name]["item_fields"]:
                 # ===== REQUIRED ITEM FIELD VALIDATIONS =====
                 item_has_error = False
 
@@ -398,6 +445,17 @@ class ImportItemsFromExcel(APIView):
 
                 if not val_hsn:
                     errors.append(f"Row {row_num}: HSN_CODE is required")
+                    item_has_error = True
+
+                # NEW: TAX_SLAB required + must be a valid slab value
+                if is_empty(raw_tax):
+                    errors.append(f"Row {row_num}: TAX_SLAB is required")
+                    item_has_error = True
+                elif not val_tax:
+                    errors.append(
+                        f"Row {row_num}: TAX_SLAB '{clean(raw_tax)}' is invalid. "
+                        f"Allowed values: 5%, 12%, 18%, 28%, Tax Free"
+                    )
                     item_has_error = True
 
                 # category DB lookup (case-insensitive)
@@ -427,13 +485,26 @@ class ImportItemsFromExcel(APIView):
                     "group":          group_map.get(val_group) if val_group else None,
                     "unit":           unit_map.get(val_unit),
                     "hsn":            val_hsn,
-                    "tax":            normalize_tax(row.get('TAX_SLAB')),
-                    "website":        clean(row.get('WEBSITE_DISPLAY')).upper() == "YES"
+                    "tax":            val_tax,
+                    "website":        val_website
                 }
-
-            # If this item was already marked as having an error, skip its variant rows too
-            if items_data[item_name].get("has_error"):
-                continue
+            else:
+                # FIX: item already seen on an earlier row - backfill any
+                # OTHER optional field (brand/group/subcategory/subsubcategory/
+                # website) if it was left blank on the first row but is present
+                # on this row. TAX_SLAB is required on the first row itself now,
+                # so it never needs backfilling.
+                f = items_data[item_name]["item_fields"]
+                if not f.get("brand") and val_brand:
+                    f["brand"] = brand_map.get(val_brand)
+                if not f.get("group") and val_group:
+                    f["group"] = group_map.get(val_group)
+                if not f.get("subcategory") and val_subcat:
+                    f["subcategory"] = subcat_map.get(val_subcat.lower())
+                if not f.get("subsubcategory") and val_subsub:
+                    f["subsubcategory"] = subsub_map.get(val_subsub.lower())
+                if not f.get("website") and val_website:
+                    f["website"] = val_website
 
             # ===== PRICE =====
             purchase_price = to_float(row.get('PURCHASE_PRICE'))
@@ -451,7 +522,7 @@ class ImportItemsFromExcel(APIView):
             if sales_price > mrp:
                 errors.append(f"Row {row_num}: SALES_PRICE > MRP")
 
-            # ===== BARCODE (FIXED: NaN → None) =====
+            # ===== BARCODE (FIXED: NaN -> None) =====
             raw_barcode = row.get('BARCODE')
             if is_empty(raw_barcode):
                 barcode = None
@@ -463,8 +534,8 @@ class ImportItemsFromExcel(APIView):
             # ===== STOCK =====
             qty = to_int(row.get('OPENING_STOCK')) or 0
 
-            # ===== TAX =====
-            tax_str  = normalize_tax(row.get('TAX_SLAB'))
+            # ===== TAX (use the item-level tax slab resolved above) =====
+            tax_str  = items_data[item_name]["item_fields"].get("tax", "")
             tax_rate = float(tax_str.replace('%', '').replace('Tax Free', '0') or 0) if tax_str else 0.0
             basic    = qty * purchase_price
             tax_amt  = (basic * tax_rate) / 100
@@ -614,13 +685,13 @@ class ExportItemsToExcel(APIView):
         )
         response['Content-Disposition'] = 'attachment; filename="items_export.xlsx"'
 
-        # ✅ Excel writer with formatting
+        # Excel writer with formatting
         with pd.ExcelWriter(response, engine='openpyxl') as writer:
             df.to_excel(writer, index=False, sheet_name="Item Data")
 
             worksheet = writer.sheets["Item Data"]
 
-            # ✅ Auto column width
+            # Auto column width
             for col_idx, col in enumerate(df.columns, 1):
                 max_length = len(str(col))
 
@@ -631,7 +702,7 @@ class ExportItemsToExcel(APIView):
                     except:
                         pass
 
-                # 🎯 Smart width control
+                # Smart width control
                 if "BARCODE" in col:
                     width = 25
                 elif "NAME" in col:

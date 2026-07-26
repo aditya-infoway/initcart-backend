@@ -7,6 +7,7 @@ from pos.views.branch_views import (
     BranchMeView,
     BranchLogoutViewset,
     BranchHeartbeatView,
+
 )
 
 router = DefaultRouter()
@@ -18,8 +19,6 @@ urlpatterns = [
     path("auth/me/", BranchMeView.as_view(), name="branch-me"),
     path("auth/logout/", BranchLogoutViewset.as_view(), name="branch-logout"),
     path("heartbeat/", BranchHeartbeatView.as_view()),
-    
-
     
     # Router URLs
     path("", include(router.urls)),

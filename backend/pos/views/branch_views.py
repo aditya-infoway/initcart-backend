@@ -20,6 +20,8 @@ from django.contrib.auth import get_user_model
 
 from pos.models.settings import setting
 from pos.views.settings_views import ensure_branch_setting
+from django.contrib.auth.hashers import make_password  # already check_password hai, make_password add karo
+from django.db.models import Q
 
 
 # Models
@@ -86,6 +88,9 @@ class BranchViewSet(viewsets.ModelViewSet):
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
         
+        ownership_type = request.query_params.get('ownership_type')
+        if ownership_type:
+            queryset = queryset.filter(ownership_type=ownership_type)
         # Pagination
         page = self.paginate_queryset(queryset)
         if page is not None:
@@ -205,15 +210,74 @@ class BranchLoginViewset(APIView):
                 status=400,
             )
 
-        #  STEP 1: Check for Super Admin
+        # ────────────────────────────────────────────────────────────
+        # STEP 0: Superadmin's OWN branch — decoupled branch-password login
+        # Agar branch ka apna password set ho chuka hai, to sirf wahi valid hai.
+        # ────────────────────────────────────────────────────────────
+        sa_branch = Branch.objects.filter(
+            Q(email=identifier) | Q(phone=identifier),
+            user__role='superadmin'
+        ).select_related('user').first()
+
+        if sa_branch:
+            auth_user = sa_branch.user
+            password_ok = False
+
+            if sa_branch.password:
+                # Branch-specific password set hai — sirf isi se check hoga
+                password_ok = check_password(password, sa_branch.password)
+            else:
+                # Abhi tak branch-password set nahi hua — purana behaviour (User password) chalega
+                password_ok = authenticate(username=auth_user.username, password=password) is not None
+
+            if not password_ok:
+                return Response({"success": False, "message": "Invalid credentials"}, status=400)
+
+            refresh = RefreshToken.for_user(auth_user)
+            branch_data = {
+                "id": sa_branch.id,
+                "email": sa_branch.email,
+                "branch_name": sa_branch.branch_name,
+                "owner_name": sa_branch.owner_name,
+                "branch_type": sa_branch.branch_type,
+                "phone": sa_branch.phone,
+                "status": sa_branch.status,
+            }
+
+            return Response({
+                "success": True,
+                "message": "Super Admin login successful",
+                "branch": branch_data,
+                "user": {
+                    "id": auth_user.id,
+                    "username": auth_user.username,
+                    "email": auth_user.email,
+                    "role": auth_user.role,
+                },
+                "prefixes": {
+                    "gst_toggle": False,
+                    "PI": "PI", "SI": "SI", "BP": "BP",
+                    "CP": "CP", "CR": "CR", "BR": "BR",
+                    "JE": "JE", "contra": "CN",
+                },
+                "access": str(refresh.access_token),
+                "refresh": str(refresh),
+            })
+
+        #  STEP 1: Check for Super Admin (first-time login / branch not yet created)
         try:
             user = User.objects.get(email=identifier)
-            
-            # Authenticate using django's authenticate
+
+            if user.role == 'superadmin':
+                # Safety: agar branch-password already set ho chuka hai, to yahan se
+                # login allow NAHI karna — sirf STEP 0 wala path valid hoga.
+                existing_branch = Branch.objects.filter(user=user).first()
+                if existing_branch and existing_branch.password:
+                    return Response({"success": False, "message": "Invalid credentials"}, status=400)
+
             auth_user = authenticate(username=user.username, password=password)
-            
+
             if auth_user and auth_user.role == 'superadmin':
-                #  AUTO-CREATE MAIN BRANCH IF NOT EXISTS (Sirf Super Admin ke liye)
                 branch, created = Branch.objects.get_or_create(
                     user=auth_user,
                     defaults={
@@ -228,9 +292,9 @@ class BranchLoginViewset(APIView):
                         'state': 'Main State'
                     }
                 )
-                
+
                 refresh = RefreshToken.for_user(auth_user)
-                
+
                 branch_data = {
                     "id": branch.id,
                     "email": branch.email,
@@ -240,7 +304,7 @@ class BranchLoginViewset(APIView):
                     "phone": branch.phone,
                     "status": branch.status,
                 }
-                
+
                 return Response({
                     "success": True,
                     "message": "Super Admin login successful",
@@ -263,7 +327,7 @@ class BranchLoginViewset(APIView):
         except User.DoesNotExist:
             pass  # Not a super admin
 
-        #  STEP 2: Normal Branch Login (Existing code - No changes)
+        #  STEP 2: Normal Branch Login (UNCHANGED — bilkul same jo pehle tha)
         branch = (
             Branch.objects.filter(email=identifier).first()
             or Branch.objects.filter(phone=identifier).first()
@@ -274,19 +338,18 @@ class BranchLoginViewset(APIView):
 
         if not branch.user:
             return Response({
-                "success": False, 
+                "success": False,
                 "message": "Branch account not properly configured. No user associated."
             }, status=400)
 
         if branch.status != 'active':
             return Response({"success": False, "message": "Branch is not active"}, status=403)
 
-        # Authenticate branch user
         user = authenticate(username=branch.user.username, password=password)
-        
+
         if user is None:
             user = authenticate(username=branch.email, password=password)
-        
+
         if user is None:
             return Response({"success": False, "message": "Invalid credentials"}, status=400)
 
@@ -306,7 +369,7 @@ class BranchLoginViewset(APIView):
         branch.is_logged_in = True
         branch.last_active = timezone.now()
         branch.save(update_fields=["is_logged_in", "last_active"])
-        
+
         prefixes = {
             "gst_toggle": False,
             "PI": "PI", "SI": "SI", "BP": "BP",
@@ -459,11 +522,10 @@ class BranchHeartbeatView(APIView):
         return Response({"success": True, "message": "Heartbeat received"})
 
 
-# pos/views/branch_views.py - Update BranchMeView
-
 class BranchMeView(APIView):
     authentication_classes = [JWTAuthentication, SessionAuthentication]
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get(self, request):
         try:
@@ -477,7 +539,6 @@ class BranchMeView(APIView):
         return Response({"success": True, "data": serializer.data})
 
     def patch(self, request):
-        """Branch updates its own limited profile"""
         try:
             branch = Branch.objects.get(user=request.user)
         except Branch.DoesNotExist:
@@ -486,26 +547,77 @@ class BranchMeView(APIView):
                 status=404
             )
 
-        # ✅ Allow more fields for superadmin
+        is_superadmin = getattr(request.user, "role", None) == "superadmin"
+
         allowed_fields = {
-            "branch_code", "city", "state", "country", "address", 
-            "phone", "owner_name", "bank_name", "account_number", 
+            "branch_code", "city", "state", "country", "address",
+            "phone", "owner_name", "bank_name", "account_number",
             "ifsc_code", "upi_id"
         }
+
+        if is_superadmin:
+            allowed_fields |= {"branch_name", "branch_type", "branch_logo", "email", "pincode"}
+            allowed_fields -= {"bank_name", "account_number", "ifsc_code", "upi_id"}
+
         data = {k: v for k, v in request.data.items() if k in allowed_fields}
-        
-        if not data:
+
+        # ────────────────────────────────────────────────────────────
+        # Superadmin-only — branch-panel-login password change.
+        # ✅ NEW: current_branch_password verify hoga (agar branch.password
+        # pehle se set hai) — tabhi naya branch_password set hoga.
+        # Ye User.password ko TOUCH NAHI karta — sirf Branch.password (separate).
+        # ────────────────────────────────────────────────────────────
+        branch_password_updated = False
+        if is_superadmin and "branch_password" in request.data:
+            new_branch_password = str(request.data.get("branch_password", "")).strip()
+            current_branch_password = str(request.data.get("current_branch_password", "")).strip()
+
+            if new_branch_password:
+                if len(new_branch_password) < 6:
+                    return Response(
+                        {"success": False, "message": "Branch password must be at least 6 characters"},
+                        status=400
+                    )
+
+                # ✅ Agar branch ka panel password pehle se set hai, to current
+                # password compulsory verify hoga. Pehli baar set karte waqt
+                # (branch.password khaali) verification skip hoti hai.
+                if branch.password:
+                    if not current_branch_password:
+                        return Response(
+                            {"success": False, "message": "Current branch password is required"},
+                            status=400
+                        )
+                    if not check_password(current_branch_password, branch.password):
+                        return Response(
+                            {"success": False, "message": "Current branch password is incorrect"},
+                            status=400
+                        )
+
+                branch.password = make_password(new_branch_password)
+                branch.save(update_fields=["password"])
+                branch_password_updated = True
+
+        if not data and not branch_password_updated:
             return Response(
-                {"success": False, "message": "No editable fields provided."}, 
+                {"success": False, "message": "No editable fields provided."},
                 status=400
             )
 
-        serializer = BranchUpdateSerializer(branch, data=data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            return Response({
-                "success": True,
-                "message": "Profile updated successfully!",
-                "data": BranchDetailSerializer(branch).data
-            })
-        return Response({"success": False, "errors": serializer.errors}, status=400)
+        if data:
+            serializer = BranchUpdateSerializer(branch, data=data, partial=True)
+            if serializer.is_valid():
+                serializer.save()
+            else:
+                return Response({"success": False, "errors": serializer.errors}, status=400)
+
+        return Response({
+            "success": True,
+            "message": "Profile updated successfully!" + (
+                " Branch login password changed." if branch_password_updated else ""
+            ),
+            "data": BranchDetailSerializer(branch).data
+        })
+    
+    
+    

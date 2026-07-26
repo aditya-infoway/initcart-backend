@@ -39,6 +39,11 @@ class Branch(models.Model):
         ('mart', 'Mart'),
         ('electronics', 'Electronics'),
     ]
+    
+    OWNERSHIP_TYPE_CHOICES = [
+        ('branch', 'Branch'),
+        ('franchise', 'Franchise'),
+    ]
 
     STATUS_CHOICES = [
         ('active', 'Active'),
@@ -47,6 +52,7 @@ class Branch(models.Model):
 
     user = models.OneToOneField(User, on_delete=models.CASCADE, null=True, blank=True)
     branch_type = models.CharField(max_length=20, choices=BRANCH_TYPE_CHOICES, default="fashion")
+    ownership_type = models.CharField(max_length=20, choices=OWNERSHIP_TYPE_CHOICES, default='branch',help_text="Is this a Branch or Franchise?")
     branch_name = models.CharField(max_length=255)
     branch_code = models.CharField(
         max_length=3, blank=True, null=True, unique=True,
@@ -73,6 +79,8 @@ class Branch(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     is_logged_in = models.BooleanField(default=False)
+    # pos/models/branch.py — agar pehle add nahi kiya
+    credit_term = models.CharField(max_length=100, blank=True, null=True)
     last_active = models.DateTimeField(auto_now=True)
     sundry_debitor_account = models.OneToOneField(
         'pos.Account',

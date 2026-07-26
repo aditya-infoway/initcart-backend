@@ -38,6 +38,7 @@ urlpatterns = [
     path('stock-transfers/branch-variants/my/', MyBranchVariantsView.as_view(), name='my-branch-variants'),
     path('stock-transfers/branch-items/<int:branch_id>/', BranchItemsWithVariantsView.as_view(), name='branch-items'),
     
+    
     # Branch verification endpoints
     path('stock-transfers/pending-verification/', PendingStockTransferView.as_view(), name='pending-verification'),
     path('stock-transfers/<int:transfer_id>/items/', TransferItemDetailView.as_view(), name='transfer-items'),

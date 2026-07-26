@@ -15,7 +15,11 @@ from pos.models.salesreturn import SalesReturnItem
 from pos.models.stock_transfer import StockTransferItem
 from pos.models.stock_return import StockReturnItem
 from pos.utils.pagination import StandardResultsSetPagination
-
+from pos.models.b2b_transfer import B2BStockTransferItem
+from pos.models.b2b_stock_return import B2BStockReturnItem
+from pos.models.b2b_sales import B2BSaleItem
+from django.db.models import Q
+from pos.models.b2b_sales import B2BSaleItem
 
 class StockReportAPIView(APIView):
     permission_classes = [IsAuthenticated]
@@ -137,7 +141,77 @@ class StockReportAPIView(APIView):
                     is_returned_to_company=True,
                 ).values('company_variant_id').annotate(total=Sum('quantity'))
             }
- 
+
+        # ✅ B2B stock received — to_variant direct match, koi branch check ki zaroorat nahi
+        # (to_variant already destination-branch ka variant hai)
+        b2b_received_map = {
+            row['to_variant_id']: row['total']
+            for row in B2BStockTransferItem.objects.filter(
+                to_variant_id__in=variant_ids,
+                transfer__to_branch_id=branch_id,
+                is_received=True,
+            ).values('to_variant_id').annotate(total=Sum('quantity'))
+        }
+
+        
+        
+        # B2B stock sent — from_variant direct match, packaging-ready ho chuki ho
+        b2b_sent_map = {
+            row['from_variant_id']: row['total']
+            for row in B2BStockTransferItem.objects.filter(
+                from_variant_id__in=variant_ids,
+                transfer__from_branch_id=branch_id,
+                is_packaged=True,
+            ).values('from_variant_id').annotate(total=Sum('quantity'))
+        }
+        
+        #  B2B return packaged - branch side deduction (bulk map)
+        b2b_return_packaged_map = {}
+        if not is_superadmin:
+            b2b_return_packaged_map = {
+                row['branch_variant_id']: row['total']
+                for row in B2BStockReturnItem.objects.filter(
+                    branch_variant_id__in=variant_ids,
+                    return_request__branch_id=branch_id,
+                    is_packaging_ready=True,
+                ).values('branch_variant_id').annotate(total=Sum('quantity'))
+            }
+
+        #  B2B return received - superadmin side increase (bulk map)
+        b2b_return_received_map = {}
+        if is_superadmin:
+            b2b_return_received_map = {
+                row['company_variant_id']: row['total']
+                for row in B2BStockReturnItem.objects.filter(
+                    company_variant_id__in=variant_ids,
+                    return_request__to_branch_id=branch_id,
+                    is_returned_to_company=True,
+                ).values('company_variant_id').annotate(total=Sum('quantity'))
+            }
+        
+        b2bsale_sent_map = {}
+        if is_superadmin:
+            b2bsale_sent_map = {
+                row['from_variant_id']: row['total']
+                for row in B2BSaleItem.objects.filter(
+                    from_variant_id__in=variant_ids,
+                    sale__from_branch_id=branch_id,
+                ).exclude(
+                    Q(sale__status='cancelled') & Q(is_stock_updated=False)
+                ).values('from_variant_id').annotate(total=Sum('quantity'))
+            }
+
+        b2bsale_received_map = {}
+        if barcodes:
+            b2bsale_received_map = {
+                row['from_variant__barcode']: row['total']
+                for row in B2BSaleItem.objects.filter(
+                    from_variant__barcode__in=barcodes,
+                    sale__to_branch_id=branch_id,
+                    is_stock_updated=True,
+                ).values('from_variant__barcode').annotate(total=Sum('quantity'))
+            }
+        
         # Total sales POS per variant
         sales_pos_map = {
             row['variant_id']: row['total']
@@ -192,10 +266,18 @@ class StockReportAPIView(APIView):
             total_transfer_sent = transfer_sent_map.get(vid) or Decimal('0')
             total_stock_return_packaged = stock_return_packaged_map.get(vid) or Decimal('0')
             total_stock_return_received = stock_return_received_map.get(vid) or Decimal('0')
+            total_b2b_received = b2b_received_map.get(vid) or Decimal('0')
+            total_b2b_sent = b2b_sent_map.get(vid) or Decimal('0')
+            total_b2b_return_packaged = b2b_return_packaged_map.get(vid) or Decimal('0')
+            total_b2b_return_received = b2b_return_received_map.get(vid) or Decimal('0')
             total_sold_pos = sales_pos_map.get(vid) or Decimal('0')
             total_sold_website = sales_website_map.get(vid) or Decimal('0')
             total_sold = total_sold_pos + total_sold_website
             total_sales_returns = sales_return_map.get(vid) or Decimal('0')
+            total_b2bsale_sent = b2bsale_sent_map.get(vid) or Decimal('0')
+            total_b2bsale_received = (
+                b2bsale_received_map.get(barcode) or Decimal('0') if barcode else Decimal('0')
+            )
  
             calculated_stock = (
                 opening_stock
@@ -205,8 +287,14 @@ class StockReportAPIView(APIView):
                 - total_transfer_sent
                 - total_stock_return_packaged
                 + total_stock_return_received
+                + total_b2b_received     
+                - total_b2b_sent 
+                - total_b2b_return_packaged  
+                + total_b2b_return_received 
                 - total_sold
                 + total_sales_returns
+                - total_b2bsale_sent
+                + total_b2bsale_received
             )
  
             if calculated_stock < 0:
@@ -214,7 +302,7 @@ class StockReportAPIView(APIView):
  
             db_stock = Decimal(str(variant.current_stock or 0))
             if db_stock != calculated_stock:
-                variant.current_stock = float(calculated_stock)
+                variant.current_stock = float(calculated_stock) 
                 variants_to_update.append(variant)
  
             last_price = last_price_map.get(vid)
@@ -290,7 +378,7 @@ class StockHistoryAPIView(APIView):
             if not branch:
                 return Response({"error": "Branch not found"}, status=400)
 
-        # ✅ Variant fetch - branch check ke saath
+        #  Variant fetch - branch check ke saath
         try:
             variant = itemvariants.objects.get(
                 id=variant_id,
@@ -347,7 +435,7 @@ class StockHistoryAPIView(APIView):
                 "currentStock": float(running_stock),
             })
 
-        # ✅ Transfer Received - barcode se match
+        #  Transfer Received - barcode se match
         barcode = variant.barcode
         if barcode:
             for st in StockTransferItem.objects.filter(
@@ -388,8 +476,8 @@ class StockHistoryAPIView(APIView):
                     "currentStock": float(running_stock),
                 })
 
-        # ✅ STOCK RETURN PACKAGED - Branch stock deduction (ONLY FOR BRANCH)
-        # ✅ ADD THIS - NEW
+        #  STOCK RETURN PACKAGED - Branch stock deduction (ONLY FOR BRANCH)
+        #  ADD THIS - NEW
         if not is_superadmin:
             for sr in StockReturnItem.objects.filter(
                 branch_variant_id=variant_id,
@@ -409,8 +497,8 @@ class StockHistoryAPIView(APIView):
                     "currentStock": float(running_stock),
                 })
 
-        # ✅ STOCK RETURN RECEIVED - Company stock increase (ONLY FOR SUPERADMIN)
-        # ✅ ADD THIS - NEW
+        #  STOCK RETURN RECEIVED - Company stock increase (ONLY FOR SUPERADMIN)
+        #  ADD THIS - NEW
         if is_superadmin:
             for sr in StockReturnItem.objects.filter(
                 company_variant_id=variant_id,
@@ -429,6 +517,120 @@ class StockHistoryAPIView(APIView):
                     "currentStock": float(running_stock),
                 })
 
+        #  B2B Stock Transfer Received
+        for bt in B2BStockTransferItem.objects.filter(
+            to_variant_id=variant_id,
+            transfer__to_branch=branch,
+            is_received=True,
+        ).select_related('transfer', 'transfer__from_branch').order_by('transfer__updated_at'):
+            qty = Decimal(str(bt.quantity))
+            running_stock += qty
+            history.append({
+                "date": bt.transfer.updated_at,
+                "type": "B2B Transfer (Received)",
+                "partyName": f"From: {bt.transfer.from_branch.branch_name}",
+                "qty": float(qty),
+                "billNo": bt.transfer.transfer_no,
+                "billAmount": float(bt.rate * bt.quantity),
+                "currentStock": float(running_stock),
+            })
+
+        #  B2B Stock Transfer Sent (packaging ready)
+        for bt in B2BStockTransferItem.objects.filter(
+            from_variant_id=variant_id,
+            transfer__from_branch=branch,
+            is_packaged=True,
+        ).select_related('transfer', 'transfer__to_branch').order_by('transfer__updated_at'):
+            qty = -Decimal(str(bt.quantity))
+            running_stock += qty
+            history.append({
+                "date": bt.transfer.updated_at,
+                "type": "B2B Transfer (Sent)",
+                "partyName": f"To: {bt.transfer.to_branch.branch_name}",
+                "qty": float(qty),
+                "billNo": bt.transfer.transfer_no,
+                "billAmount": float(bt.rate * bt.quantity),
+                "currentStock": float(running_stock),
+            })
+        
+        
+        #  NEW — B2B STOCK RETURN PACKAGED (Branch side stock deduction)
+        if not is_superadmin:
+            for br in B2BStockReturnItem.objects.filter(
+                branch_variant_id=variant_id,
+                return_request__branch=branch,
+                is_packaging_ready=True,
+            ).select_related('return_request', 'return_request__to_branch').order_by('return_request__updated_at'):
+                qty = -Decimal(str(br.quantity))
+                running_stock += qty
+                history.append({
+                    "date": br.return_request.updated_at,
+                    "type": "B2B Return (Sent)",
+                    "partyName": f"To: {br.return_request.to_branch.branch_name}",
+                    "qty": float(qty),
+                    "billNo": br.return_request.return_no,
+                    "billAmount": float(br.quantity * br.rate),
+                    "currentStock": float(running_stock),
+                })
+
+        #  NEW — B2B STOCK RETURN RECEIVED (Superadmin/Company side stock increase)
+        if is_superadmin:
+            for br in B2BStockReturnItem.objects.filter(
+                company_variant_id=variant_id,
+                return_request__to_branch=branch,
+                is_returned_to_company=True,
+            ).select_related('return_request', 'return_request__branch').order_by('return_request__updated_at'):
+                qty = Decimal(str(br.quantity))
+                running_stock += qty
+                history.append({
+                    "date": br.return_request.updated_at,
+                    "type": "B2B Return (Received)",
+                    "partyName": f"From: {br.return_request.branch.branch_name}",
+                    "qty": float(qty),
+                    "billNo": br.return_request.return_no,
+                    "billAmount": float(br.quantity * br.rate),
+                    "currentStock": float(running_stock),
+                })
+                
+                #  NEW: B2B SALE SENT - Superadmin branch se stock deduct (creation pe hi ho chuka hai)
+        if is_superadmin:
+            for b2b_item in B2BSaleItem.objects.filter(
+                from_variant_id=variant_id,
+                sale__from_branch=branch,
+            ).exclude(
+                Q(sale__status='cancelled') & Q(is_stock_updated=False)
+            ).select_related('sale', 'sale__to_branch').order_by('sale__created_at'):
+                qty = -Decimal(str(b2b_item.quantity))
+                running_stock += qty
+                history.append({
+                    "date": b2b_item.sale.created_at,
+                    "type": "B2B Sale (Sent)",
+                    "partyName": f"To: {b2b_item.sale.to_branch.branch_name}",
+                    "qty": float(qty),
+                    "billNo": b2b_item.sale.sale_no,
+                    "billAmount": float(b2b_item.rate * b2b_item.quantity),
+                    "currentStock": float(running_stock),
+                })
+
+        #  NEW: B2B SALE RECEIVED - Franchise branch me stock increase (verify hone par)
+        if barcode:
+            for b2b_item in B2BSaleItem.objects.filter(
+                from_variant__barcode=barcode,
+                sale__to_branch=branch,
+                is_stock_updated=True,
+            ).select_related('sale', 'sale__from_branch').order_by('sale__updated_at'):
+                qty = Decimal(str(b2b_item.quantity))
+                running_stock += qty
+                history.append({
+                    "date": b2b_item.sale.updated_at,
+                    "type": "B2B Sale (Received)",
+                    "partyName": f"From: {b2b_item.sale.from_branch.branch_name}",
+                    "qty": float(qty),
+                    "billNo": b2b_item.sale.sale_no,
+                    "billAmount": float(b2b_item.rate * b2b_item.quantity),
+                    "currentStock": float(running_stock),
+                })        
+                        
         # Sales POS
         for s in SalesItem.objects.filter(
             variant_id=variant_id

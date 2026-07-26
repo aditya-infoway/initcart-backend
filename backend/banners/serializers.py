@@ -32,29 +32,63 @@ class SmallAdSerializer(serializers.ModelSerializer):
         fields = "__all__"
         
 class SuperAdminProfileSerializer(serializers.ModelSerializer):
-    profile_image = serializers.ImageField(required=False, allow_null=True)
-
+    profile_image = serializers.SerializerMethodField()
+    brochure_pdf_url = serializers.SerializerMethodField()
+    
     class Meta:
         model = SuperAdminProfile
-        fields = "__all__"
-
-    def validate_profile_image(self, value):
-        if value == "":
-            return None
-        return value
-
-
-        
-class initAdminFooterSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = SuperAdminProfile
-        fields = ["phone","email","address","youtube","instagram","twitter","facebook","whatsapp"]
-        
+        fields = [
+            "name", "email", "phone", "address", 
+            "profile_image", "brochure_pdf", "brochure_pdf_url",
+            "youtube", "instagram", "twitter", "facebook", "whatsapp"
+        ]
+        extra_kwargs = {
+            'brochure_pdf': {'required': False}
+        }
+    
     def get_profile_image(self, obj):
+        if obj.profile_image:
             request = self.context.get("request")
-            if obj.profile_image:
+            if request:  # ✅ Safety check
                 return request.build_absolute_uri(obj.profile_image.url)
-            return ""
+            return obj.profile_image.url  # Fallback to relative URL
+        return ""
+    
+    def get_brochure_pdf_url(self, obj):
+        if obj.brochure_pdf:
+            request = self.context.get("request")
+            if request:  # ✅ Safety check
+                return request.build_absolute_uri(obj.brochure_pdf.url)
+            return obj.brochure_pdf.url  # Fallback to relative URL
+        return ""
+
+
+class initAdminFooterSerializer(serializers.ModelSerializer):
+    brochure_pdf_url = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = SuperAdminProfile
+        fields = [
+            "phone", "email", "address",
+            "youtube", "instagram", "twitter", "facebook", "whatsapp",
+            "brochure_pdf_url"
+        ]
+    
+    def get_profile_image(self, obj):
+        if obj.profile_image:
+            request = self.context.get("request")
+            if request:  # ✅ Safety check
+                return request.build_absolute_uri(obj.profile_image.url)
+            return obj.profile_image.url
+        return ""
+    
+    def get_brochure_pdf_url(self, obj):
+        if obj.brochure_pdf:
+            request = self.context.get("request")
+            if request:  # ✅ Safety check
+                return request.build_absolute_uri(obj.brochure_pdf.url)
+            return obj.brochure_pdf.url
+        return ""
         
 
 
