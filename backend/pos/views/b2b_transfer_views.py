@@ -18,6 +18,7 @@ from pos.serializers.b2b_transfer_serializers import (
 )
 from pos.utils.pagination import StandardResultsSetPagination
 from pos.models.b2b_transfer import B2BOrderSequence, get_financial_year
+from pos.utils.variant_mapping import get_or_create_dest_variant
 
 BRANCH_ROLES = ['branch', 'vendor', 'branch_customer', 'branch_agent', 'branch_both', 'branch_single']
 
@@ -316,12 +317,6 @@ class B2BReceiveTransferItemView(APIView):
         if not my_branch:
             return Response({"success": False, "message": "Branch not found"}, status=404)
 
-        if not Account.objects.filter(branch=my_branch, group='Sundry Debitor(Internal)').exists():
-            return Response({
-                "success": False, "error_code": "NO_SUNDRY_CREDITOR_ACCOUNT",
-                "message": "Please create a Sundry Creditor(Main) account before receiving stock.",
-            }, status=400)
-
         try:
             transfer = B2BStockTransfer.objects.get(id=transfer_id, to_branch=my_branch)
         except B2BStockTransfer.DoesNotExist:
@@ -341,10 +336,8 @@ class B2BReceiveTransferItemView(APIView):
         with transaction.atomic():
             dest_variant = item.to_variant
             if not dest_variant:
-                from_variant = item.from_variant
-                dest_variant = ItemVariants.objects.filter(barcode=from_variant.barcode, item__branch=my_branch).first()
-                if not dest_variant:
-                    return Response({"success": False, "message": "Destination variant not found."}, status=400)
+                # ✅ FIXED — barcode filter ki jagah FK-mapping based resolve
+                dest_variant, _created = get_or_create_dest_variant(item.from_variant, my_branch, sync_fields=True)
                 item.to_variant = dest_variant
 
             dest_variant.current_stock = (dest_variant.current_stock or 0) + item.quantity
@@ -433,10 +426,8 @@ class B2BReceiveTransferView(APIView):
             for item in transfer.items.filter(is_received=False):
                 dest_variant = item.to_variant
                 if not dest_variant:
-                    from_variant = item.from_variant
-                    dest_variant = ItemVariants.objects.filter(barcode=from_variant.barcode, item__branch=my_branch).first()
-                    if not dest_variant:
-                        continue
+                    # ✅ FIXED
+                    dest_variant, _created = get_or_create_dest_variant(item.from_variant, my_branch, sync_fields=True)
                     item.to_variant = dest_variant
 
                 dest_variant.current_stock = (dest_variant.current_stock or 0) + item.quantity

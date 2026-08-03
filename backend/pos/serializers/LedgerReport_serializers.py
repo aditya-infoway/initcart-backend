@@ -44,6 +44,7 @@ from pos.models.salesreturn import SalesReturnMaster
 from pos.models.purchasereturn import PurchaseReturnMaster
 from pos.models.stock_transfer import StockTransfer
 from pos.models.stock_return import StockReturn
+from pos.models.b2b_sales import B2BSale
 
 class LedgerAccountSerializer(serializers.ModelSerializer):
     class Meta:
@@ -354,7 +355,7 @@ class LedgerReportSerializer:
                     "debit": Decimal("0"),
                     "credit": D(br.amount),
                 })
-# ═══════════════════════════════════════════════════════════════════
+        # ═══════════════════════════════════════════════════════════════════
         # SUNDRY DEBITOR (Internal / branch-to-branch)
         # Stock Transfer → Cr (branch ka due badha)
         # Payment received FROM branch → Dr (due kam hua)
@@ -383,6 +384,30 @@ class LedgerReportSerializer:
                             "debit": Decimal("0"),
                             "credit": D(total),
                         })
+            
+
+            # ✅ NEW — B2B Sale bhi isi tarah Credit entry dega
+            if linked_branch:
+                for bs in df(
+                    B2BSale.objects.filter(
+                        to_branch=linked_branch,
+                        from_branch=branch,
+                        status__in=['pending', 'completed'],
+                    ),
+                    field="sale_date",
+                ):
+                    from pos.views.b2b_sales_receipt_views import get_b2b_sale_total
+                    total = get_b2b_sale_total(bs)
+                    if total and total > 0:
+                        entries.append({
+                            "date": bs.sale_date,
+                            "created_at": bs.created_at,
+                            "voucher": bs.sale_no,
+                            "type": "B2BS",
+                            "particulars": f"B2B Sale – {bs.sale_no}",
+                            "debit": Decimal("0"),
+                            "credit": D(total),
+                        })                            
             if linked_branch:
                 for r in df(
                     StockReturn.objects.filter(
@@ -405,6 +430,7 @@ class LedgerReportSerializer:
                             "debit": r_total,
                             "credit": Decimal("0"),
                         })    
+
             for cr in df(
                 CashReceipt.objects.filter(op_account=account, branch=branch)
                 .select_related("cash_account")
@@ -475,6 +501,31 @@ class LedgerReportSerializer:
                             "debit": Decimal("0"),
                             "credit": D(total),
                         })
+                        
+            # ✅ NEW — same B2B Sale block yahan bhi
+            if linked_branch:
+                for bs in df(
+                    B2BSale.objects.filter(
+                        to_branch=linked_branch,
+                        from_branch=branch,
+                        status__in=['pending', 'completed'],
+                    ),
+                    field="sale_date",
+                ):
+                    from pos.views.b2b_sales_receipt_views import get_b2b_sale_total
+                    total = get_b2b_sale_total(bs)
+                    if total and total > 0:
+                        entries.append({
+                            "date": bs.sale_date,
+                            "created_at": bs.created_at,
+                            "voucher": bs.sale_no,
+                            "type": "B2BS",
+                            "particulars": f"B2B Sale – {bs.sale_no}",
+                            "debit": Decimal("0"),
+                            "credit": D(total),
+                        })
+                        
+                        
             if linked_branch:
                 for r in df(
                     StockReturn.objects.filter(
@@ -567,7 +618,23 @@ class LedgerReportSerializer:
                             "debit": D(total),
                             "credit": Decimal("0"),
                         })
-
+            # ✅ NEW — B2B Sale se auto-create hui Purchase Entry → DEBIT
+            for p in df(
+                PurchaseMaster.objects.filter(
+                    branch=branch,
+                    partyName=account,
+                    b2b_sale__isnull=False,
+                ),
+            ):
+                entries.append({
+                    "date": p.date,
+                    "created_at": p.created_at,
+                    "voucher": p.billNo,
+                    "type": "PI",
+                    "particulars": f"Purchase Entry (B2B Sale) – {p.billNo}",
+                    "debit": D(p.grand_total),
+                    "credit": Decimal("0"),
+                })    
             # Cash Payment → CREDIT (liability decrease)
             for cp in df(
                 CashPayment.objects.filter(
@@ -585,7 +652,21 @@ class LedgerReportSerializer:
                     "debit": Decimal("0"),
                     "credit": D(cp.amount),
                 })
-
+            # ✅ NEW — Cash Payment against B2B-generated Purchase Entry → CREDIT
+            for cp in df(
+                CashPayment.objects.filter(
+                    op_account=account, branch=branch, type="PCP"
+                ).select_related("cash_account")
+            ):
+                entries.append({
+                    "date": cp.date,
+                    "created_at": cp.created_at,
+                    "voucher": cp.voucher_no,
+                    "type": "PCP",
+                    "particulars": f"Cash Payment against Purchase Entry – {cp.cash_account.account_name}",
+                    "debit": Decimal("0"),
+                    "credit": D(cp.amount),
+                })
             # Bank Payment → CREDIT (liability decrease)
             for bp in df(
                 BankPayment.objects.filter(
@@ -603,6 +684,22 @@ class LedgerReportSerializer:
                     "debit": Decimal("0"),
                     "credit": D(bp.amount),
                 })    
+
+            #  NEW — Bank Payment against B2B-generated Purchase Entry → CREDIT
+            for bp in df(
+                BankPayment.objects.filter(
+                    op_account=account, branch=branch, type="PBP"
+                ).select_related("bank_account")
+            ):
+                entries.append({
+                    "date": bp.date,
+                    "created_at": bp.created_at,
+                    "voucher": bp.voucher_no,
+                    "type": "PBP",
+                    "particulars": f"Bank Payment against Purchase Entry – {bp.bank_account.account_name}",
+                    "debit": Decimal("0"),
+                    "credit": D(bp.amount),
+                })
             
             # Stock Return → CREDIT (liability decrease) — as soon as return
             # is created, until cancelled/rejected

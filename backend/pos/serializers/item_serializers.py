@@ -9,8 +9,10 @@ from pos.serializers.group_unit_serializers import ItemGroupSerializer, ItemUnit
 import json
 import random
 import string
+from django.db.models.deletion import ProtectedError
 
 class VariantSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(required=False)
     variant_image = serializers.ImageField(required=False, allow_null=True)
     variant_image_url = serializers.SerializerMethodField(read_only=True)
     
@@ -342,22 +344,14 @@ class itemSerializers(serializers.ModelSerializer):
                         else:
                             raise serializers.ValidationError(variant_serializer.errors)
                     except itemvariants.DoesNotExist:
-                        # ✅ ID diya tha lekin exist nahi karta - naya create karo
-                        # lekin pehle is ID ko incoming mein se hataao
-                        incoming_variant_ids.remove(variant_id)
-                        v_data_clean = {k: v for k, v in v_data.items() if k != 'id'}
-                        variant_serializer = VariantSerializer(
-                            data=v_data_clean,
-                            context={
-                                "request": self.context.get("request"),
-                                "item_id": instance.id,
-                            }
-                        )
-                        if variant_serializer.is_valid():
-                            new_variant = variant_serializer.save(item=instance)
-                            incoming_variant_ids.append(new_variant.id)
-                        else:
-                            raise serializers.ValidationError(variant_serializer.errors)
+                        # ✅ Frontend ne existing variant id bheja tha, lekin wo id is
+                        # item ke against exist nahi karta — silently naya variant
+                        # banana galat hai (isse duplicate variant ban jaate hain).
+                        # Iski jagah clear error do taaki asli wajah pata chale.
+                        raise serializers.ValidationError({
+                            "variants": f"Variant id {variant_id} not found for this item. "
+                                        f"Please refresh and try editing again."
+                        })
                 else:
                     # ✅ Naya variant create karo (negative ID ya no ID)
                     v_data_clean = {k: v for k, v in v_data.items() if k != 'id'}
@@ -376,8 +370,13 @@ class itemSerializers(serializers.ModelSerializer):
             
             # ✅ YEH LINE SABSE IMPORTANT THI JO MISSING THI:
             # Jo variants incoming mein nahi hain, unhe delete karo
-            instance.variants.exclude(id__in=incoming_variant_ids).delete()
-        
+            variants_to_remove = instance.variants.exclude(id__in=incoming_variant_ids)
+            for variant in variants_to_remove:
+                try:
+                    variant.delete()
+                except ProtectedError:
+                    continue
+
         return instance
         
 

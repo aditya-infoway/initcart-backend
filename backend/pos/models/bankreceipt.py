@@ -20,8 +20,9 @@ class BankReceipt(models.Model):
         ('BR', 'Bank Receipt'),
         ('SBR', 'Sales Bank Receipt'),
         ('PRBR', 'Purchase Return Bank Receipt'),
-        ('STBR', 'Stock Transfer Bank Receipt'),  # ✅ ADD
+        ('STBR', 'Stock Transfer Bank Receipt'),
         ('STRBR', 'Stock Return Bank Receipt'),
+        ('B2BSBR', 'B2B Sale Bank Receipt'),
     ]
 
     branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
@@ -58,6 +59,10 @@ class BankReceipt(models.Model):
     stock_return = models.ForeignKey(
         'pos.StockReturn', on_delete=models.CASCADE, null=True, blank=True, related_name='bank_receipts'
     )
+    
+    b2b_sale = models.ForeignKey(
+        'pos.B2BSale', on_delete=models.CASCADE, null=True, blank=True, related_name='bank_receipts'
+    )
 
     def __str__(self):
         return f"{self.voucher_no} - {self.amount}"
@@ -89,7 +94,10 @@ def save(self, *args, **kwargs):
                 should_update_party = True
                 
             if self.stock_return:             
-                should_update_party = True    
+                should_update_party = True 
+                
+            if self.b2b_sale:
+                should_update_party = True       
 
             if self.purchase_return:
                 should_update_party = False

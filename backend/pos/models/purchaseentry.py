@@ -3,6 +3,8 @@ from django.db import models
 from pos.models.account import Account
 from pos.models.items import items,itemvariants
 from pos.models.branch import Branch
+from pos.models.b2b_sales import B2BSale
+
 
 class PurchaseMaster(models.Model):
     date = models.DateField()
@@ -25,6 +27,15 @@ class PurchaseMaster(models.Model):
     roundamount = models.DecimalField(default=0, max_digits=5, decimal_places=2)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # ✅ NEW — Traceability + duplicate-guard: B2B Sale se auto-generate hua hai to yahan link milega
+    b2b_sale = models.OneToOneField(
+        B2BSale,
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True,
+        related_name='purchase_entry'
+    )
+    
     def __str__(self):
         return self.billNo
 

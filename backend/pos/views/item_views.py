@@ -22,6 +22,7 @@ from pos.serializers.item_serializers import (
     BrandSerializer,
 )
 from pos.utils.pagination import StandardResultsSetPagination 
+from django.db.models.deletion import ProtectedError
 
 
 # ------------------ Item CRUD ------------------
@@ -461,7 +462,14 @@ class Itemvariantdelete(APIView):
                 if variant.item.branch != request.user.branch:
                     return Response({"error": "Unauthorized"}, status=403)
 
-            variant.delete()
+            try:
+                variant.delete()
+            except ProtectedError:
+                return Response({
+                    "success": False,
+                    "error": "This variant has Stock Transfer / Order / Return history and cannot be deleted. Edit it instead."
+                }, status=400)
+
             return Response({"success": True})
         except itemvariants.DoesNotExist:
             return Response({"error": "Not found"}, status=404)

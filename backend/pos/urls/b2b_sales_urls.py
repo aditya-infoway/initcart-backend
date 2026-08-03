@@ -9,6 +9,12 @@ from pos.views.b2b_sales_views import (
     VerifyAllB2BSaleItemsView,
     B2BSaleNextNumberView,
 )
+
+from pos.views.b2b_sales_receipt_views import (
+    B2BSaleCreditBillsView,
+    ReceiveB2BSaleBillCashView,
+    ReceiveB2BSaleBillBankView,
+)
 from pos.views.stock_transfer_views import MyBranchItemsView
 
 urlpatterns = [
@@ -25,4 +31,9 @@ urlpatterns = [
     path('b2b-sales/<int:sale_id>/verify-item/<int:item_id>/', VerifyB2BSaleItemView.as_view(), name='b2b-verify-item'),
     path('b2b-sales/<int:sale_id>/verify-all/', VerifyAllB2BSaleItemsView.as_view(), name='b2b-verify-all'),
     path('b2b-sales/next-number/', B2BSaleNextNumberView.as_view()),
+    
+    # ladger endpoints
+    path('b2b-sale-credit-bills/', B2BSaleCreditBillsView.as_view()),
+    path('receive-b2b-sale-bill-cash/', ReceiveB2BSaleBillCashView.as_view()),
+    path('receive-b2b-sale-bill-bank/', ReceiveB2BSaleBillBankView.as_view()),
 ]

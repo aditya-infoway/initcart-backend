@@ -7,6 +7,7 @@ from pos.models.branch import Branch
 from pos.models.items import items as Items, itemvariants as ItemVariants
 from pos.utils.gst_calc import calculate_gst_split
 from pos.models.settings import setting
+from pos.utils.variant_mapping import get_or_create_dest_variant
 
 
 def variant_info_str(variant):
@@ -17,84 +18,16 @@ def variant_info_str(variant):
 
 def create_full_item_in_destination(source_item, destination_branch):
     """
-    ✅ Create FULL item in destination branch with ALL variants (0 stock)
-    Returns the created destination item
+    Item ke saare variants ke liye mapping ensure karo (0 stock ke saath),
+    lekin fields sync mat karo — wo sirf actual transfer/verify ke time hoga.
     """
-    print(f"\n🏪 Creating FULL item in destination: {source_item.itemName}")
-    print(f"   Destination branch: {destination_branch.branch_name}")
-    print(f"   Source variants count: {source_item.variants.count()}")
-    
-    # Check if item already exists
-    existing_item = Items.objects.filter(
-        branch=destination_branch,
-        itemName=source_item.itemName,
-        created_by_superadmin=True
-    ).first()
-    
-    if existing_item:
-        print(f"   ⚠️ Item already exists in destination, skipping creation")
-        return existing_item
-    
-    # Create new item (copy all fields from source)
-    dest_item = Items.objects.create(
-        entry_type=source_item.entry_type,
-        itemName=source_item.itemName,
-        branch=destination_branch,
-        brand=source_item.brand,
-        c_brand=source_item.c_brand,
-        category=source_item.category,
-        c_category=source_item.c_category,
-        subCategory=source_item.subCategory,
-        c_subCategory=source_item.c_subCategory,
-        subSubCategory=source_item.subSubCategory,
-        c_subSubCategory=source_item.c_subSubCategory,
-        group=source_item.group,
-        unit=source_item.unit,
-        created_by_superadmin=True,
-        hsnCode=source_item.hsnCode,
-        taxSlab=source_item.taxSlab,
-        website_display=source_item.website_display,
-        short_description=source_item.short_description,
-        full_description=source_item.full_description,
-        keywords=source_item.keywords,
-        main_image=source_item.main_image,
-        thumbnail_image=source_item.thumbnail_image,
-        gallery=source_item.gallery,
-        product_condition=source_item.product_condition,
-        return_policy=source_item.return_policy,
-        estimated_delivery_time=source_item.estimated_delivery_time,
-        free_shipping=source_item.free_shipping,
-        warranty_available=source_item.warranty_available,
-        warranty_period=source_item.warranty_period,
-        warranty_type=source_item.warranty_type,
-        warranty_description=source_item.warranty_description,
-        description_features=source_item.description_features,
-        specifications=source_item.specifications,
-    )
-    
-    # ✅ Create ALL variants from source item with 0 stock
     for source_variant in source_item.variants.all():
-        # ✅ Calculate branch price
-        branch_price = source_variant.branchPrice or source_variant.salesPrice or 0
-        
-        ItemVariants.objects.create(
-            item=dest_item,
-            purchasePrice=branch_price,  # ✅ PURCHASE PRICE = BRANCH PRICE
-            salesPrice=source_variant.salesPrice,
-            mrp=source_variant.mrp,
-            barcode=source_variant.barcode,
-            opStock=0,
-            current_stock=0,
-            size=source_variant.size,
-            color=source_variant.color,
-            srno=source_variant.srno,
-            warrantydate=source_variant.warrantydate,
-            variant_image=source_variant.variant_image,
-            branchPrice=branch_price,  # ✅ BRANCH PRICE bhi set karo
-        )
-    
-    print(f"   ✅ Item created with {source_item.variants.count()} variants (all 0 stock)")
-    return dest_item
+        get_or_create_dest_variant(source_variant, destination_branch, sync_fields=False)
+
+    # dest_item return karna ho toh:
+    return Items.objects.filter(
+        branch=destination_branch, itemName=source_item.itemName, created_by_superadmin=True
+    ).first()
 
 class TransferItemCreateSerializer(serializers.Serializer):
     from_variant_id = serializers.IntegerField()
@@ -185,27 +118,7 @@ class StockTransferCreateSerializer(serializers.Serializer):
             else:
                 dest_item = created_items_cache[item_cache_key]
 
-            dest_variant = ItemVariants.objects.filter(
-                item=dest_item,
-                size=from_variant.size,
-                color=from_variant.color,
-                srno=from_variant.srno,
-                barcode=from_variant.barcode,
-            ).first()
-
-            if not dest_variant:
-                dest_variant = ItemVariants.objects.create(
-                    item=dest_item,
-                    purchasePrice=from_variant.purchasePrice,
-                    salesPrice=from_variant.salesPrice,
-                    mrp=from_variant.mrp,
-                    barcode=from_variant.barcode,
-                    opStock=0,
-                    current_stock=0,
-                    size=from_variant.size,
-                    color=from_variant.color,
-                    srno=from_variant.srno,
-                )
+            dest_variant, _created = get_or_create_dest_variant(from_variant, to_branch, sync_fields=False)
                 
             # ✅ SIRF BRANCH PRICE - NO SALES PRICE FALLBACK
             branch_price = from_variant.branchPrice or 0

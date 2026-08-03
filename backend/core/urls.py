@@ -45,6 +45,7 @@ urlpatterns = [
 
     #order & urls 
     path('api/public/', include('ecommerce.urls.order_urls')),
+    path('api/ecommerce/', include('ecommerce.urls.payment_request_urls')),
 
     # Loyalty points management for customer
     path("api/ecommerce/", include("ecommerce.urls.loyalty_urls")),
