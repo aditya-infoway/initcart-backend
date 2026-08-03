@@ -78,6 +78,7 @@ class Order(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    delivered_at = models.DateTimeField(blank=True, null=True)
     
     class Meta:
         ordering = ['-created_at']
@@ -86,6 +87,7 @@ class Order(models.Model):
             models.Index(fields=["order_status"]),  
             models.Index(fields=["payment_status"]),
             models.Index(fields=["customer"]),
+            models.Index(fields=["delivered_at"]), 
         ]
     
     def __str__(self):

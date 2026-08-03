@@ -140,3 +140,28 @@ class StockTransferItem(models.Model):
 
     def __str__(self):
         return f"{self.transfer.transfer_no} | {self.from_item_name} × {self.quantity}"
+    
+    
+    
+class VariantBranchMapping(models.Model):
+    """
+    Permanent link: ek source (superadmin) variant, ek destination branch me
+    kis variant se corresponds karta hai — barcode se independent.
+    Isse superadmin barcode/price/fields edit kare toh bhi agli transfer
+    SAME destination variant ko update karegi, naya duplicate nahi banega.
+    """
+    source_variant = models.ForeignKey(
+        'pos.itemvariants', on_delete=models.CASCADE, related_name='branch_mappings'
+    )
+    to_branch = models.ForeignKey(Branch, on_delete=models.CASCADE, related_name='variant_mappings')
+    dest_variant = models.ForeignKey(
+        'pos.itemvariants', on_delete=models.CASCADE, related_name='source_mapping'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('source_variant', 'to_branch')
+
+    def __str__(self):
+        return f"src {self.source_variant_id} -> branch {self.to_branch_id} -> dest {self.dest_variant_id}"    

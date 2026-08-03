@@ -19,16 +19,14 @@ class Account(models.Model):
         ('Sundry Creditor(Main)', 'Sundry Creditor(Main)'),
     )
 
-    # Basic Information
     account_name = models.CharField(max_length=100)
     branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
     group = models.CharField(max_length=50, choices=GROUP_CHOICES)
     opening_balance = models.DecimalField(max_digits=25, decimal_places=2, default=0)
     drcr = models.CharField(max_length=2, choices=DRCR_CHOICES)
 
-    # Contact Details
     address = models.TextField(blank=True)
-    country = models.CharField(max_length=50, blank=True)  # New field
+    country = models.CharField(max_length=50, blank=True)
     state = models.CharField(max_length=50, blank=True)
     city = models.CharField(max_length=50, blank=True)
     pincode = models.CharField(max_length=6, blank=True)
@@ -39,7 +37,6 @@ class Account(models.Model):
     current_balance = models.DecimalField(max_digits=25, decimal_places=2, default=0)
     current_drcr = models.CharField(max_length=2, choices=DRCR_CHOICES, blank=True, null=True)
 
-    # Legal & Financial
     gst_no = models.CharField(max_length=15, blank=True)
     pan_card = models.CharField(max_length=10, blank=True)
 
@@ -47,9 +44,35 @@ class Account(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     
     def save(self, *args, **kwargs):
-        if self.pk is None:
+        # ✅ FIX: Current balance always equals opening balance for now
+        # (Jab tak transactions implement nahi hote)
+        if not self.pk:  # New record
             self.current_balance = self.opening_balance
             self.current_drcr = self.drcr
+        else:
+            # Check if we should update
+            should_update = False
+            
+            # Option 1: Check if opening_balance changed
+            try:
+                old_instance = Account.objects.get(pk=self.pk)
+                if old_instance.opening_balance != self.opening_balance:
+                    should_update = True
+            except Account.DoesNotExist:
+                should_update = True
+            
+            # Option 2: Force update if current_balance is 0 but opening_balance is not
+            if self.current_balance == 0 and self.opening_balance != 0:
+                should_update = True
+                
+            # Option 3: Force update if current_drcr is null or empty
+            if not self.current_drcr:
+                should_update = True
+            
+            if should_update:
+                self.current_balance = self.opening_balance
+                self.current_drcr = self.drcr
+                
         super().save(*args, **kwargs)
 
     def __str__(self):

@@ -23,6 +23,7 @@ from pos.serializers.purchaseentry_serializers import (
 from pos.models.cashpayment import CashPayment
 from pos.models.bankpayment import BankPayment 
 from pos.utils.pagination import StandardResultsSetPagination
+
 #  ADD THIS FUNCTION
 def to_decimal(value, default=Decimal("0.00")):
     try:
@@ -125,7 +126,7 @@ class PurchaseCreateView(APIView):
 
             terms = purchase.terms.strip().lower() if purchase.terms else ""
 
-
+            
             # ✅ CREDIT PURCHASE - Supplier का Cr balance बढ़ाएं
             if terms == "credit":
 

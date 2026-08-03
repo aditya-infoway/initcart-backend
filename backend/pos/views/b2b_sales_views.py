@@ -21,6 +21,7 @@ from pos.serializers.b2b_sales_serializers import (
 from pos.utils.pagination import StandardResultsSetPagination
 from pos.models.settings import setting as SettingModel
 from pos.utils.gst_calc import calculate_gst_split
+from pos.utils.variant_mapping import get_or_create_dest_variant
 
 # ✅ Reuse existing superadmin permission (no duplication)
 from pos.views.stock_transfer_views import IsSuperAdminRole
@@ -343,54 +344,14 @@ class VerifyB2BSaleItemView(APIView):
             return Response({'success': False, 'message': 'Stock already verified'}, status=400)
 
         website_display = request.data.get('website_display', False)
-
         with transaction.atomic():
             from_variant = item.from_variant
 
-            # ✅ STEP 1 — barcode se dest variant dhoondo (normal flow me yahi mil jaayega,
-            # kyunki sale create hote hi already ban chuka hota hai)
-            dest_variant = ItemVariants.objects.filter(
-                barcode=from_variant.barcode,
-                item__branch=branch
-            ).select_related('item').first()
-
-            if dest_variant:
-                dest_item = dest_variant.item
-            else:
-                # ✅ FALLBACK — sirf tab chalega jab kisi purani/edge-case sale ke liye
-                # item pehle se nahi bana tha (backward-compat).
-                dest_item = Items.objects.filter(
-                    branch=branch,
-                    itemName=from_variant.item.itemName,
-                    created_by_superadmin=True
-                ).first()
-
-                if not dest_item:
-                    dest_item = self._create_full_item(from_variant.item, branch)
-
-                # ✅✅ FIX — _create_full_item() already is barcode wala variant bana chuka hota hai
-                # (kyunki wo source item ke SAARE variants loop karke banata hai).
-                # Isliye dubara create() karne ke bajaye pehle barcode se dhoondo.
-                dest_variant = ItemVariants.objects.filter(
-                    item=dest_item,
-                    barcode=from_variant.barcode,
-                ).first()
-
-                # ✅ ultra-rare safety net — genuinely na mile tabhi naya banao
-                if not dest_variant:
-                    dest_variant = ItemVariants.objects.create(
-                        item=dest_item,
-                        purchasePrice=from_variant.purchasePrice,
-                        salesPrice=from_variant.salesPrice,
-                        mrp=from_variant.mrp,
-                        barcode=from_variant.barcode,
-                        opStock=0,
-                        current_stock=0,
-                        size=from_variant.size,
-                        color=from_variant.color,
-                        srno=from_variant.srno,
-                        warrantydate=from_variant.warrantydate,
-                    )
+            # ✅ FIXED — barcode filter ki jagah FK-mapping based lookup
+            # (Stock Transfer verify jaisa hi pattern; VariantBranchMapping
+            # already sale-creation time pe ban chuki hoti hai)
+            dest_variant, _created = get_or_create_dest_variant(from_variant, branch, sync_fields=True)
+            dest_item = dest_variant.item
 
             if website_display:
                 Items.objects.filter(id=dest_item.id).update(website_display=True, website_status='pending')
@@ -409,6 +370,8 @@ class VerifyB2BSaleItemView(APIView):
                 sale.status = 'completed'
                 sale.save(update_fields=['status'])
 
+                from pos.utils.b2b_purchase_entry import create_purchase_entry_from_b2b_sale
+                create_purchase_entry_from_b2b_sale(sale)
         return Response({
             'success': True,
             'message': f'Verified: {item.quantity} x {item.from_item_name}. Stock added to your branch.',
@@ -508,74 +471,17 @@ class VerifyAllB2BSaleItemsView(APIView):
         verified_count = 0
 
         # ✅ NEW — isi request ke andar same item dubara process ho toh dobara na bane
-        created_items_cache = {}
-
         with transaction.atomic():
             for item in pending_items:
                 from_variant = item.from_variant
 
-                # ✅ STEP 1 — barcode se dhoondo (normal flow me mil jaayega)
-                dest_variant = ItemVariants.objects.filter(
-                    barcode=from_variant.barcode,
-                    item__branch=branch
-                ).select_related('item').first()
-
-                if not dest_variant:
-                    cache_key = from_variant.item_id
-                    if cache_key in created_items_cache:
-                        dest_item = created_items_cache[cache_key]
-                    else:
-                        dest_item = Items.objects.filter(
-                            branch=branch,
-                            itemName=from_variant.item.itemName,
-                            created_by_superadmin=True
-                        ).first()
-
-                        if not dest_item:
-                            dest_item = Items.objects.create(
-                                entry_type=from_variant.item.entry_type,
-                                itemName=from_variant.item.itemName,
-                                branch=branch,
-                                brand=from_variant.item.brand,
-                                c_brand=from_variant.item.c_brand,
-                                category=from_variant.item.category,
-                                c_category=from_variant.item.c_category,
-                                subCategory=from_variant.item.subCategory,
-                                c_subCategory=from_variant.item.c_subCategory,
-                                subSubCategory=from_variant.item.subSubCategory,
-                                c_subSubCategory=from_variant.item.c_subSubCategory,
-                                group=from_variant.item.group,
-                                unit=from_variant.item.unit,
-                                created_by_superadmin=True,
-                                hsnCode=from_variant.item.hsnCode,
-                                taxSlab=from_variant.item.taxSlab,
-                            )
-                        created_items_cache[cache_key] = dest_item
-
-                    # ✅✅ FIX — pehle barcode se dhoondo, tabhi create karo jab genuinely na mile
-                    dest_variant = ItemVariants.objects.filter(
-                        item=dest_item,
-                        barcode=from_variant.barcode,
-                    ).first()
-
-                    if not dest_variant:
-                        branch_price = from_variant.branchPrice or from_variant.salesPrice or 0
-                        dest_variant = ItemVariants.objects.create(
-                            item=dest_item,
-                            purchasePrice=branch_price,
-                            salesPrice=from_variant.salesPrice,
-                            mrp=from_variant.mrp,
-                            barcode=from_variant.barcode,
-                            opStock=0,
-                            current_stock=0,
-                            size=from_variant.size,
-                            color=from_variant.color,
-                            srno=from_variant.srno,
-                            branchPrice=branch_price,
-                        )
+                # ✅ FIXED — barcode/manual-create logic hataya, FK-mapping use karo
+                dest_variant, _created = get_or_create_dest_variant(from_variant, branch, sync_fields=True)
 
                 if website_display:
-                    Items.objects.filter(id=dest_variant.item.id).update(website_display=True, website_status='pending')
+                    Items.objects.filter(id=dest_variant.item.id).update(
+                        website_display=True, website_status='pending'
+                    )
 
                 dest_variant.current_stock = (dest_variant.current_stock or 0) + item.quantity
                 dest_variant.purchasePrice = from_variant.branchPrice
@@ -591,6 +497,9 @@ class VerifyAllB2BSaleItemsView(APIView):
                 sale.status = 'completed'
                 sale.save(update_fields=['status'])
 
+                from pos.utils.b2b_purchase_entry import create_purchase_entry_from_b2b_sale
+                create_purchase_entry_from_b2b_sale(sale)
+                
         return Response({'success': True, 'message': f'{verified_count} item(s) verified successfully.'})
     
     

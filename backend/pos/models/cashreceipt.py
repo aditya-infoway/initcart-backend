@@ -14,6 +14,7 @@ class CashReceipt(models.Model):
         ('PRCR', 'Purchase Return Cash Receipt'),
         ('STCR', 'Stock Transfer Cash Receipt'),  # ✅ ADD
         ('STRCR', 'Stock Return Cash Receipt'),
+        ('B2BSCR', 'B2B Sale Cash Receipt'),
     ]
 
     branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
@@ -46,6 +47,10 @@ class CashReceipt(models.Model):
     stock_return = models.ForeignKey(
         'pos.StockReturn', on_delete=models.CASCADE, null=True, blank=True, related_name='cash_receipts'
     )
+    
+    b2b_sale = models.ForeignKey(
+        'pos.B2BSale', on_delete=models.CASCADE, null=True, blank=True, related_name='cash_receipts'
+    )
 
     def __str__(self):
         return f"{self.voucher_no} - {self.amount}"
@@ -76,6 +81,9 @@ class CashReceipt(models.Model):
                     
                 if self.stock_return:       
                     should_update_party = True    
+
+                if self.b2b_sale:
+                    should_update_party = True
 
                 if self.purchase_return:
                     should_update_party = False

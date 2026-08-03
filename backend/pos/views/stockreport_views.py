@@ -92,19 +92,16 @@ class StockReportAPIView(APIView):
             .values('variant_id').annotate(total=Sum('return_quantity'))
         }
  
-        # Transfer received - grouped by barcode (from_variant__barcode)
-        transfer_received_map = {}
-        if barcodes:
-            transfer_received_map = {
-                row['from_variant__barcode']: row['total']
-                for row in StockTransferItem.objects.filter(
-                    from_variant__barcode__in=barcodes,
-                    transfer__to_branch_id=branch_id,
-                    transfer__status='completed',
-                    is_stock_updated=True,
-                ).values('from_variant__barcode').annotate(total=Sum('quantity'))
-            }
- 
+        # Transfer received - to_variant FK se direct match (B2B jaisa hi pattern)
+        transfer_received_map = {
+            row['to_variant_id']: row['total']
+            for row in StockTransferItem.objects.filter(
+                to_variant_id__in=variant_ids,
+                transfer__to_branch_id=branch_id,
+                is_stock_updated=True,
+            ).values('to_variant_id').annotate(total=Sum('quantity'))
+        }
+
         # Transfer sent - only superadmin branch
         transfer_sent_map = {}
         if is_superadmin:
@@ -113,7 +110,6 @@ class StockReportAPIView(APIView):
                 for row in StockTransferItem.objects.filter(
                     from_variant_id__in=variant_ids,
                     transfer__from_branch_id=branch_id,
-                    transfer__status='completed',
                     is_stock_updated=True,
                 ).values('from_variant_id').annotate(total=Sum('quantity'))
             }
@@ -201,16 +197,6 @@ class StockReportAPIView(APIView):
                 ).values('from_variant_id').annotate(total=Sum('quantity'))
             }
 
-        b2bsale_received_map = {}
-        if barcodes:
-            b2bsale_received_map = {
-                row['from_variant__barcode']: row['total']
-                for row in B2BSaleItem.objects.filter(
-                    from_variant__barcode__in=barcodes,
-                    sale__to_branch_id=branch_id,
-                    is_stock_updated=True,
-                ).values('from_variant__barcode').annotate(total=Sum('quantity'))
-            }
         
         # Total sales POS per variant
         sales_pos_map = {
@@ -260,9 +246,7 @@ class StockReportAPIView(APIView):
             opening_stock = Decimal(str(variant.opStock or 0))
             total_purchased = purchase_map.get(vid) or Decimal('0')
             total_purchase_returns = purchase_return_map.get(vid) or Decimal('0')
-            total_transfer_received = (
-                transfer_received_map.get(barcode) or Decimal('0') if barcode else Decimal('0')
-            )
+            total_transfer_received = transfer_received_map.get(vid) or Decimal('0')   # ✅ FIXED
             total_transfer_sent = transfer_sent_map.get(vid) or Decimal('0')
             total_stock_return_packaged = stock_return_packaged_map.get(vid) or Decimal('0')
             total_stock_return_received = stock_return_received_map.get(vid) or Decimal('0')
@@ -275,9 +259,7 @@ class StockReportAPIView(APIView):
             total_sold = total_sold_pos + total_sold_website
             total_sales_returns = sales_return_map.get(vid) or Decimal('0')
             total_b2bsale_sent = b2bsale_sent_map.get(vid) or Decimal('0')
-            total_b2bsale_received = (
-                b2bsale_received_map.get(barcode) or Decimal('0') if barcode else Decimal('0')
-            )
+
  
             calculated_stock = (
                 opening_stock
@@ -294,7 +276,7 @@ class StockReportAPIView(APIView):
                 - total_sold
                 + total_sales_returns
                 - total_b2bsale_sent
-                + total_b2bsale_received
+
             )
  
             if calculated_stock < 0:
@@ -386,6 +368,8 @@ class StockHistoryAPIView(APIView):
             )
         except itemvariants.DoesNotExist:
             return Response({"error": "Variant not found"}, status=404)
+        
+        barcode = variant.barcode
 
         history = []
 
@@ -435,35 +419,32 @@ class StockHistoryAPIView(APIView):
                 "currentStock": float(running_stock),
             })
 
-        #  Transfer Received - barcode se match
-        barcode = variant.barcode
-        if barcode:
-            for st in StockTransferItem.objects.filter(
-                from_variant__barcode=barcode,
-                transfer__to_branch=branch,
-                transfer__status='completed',
-                is_stock_updated=True
-            ).select_related('transfer', 'transfer__from_branch').order_by('transfer__updated_at'):
-                qty = Decimal(str(st.quantity))
-                running_stock += qty
-                history.append({
-                    "date": st.transfer.updated_at,
-                    "type": "Stock Transfer (Received)",
-                    "partyName": f"From: {st.transfer.from_branch.branch_name}",
-                    "qty": float(qty),
-                    "billNo": st.transfer.transfer_no,
-                    "billAmount": float(st.rate * st.quantity),
-                    "currentStock": float(running_stock),
-                })
+        #  Transfer Received - to_variant FK se direct match
+        for st in StockTransferItem.objects.filter(
+            to_variant=variant,
+            transfer__to_branch=branch,
+            is_stock_updated=True
+        ).select_related('transfer', 'transfer__from_branch').order_by('transfer__updated_at'):
+            qty = Decimal(str(st.quantity))
+            running_stock += qty
+            history.append({
+                "date": st.transfer.updated_at,
+                "type": "Stock Transfer (Received)",
+                "partyName": f"From: {st.transfer.from_branch.branch_name}",
+                "qty": float(qty),
+                "billNo": st.transfer.transfer_no,
+                "billAmount": float(st.rate * st.quantity),
+                "currentStock": float(running_stock),
+            })
 
         # Transfer Sent - only superadmin
         if is_superadmin:
             for st in StockTransferItem.objects.filter(
                 from_variant_id=variant_id,
                 transfer__from_branch=branch,
-                transfer__status='completed',
                 is_stock_updated=True
             ).select_related('transfer', 'transfer__to_branch').order_by('transfer__updated_at'):
+
                 qty = -Decimal(str(st.quantity))
                 running_stock += qty
                 history.append({
@@ -612,24 +593,7 @@ class StockHistoryAPIView(APIView):
                     "currentStock": float(running_stock),
                 })
 
-        #  NEW: B2B SALE RECEIVED - Franchise branch me stock increase (verify hone par)
-        if barcode:
-            for b2b_item in B2BSaleItem.objects.filter(
-                from_variant__barcode=barcode,
-                sale__to_branch=branch,
-                is_stock_updated=True,
-            ).select_related('sale', 'sale__from_branch').order_by('sale__updated_at'):
-                qty = Decimal(str(b2b_item.quantity))
-                running_stock += qty
-                history.append({
-                    "date": b2b_item.sale.updated_at,
-                    "type": "B2B Sale (Received)",
-                    "partyName": f"From: {b2b_item.sale.from_branch.branch_name}",
-                    "qty": float(qty),
-                    "billNo": b2b_item.sale.sale_no,
-                    "billAmount": float(b2b_item.rate * b2b_item.quantity),
-                    "currentStock": float(running_stock),
-                })        
+       
                         
         # Sales POS
         for s in SalesItem.objects.filter(

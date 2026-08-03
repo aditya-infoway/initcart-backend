@@ -7,6 +7,7 @@ from pos.models.items import items as Items, itemvariants as ItemVariants
 from pos.utils.gst_calc import calculate_gst_split
 from pos.models.settings import setting as SettingModel
 from pos.serializers.stock_transfer_serializers import create_full_item_in_destination, variant_info_str
+from pos.utils.variant_mapping import get_or_create_dest_variant
 
 
 # ─────────────────────────────────────────────
@@ -256,18 +257,11 @@ class B2BProcessOrderSerializer(serializers.Serializer):
 
             if from_item.id not in created_items_cache:
                 created_items_cache[from_item.id] = create_full_item_in_destination(from_item, to_branch)
-            dest_item = created_items_cache[from_item.id]
+            # dest_item ab yahan use nahi ho raha — get_or_create_dest_variant khud
+            # dest_item resolve/create kar leta hai VariantBranchMapping ke through.
 
-            dest_variant = ItemVariants.objects.filter(
-                item=dest_item, size=from_variant.size, color=from_variant.color,
-                srno=from_variant.srno, barcode=from_variant.barcode,
-            ).first()
-            if not dest_variant:
-                dest_variant = ItemVariants.objects.create(
-                    item=dest_item, purchasePrice=from_variant.purchasePrice, salesPrice=from_variant.salesPrice,
-                    mrp=from_variant.mrp, barcode=from_variant.barcode, opStock=0, current_stock=0,
-                    size=from_variant.size, color=from_variant.color, srno=from_variant.srno,
-                )
+            # ✅ FIXED — manual size/color/srno/barcode filter ki jagah FK-mapping
+            dest_variant, _created = get_or_create_dest_variant(from_variant, to_branch, sync_fields=False)
 
             branch_price = order_item.branch_price or from_variant.branchPrice or 0
             tax_percent = order_item.tax_percent or from_item.taxSlab or "0"

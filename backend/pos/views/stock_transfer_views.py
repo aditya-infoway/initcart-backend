@@ -12,6 +12,7 @@ from django.db.models import Sum
 from rest_framework import status
 from django.db import models
 from pos.models.account import Account
+from pos.utils.variant_mapping import get_or_create_dest_variant
 
 from pos.models.stock_transfer import StockTransfer, StockTransferItem
 from pos.models.branch import Branch
@@ -161,13 +162,11 @@ class StockTransferPreviewView(APIView):
                 created_by_superadmin=True
             ).exists()
             
-            # Check if variant exists in destination branch
-            dest_variant_exists = ItemVariants.objects.filter(
-                item__branch=to_branch,
-                item__itemName=from_variant.item.itemName,
-                size=from_variant.size,
-                color=from_variant.color,
-            ).exists() if dest_item_exists else False
+
+            from pos.models.stock_transfer import VariantBranchMapping
+            dest_variant_exists = VariantBranchMapping.objects.filter(
+                source_variant=from_variant, to_branch=to_branch
+            ).exists()
 
             preview.append({
                 'from_variant_id':   from_variant.id,
@@ -622,45 +621,12 @@ class VerifyStockTransferItemView(APIView):
             return Response({'success': False, 'message': 'Stock already verified'}, status=400)
 
         website_display = request.data.get('website_display', False)
-
+        
         with transaction.atomic():
             from_variant = item.from_variant
-            
-            # ✅ STEP 1: Find or create item in destination branch by barcode
-            dest_variant = ItemVariants.objects.filter(
-                barcode=from_variant.barcode,
-                item__branch=branch
-            ).select_related('item').first()
-            
-            if dest_variant:
-                dest_item = dest_variant.item
-                print(f"✅ Found variant by barcode: {from_variant.barcode}")
-            else:
-                print(f"🆕 No variant found by barcode - creating new")
-                
-                dest_item = Items.objects.filter(
-                    branch=branch,
-                    itemName=from_variant.item.itemName,
-                    created_by_superadmin=True
-                ).first()
-                
-                if not dest_item:
-                    dest_item = self._create_full_item(from_variant.item, branch)
-                
-                dest_variant = ItemVariants.objects.create(
-                    item=dest_item,
-                    purchasePrice=from_variant.purchasePrice,
-                    salesPrice=from_variant.salesPrice,
-                    mrp=from_variant.mrp,
-                    barcode=from_variant.barcode,
-                    opStock=0,
-                    current_stock=0,
-                    size=from_variant.size,
-                    color=from_variant.color,
-                    srno=from_variant.srno,
-                    warrantydate=from_variant.warrantydate,
-                )
-                print(f"✅ Created new variant with barcode: {from_variant.barcode}")
+
+            dest_variant, _created = get_or_create_dest_variant(from_variant, branch, sync_fields=True)
+            dest_item = dest_variant.item
             
             # ✅ STEP 2: Update website display on item if requested
             if website_display:
@@ -783,7 +749,7 @@ class VerifyStockTransferItemView(APIView):
                 variant_image=variant.variant_image,
                 branchPrice=branch_price,  # ✅ BRANCH PRICE bhi set karo
             )
-        
+
         return dest_item
 
 # ════════════════════════════════════════════════════════════
@@ -800,14 +766,14 @@ class VerifyAllStockTransferItemsView(APIView):
             branch = Branch.objects.get(user=request.user)
         except Branch.DoesNotExist:
             return Response({'success': False, 'message': 'Branch not found'}, status=404)
-        
+
         if not Account.objects.filter(branch=branch, group='Sundry Creditor(Main)').exists():
             return Response({
                 'success': False,
                 'error_code': 'NO_SUNDRY_CREDITOR_ACCOUNT',
                 'message': 'Please create a Sundry Creditor(Main) account before verifying stock.'
             }, status=400)
-            
+
         try:
             transfer = StockTransfer.objects.get(id=transfer_id, to_branch=branch)
         except StockTransfer.DoesNotExist:
@@ -817,7 +783,7 @@ class VerifyAllStockTransferItemsView(APIView):
             return Response({'success': False, 'message': 'Transfer has been cancelled.'}, status=400)
 
         pending_items = transfer.items.filter(is_stock_updated=False)
-        
+
         if not pending_items.exists():
             return Response({'success': False, 'message': 'No pending items'}, status=400)
 
@@ -829,70 +795,25 @@ class VerifyAllStockTransferItemsView(APIView):
         with transaction.atomic():
             for item in pending_items:
                 from_variant = item.from_variant
-                
+
                 # Check available stock with opStock fallback
                 available_stock = from_variant.current_stock or 0
                 if available_stock <= 0:
                     available_stock = from_variant.opStock or 0
-                
+
                 if available_stock < item.quantity:
                     errors.append(f"{item.from_item_name}: Insufficient stock (Available: {available_stock}, Required: {item.quantity})")
                     continue
-                
-                dest_variant = ItemVariants.objects.filter(
-                    barcode=from_variant.barcode,
-                    item__branch=branch
-                ).select_related('item').first()
-                
-                if not dest_variant:
-                    dest_item = Items.objects.filter(
-                        branch=branch,
-                        itemName=from_variant.item.itemName,
-                        created_by_superadmin=True
-                    ).first()
-                    
-                    if not dest_item:
-                        dest_item = Items.objects.create(
-                            entry_type=from_variant.item.entry_type,
-                            itemName=from_variant.item.itemName,
-                            branch=branch,
-                            brand=from_variant.item.brand,
-                            c_brand=from_variant.item.c_brand,
-                            category=from_variant.item.category,
-                            c_category=from_variant.item.c_category,
-                            subCategory=from_variant.item.subCategory,
-                            c_subCategory=from_variant.item.c_subCategory,
-                            subSubCategory=from_variant.item.subSubCategory,
-                            c_subSubCategory=from_variant.item.c_subSubCategory,
-                            group=from_variant.item.group,
-                            unit=from_variant.item.unit,
-                            created_by_superadmin=True,
-                            hsnCode=from_variant.item.hsnCode,
-                            taxSlab=from_variant.item.taxSlab,
-                        )
-                    
-                        branch_price = from_variant.branchPrice or from_variant.salesPrice or 0
 
-                        dest_variant = ItemVariants.objects.create(
-                            item=dest_item,
-                            purchasePrice=branch_price,  # ✅ PURCHASE PRICE = BRANCH PRICE
-                            salesPrice=from_variant.salesPrice,
-                            mrp=from_variant.mrp,
-                            barcode=from_variant.barcode,
-                            opStock=0,
-                            current_stock=0,
-                            size=from_variant.size,
-                            color=from_variant.color,
-                            srno=from_variant.srno,
-                            branchPrice=branch_price,  # ✅ BRANCH PRICE bhi set karo
-                        )
-                
+                # ✅ Global mapping se destination variant lao — barcode-based lookup hata diya
+                dest_variant, _created = get_or_create_dest_variant(from_variant, branch, sync_fields=True)
+
                 if website_display:
                     Items.objects.filter(id=dest_variant.item.id).update(
                         website_display=True,
                         website_status='pending'
                     )
-                
+
                 # ✅ Deduct from source - First from current_stock, then from opStock
                 if from_variant.current_stock >= item.quantity:
                     from_variant.current_stock -= item.quantity
@@ -901,16 +822,10 @@ class VerifyAllStockTransferItemsView(APIView):
                     from_variant.current_stock = 0
                     from_variant.opStock = (from_variant.opStock or 0) - remaining
                 from_variant.save()
-                
+
                 dest_variant.current_stock = (dest_variant.current_stock or 0) + item.quantity
-                dest_variant.purchasePrice = from_variant.branchPrice
-                dest_variant.save(update_fields=['current_stock', 'purchasePrice'])
-                
-                # ✅ FIX: to_variant ab yahan bhi save ho raha hai — same bug
-                # jo VerifyStockTransferItemView me tha, "Verify All" button
-                # se verify hone wale items me bhi to_variant NULL reh jaata
-                # tha. Isse StockReturn create karte waqt IntegrityError
-                # (branch_variant_id cannot be null) aata tha.
+                dest_variant.save(update_fields=['current_stock'])
+
                 item.is_stock_updated = True
                 item.website_display_on_verify = website_display
                 item.to_variant = dest_variant
