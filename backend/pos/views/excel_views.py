@@ -384,6 +384,10 @@ class ImportItemsFromExcel(APIView):
             .exclude(barcode="")
             .values_list("barcode", flat=True)
         )
+        existing_item_names = set(
+            name.strip().lower()
+            for name in items.objects.filter(branch=branch).values_list("itemName", flat=True)
+        )
         errors = []
         items_data = defaultdict(lambda: {
             "itemName": "",
@@ -434,6 +438,9 @@ class ImportItemsFromExcel(APIView):
                 if not item_name:
                     errors.append(f"Row {row_num}: ITEM_NAME is required")
                     item_has_error = True
+                elif item_name.strip().lower() in existing_item_names:
+                    errors.append(f"Row {row_num}: Item '{item_name}' already exists in this branch")
+                    item_has_error = True    
 
                 if not val_category:
                     errors.append(f"Row {row_num}: CATEGORY_NAME is required")

@@ -1,6 +1,7 @@
 # pos/views/manualexcel_views.py
 
 import pandas as pd
+import re
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -193,15 +194,32 @@ class ManualImportItemsFromExcel(APIView):
         def normalize_tax(val):
             if is_empty(val):
                 return ""
-            val = str(val).strip().replace(" ", "").replace(".0", "").upper()
-            mapping = {
-                "5": "5%",       "5%": "5%",
-                "12": "12%",     "12%": "12%",
-                "18": "18%",     "18%": "18%",
-                "28": "28%",     "28%": "28%",
-                "TAXFREE": "Tax Free", "TAXFREE%": "Tax Free",
-            }
-            return mapping.get(val, "")
+
+            # ===== CASE 1: Excel ne percentage-formatted NUMBER bhej diya (0.05, 0.12, 0.18, 0.28) =====
+            # Ye tab hota hai jab user cell me "5 %" type karke Enter dabata hai —
+            # Excel usko fraction bana deta hai, display sirf "5%" dikhata hai.
+            if isinstance(val, (int, float)):
+                num = float(val)
+                if num == 0:
+                    return "Tax Free"
+                if 0 < num < 1:          # 0.05 -> 5, 0.12 -> 12, etc.
+                    num = round(num * 100, 2)
+                valid_slabs = {5.0: "5%", 12.0: "12%", 18.0: "18%", 28.0: "28%"}
+                return valid_slabs.get(num, "")
+
+            # ===== CASE 2: Text value aayi (dropdown se select ki hui, ya manually text likhi) =====
+            cleaned = re.sub(r"\s+", "", str(val)).upper()
+
+            if "TAXFREE" in cleaned or cleaned in ("NIL", "0%", "0"):
+                return "Tax Free"
+
+            match = re.search(r"(\d+(\.\d+)?)", cleaned)
+            if not match:
+                return ""
+
+            num = float(match.group(1))
+            valid_slabs = {5.0: "5%", 12.0: "12%", 18.0: "18%", 28.0: "28%"}
+            return valid_slabs.get(num, "")
 
 # ===== NUMERIC-TEXT CLEANER (removes .0 from numeric-looking codes) =====
         def clean_numeric_text_cell(x):
@@ -252,6 +270,12 @@ class ManualImportItemsFromExcel(APIView):
             .exclude(barcode="")
             .values_list("barcode", flat=True)
         )
+        
+        # ✅ NEW: existing item names for THIS branch (case-insensitive check ke liye lowercase set)
+        existing_item_names = set(
+            name.strip().lower()
+            for name in items.objects.filter(branch=branch).values_list("itemName", flat=True)
+        )
 
         errors     = []
         items_data = defaultdict(lambda: {
@@ -300,10 +324,23 @@ class ManualImportItemsFromExcel(APIView):
                 if not item_name:
                     errors.append(f"Row {row_num}: ITEM_NAME is required")
                     item_has_error = True
-
+                elif item_name.strip().lower() in existing_item_names:
+                    errors.append(f"Row {row_num}: Item '{item_name}' already exists in this branch")
+                    item_has_error = True    
+                    
                 if not val_category:
                     errors.append(f"Row {row_num}: CATEGORY_NAME is required")
                     item_has_error = True
+                    
+                # NEW: hierarchy validation
+                if val_subcat and not val_category:
+                    errors.append(f"Row {row_num}: SUB_CATEGORY_NAME provided but CATEGORY_NAME is empty")
+                    item_has_error = True
+
+                if val_subsub and not val_subcat:
+                    errors.append(f"Row {row_num}: SUB_SUB_CATEGORY_NAME provided but SUB_CATEGORY_NAME is empty")
+                    item_has_error = True
+
 
                 if not val_unit:
                     errors.append(f"Row {row_num}: UNIT_NAME is required")
@@ -314,6 +351,11 @@ class ManualImportItemsFromExcel(APIView):
 
                 if not val_hsn:
                     errors.append(f"Row {row_num}: HSN_CODE is required")
+                    item_has_error = True
+
+                val_tax = normalize_tax(row.get('TAX_SLAB'))
+                if not val_tax:
+                    errors.append(f"Row {row_num}: TAX_SLAB is required/invalid (allowed: 5%, 12%, 18%, 28%, Tax Free)")
                     item_has_error = True
 
                 if item_has_error:
@@ -329,7 +371,7 @@ class ManualImportItemsFromExcel(APIView):
                     "group":          group_map.get(val_group) if val_group else None,
                     "unit":           unit_map.get(val_unit),
                     "hsn":            val_hsn,
-                    "tax":            normalize_tax(row.get('TAX_SLAB')),
+                    "tax":            val_tax,
                 }
 
             # ===== PRICE =====
