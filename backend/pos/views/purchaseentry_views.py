@@ -46,7 +46,7 @@ class PurchaseCreateView(APIView):
         
         settings_obj = setting.objects.filter(branch=branch).first()
         prefix = getattr(settings_obj, "BP", "BP") if settings_obj else "BP"
-        
+            
         # Get the last voucher number from ALL bank payments (both BP and PBP)
         last_voucher = BankPayment.objects.filter(
             branch=branch

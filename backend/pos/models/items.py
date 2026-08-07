@@ -3,6 +3,7 @@ from django.db import models
 from pos.models.branch import Branch
 from ecommerce.models.category import Category, SubCategory, SubSubCategory
 from ecommerce.models.vendor import Brand
+from django.core.validators import MinValueValidator
 
 ENTRY_TYPE_CHOICES = [
     ('company', 'Company'),
@@ -104,11 +105,11 @@ class items(models.Model):
 
 class itemvariants(models.Model):
     item = models.ForeignKey(items, related_name="variants", on_delete=models.CASCADE)
-    purchasePrice = models.FloatField(default=0)
-    salesPrice = models.FloatField(default=0)
-    mrp = models.FloatField(default=0)
+    purchasePrice = models.FloatField(default=0, validators=[MinValueValidator])
+    salesPrice = models.FloatField(default=0, validators=[MinValueValidator])
+    mrp = models.FloatField(default=0, validators=[MinValueValidator])
     barcode = models.CharField(max_length=100, blank=True, null=True)
-    opStock = models.IntegerField(default=0)
+    opStock = models.IntegerField(default=0,validators=[MinValueValidator(0)])
     basicAmount = models.FloatField(default=0)
     discountAmount = models.FloatField(default=0)
     taxAmount = models.FloatField(default=0)
