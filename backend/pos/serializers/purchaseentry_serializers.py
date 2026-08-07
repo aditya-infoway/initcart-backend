@@ -91,6 +91,7 @@ class PurchaseSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseMaster
         fields = [
+            "id",   
             "billNo",
             "date",
             "dueDate",
