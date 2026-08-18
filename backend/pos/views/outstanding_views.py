@@ -16,6 +16,9 @@ from pos.models.salesreturn import SalesReturnMaster
 from pos.models.purchasereturn import PurchaseReturnMaster
 from pos.models.branch import Branch
 
+# ✅ ADD: Permission imports
+from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
+
 
 class OutstandingReportAPIView(APIView):
     """
@@ -24,29 +27,45 @@ class OutstandingReportAPIView(APIView):
     - Payable:    Sirf woh Purchase bills jinka pending > 0 ho
     Grand total aur values directly DB se — koi extra calculation nahi
     """
-    permission_classes = [IsAuthenticated]
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/outStandingReport"  # ✅ ADD: Frontend route
 
     def get(self, request):
         user = request.user
         is_superadmin = user.role == 'superadmin'
+        is_employee = user.role == 'employee'
 
-        # ✅ Branch selection logic
-        if is_superadmin:
-            branch_id_param = request.GET.get('branch_id')
-            if branch_id_param:
+        # ✅ CHANGE: Branch selection logic → get_effective_branch()
+        branch = user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=400)
+
+        # ✅ FIX: Employee ko bhi branch_id override allow karo (agar superadmin branch hai)
+        branch_id_param = request.GET.get('branch_id')
+        if branch_id_param:
+            # Superadmin hamesha allow
+            if is_superadmin:
                 try:
                     branch = Branch.objects.get(id=branch_id_param)
                 except Branch.DoesNotExist:
                     return Response({'error': 'Branch not found'}, status=404)
-            else:
-                try:
-                    branch = Branch.objects.get(user=user)
-                except Branch.DoesNotExist:
-                    return Response({'error': 'Branch not found'}, status=400)
-        else:
-            branch = getattr(user, 'branch', None)
-            if not branch:
-                return Response({"detail": "User does not have a branch assigned."}, status=400)
+            # ✅ Employee allow karo agar uski branch superadmin branch hai
+            elif is_employee:
+                # Check if employee's branch is superadmin branch
+                employee_branch = user.get_effective_branch()
+                if employee_branch and employee_branch.user and employee_branch.user.role == 'superadmin':
+                    try:
+                        branch = Branch.objects.get(id=branch_id_param)
+                    except Branch.DoesNotExist:
+                        return Response({'error': 'Branch not found'}, status=404)
+                else:
+                    # Employee ki branch superadmin branch nahi hai, toh apni branch hi use kare
+                    pass
 
         report_type = request.GET.get('type', 'both')
         search = request.GET.get('search', '').strip()
@@ -69,28 +88,23 @@ class OutstandingReportAPIView(APIView):
                 )
 
             for bill in sales_qs:
-                # Cash receipts against this bill (SCR)
                 cash_received = CashReceipt.objects.filter(
                     sales_entry=bill
                 ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
 
-                # Bank receipts against this bill (SBR)
                 bank_received = BankReceipt.objects.filter(
                     sales_entry=bill
                 ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
 
                 total_received = cash_received + bank_received
 
-                # Sales Returns against this bill
                 total_returned = SalesReturnMaster.objects.filter(
                     branch=branch,
                     original_bill_no=bill.bill_no
                 ).aggregate(total=Sum('grand_total'))['total'] or Decimal('0')
 
-                # Pending = Grand Total - Received - Returned
                 pending = bill.grand_total - total_received - total_returned
 
-                # Sirf pending wale bills show karo
                 if pending <= Decimal('0.005'):
                     continue
 
@@ -123,28 +137,23 @@ class OutstandingReportAPIView(APIView):
                 )
 
             for bill in purchase_qs:
-                # Cash payments against this bill (PCP)
                 cash_paid = CashPayment.objects.filter(
                     purchase=bill
                 ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
 
-                # Bank payments against this bill (PBP)
                 bank_paid = BankPayment.objects.filter(
                     purchase=bill
                 ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
 
                 total_paid = cash_paid + bank_paid
 
-                # Purchase Returns against this bill
                 total_returned = PurchaseReturnMaster.objects.filter(
                     branch=branch,
                     original_bill_no=bill.billNo
                 ).aggregate(total=Sum('grand_total'))['total'] or Decimal('0')
 
-                # Pending = Grand Total - Paid - Returned
                 pending = bill.grand_total - total_paid - total_returned
 
-                # Sirf pending wale bills show karo
                 if pending <= Decimal('0.005'):
                     continue
 

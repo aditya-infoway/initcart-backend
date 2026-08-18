@@ -13,11 +13,24 @@ from pos.models.settings import setting
 from pos.serializers.bankreceipt_serializers import BankReceiptSerializer
 from pos.utils.pagination import StandardResultsSetPagination
 
+# ✅ ADD: Permission imports
+from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN CRUD VIEWS (with permission check)
+# ─────────────────────────────────────────────────────────────────────────────
+
 class BankReceiptCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    """Create and list bank receipts (BR, SBR, PRBR, STBR, STRBR, B2BSBR)"""
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/Bank-receipt"  # ✅ ADD: Frontend route
 
     def get_branch(self, user):
-        return getattr(user, "branch", None)
+        # ✅ CHANGE: getattr(user, "branch", None) → get_effective_branch()
+        return user.get_effective_branch()
 
     def generate_voucher_number(self, branch, receipt_type='BR'):
         from datetime import datetime
@@ -32,10 +45,10 @@ class BankReceiptCreateView(APIView):
         fy = f"{str(fy_start)[2:]}-{str(fy_end)[2:]}"
         pattern = f"{prefix}/{fy}/"
         
-        # ✅ Branch + FY pattern dono filter
+        # Branch + FY pattern dono filter
         last_voucher = BankReceipt.objects.filter(
             branch=branch,
-            voucher_no__startswith=pattern  # ✅ KEY FIX
+            voucher_no__startswith=pattern
         ).order_by("-id").first()
         
         last_no = 0
@@ -48,7 +61,7 @@ class BankReceiptCreateView(APIView):
         next_no = last_no + 1
         voucher_no = f"{pattern}{str(next_no).zfill(4)}"
         
-        # ✅ Branch-wise uniqueness check
+        # Branch-wise uniqueness check
         while BankReceipt.objects.filter(branch=branch, voucher_no=voucher_no).exists():
             next_no += 1
             voucher_no = f"{pattern}{str(next_no).zfill(4)}"
@@ -59,40 +72,40 @@ class BankReceiptCreateView(APIView):
     def get(self, request):
         user = request.user
         is_superadmin = user.role == 'superadmin'
+        is_employee = user.role == 'employee'  # ✅ ADD
 
-        if is_superadmin:
-            from pos.models.branch import Branch
-            branch_id_param = request.GET.get('branch_id')
-            if branch_id_param:
+        # ✅ CHANGE: Branch selection logic → get_effective_branch()
+        branch = user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # ✅ FIX: Employee ko bhi branch_id override allow karo
+        branch_id_param = request.GET.get('branch_id')
+        if branch_id_param:
+            if is_superadmin or is_employee:  # ✅ Employee allow
+                from pos.models.branch import Branch
                 try:
                     branch = Branch.objects.get(id=branch_id_param)
                 except Branch.DoesNotExist:
                     return Response({'error': 'Branch not found'}, status=404)
-            else:
-                try:
-                    branch = Branch.objects.get(user=user)
-                except Branch.DoesNotExist:
-                    return Response({'error': 'Branch not found'}, status=400)
-        else:
-            branch = self.get_branch(user)
-            if not branch:
-                return Response({"detail": "User does not have a branch assigned."}, status=400)
 
         receipts = BankReceipt.objects.filter(branch=branch).order_by("-date", "-created_at")
-        
         paginator = StandardResultsSetPagination()
         paginated_receipts = paginator.paginate_queryset(receipts, request)
-        
         serializer = BankReceiptSerializer(paginated_receipts, many=True)
         return paginator.get_paginated_response(serializer.data)
 
     def post(self, request):
-        branch = self.get_branch(request.user)
+        # ✅ CHANGE: get_branch() → get_effective_branch()
+        branch = request.user.get_effective_branch()
         if not branch:
-            return Response(
-                {"detail": "User does not have a branch assigned."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
 
         receipt_type = request.data.get("type", "BR")
         
@@ -114,7 +127,7 @@ class BankReceiptCreateView(APIView):
             "sales_entry": request.data.get("sales_entry"),
         }
         
-        serializer = BankReceiptSerializer(data=data, context={"branch": branch})
+        serializer = BankReceiptSerializer(data=data, context={"branch": branch, "request": request })
         if serializer.is_valid():
             try:
                 with transaction.atomic():

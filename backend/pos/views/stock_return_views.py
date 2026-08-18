@@ -1,6 +1,5 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.authentication import SessionAuthentication
 from django.db import transaction
@@ -21,26 +20,14 @@ from pos.serializers.stock_return_serializers import (
 from pos.utils.pagination import StandardResultsSetPagination
 from django.db.models import Sum as SumModel
 from pos.models.branch import Branch
+from pos.models.items import itemvariants
+
 from pos.models.stock_return import ReturnSequence, get_financial_year
 from pos.utils.gst_calc import calculate_gst_split
-
-
-class IsSuperAdminRole(IsAuthenticated):
-    def has_permission(self, request, view):
-        return super().has_permission(request, view) and request.user.role == 'superadmin'
-
-
-class IsBranchRole(IsAuthenticated):
-    def has_permission(self, request, view):
-        if not super().has_permission(request, view):
-            return False
-        user_role = request.user.role
-        if user_role == 'superadmin':
-            return True
-        allowed_roles = ['branch', 'vendor', 'branch_both', 'branch_customer', 'branch_agent', 'branch_single']
-        if user_role in allowed_roles or user_role.startswith('branch'):
-            return True
-        return False
+from ecommerce.permissions import (
+    IsSuperAdminOrBranchOrPagePermittedEmployee,
+    IsSuperAdminOrPagePermittedEmployee,
+)
 
 
 # ════════════════════════════════════════════════════════════
@@ -51,12 +38,13 @@ class EligibleTransfersForReturnView(APIView):
     Branch ke liye - jin transfers se return kar sakte hain
     Only completed transfers with verified items
     """
-    permission_classes = [IsBranchRole]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/stockReturn"
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def get(self, request):
         user = request.user
-        
+
         # Get branch
         if user.role == 'superadmin':
             # Superadmin can't create returns from branch perspective
@@ -64,14 +52,14 @@ class EligibleTransfersForReturnView(APIView):
                 'success': False,
                 'message': 'Superadmin cannot create returns from here.'
             }, status=400)
-        
-        branch = getattr(user, 'branch', None)
+
+        branch = user.get_effective_branch()
         if not branch:
             return Response({
                 'success': False,
                 'message': 'No branch assigned.'
             }, status=400)
-        
+
         # Get all completed transfers to this branch with items
         transfers = StockTransfer.objects.filter(
             to_branch=branch,
@@ -82,13 +70,13 @@ class EligibleTransfersForReturnView(APIView):
                 source_transfer__isnull=False
             ).values_list('source_transfer_id', flat=True)
         ).prefetch_related('items').order_by('-created_at')
-        
+
         data = []
         for transfer in transfers:
             items = transfer.items.filter(is_stock_updated=True)
             if not items.exists():
                 continue
-            
+
             data.append({
                 'id': transfer.id,
                 'transfer_no': transfer.transfer_no,
@@ -99,7 +87,7 @@ class EligibleTransfersForReturnView(APIView):
                 'transfer_type': transfer.transfer_type,
                 'source_order_no': transfer.source_order.order_id if transfer.source_order else None,
             })
-        
+
         return Response({
             'success': True,
             'data': data,
@@ -114,18 +102,19 @@ class StockReturnCreateView(APIView):
     """
     Branch creates a return request
     """
-    permission_classes = [IsBranchRole]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/stockReturn"
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def post(self, request):
         user = request.user
-        
+
         if user.role == 'superadmin':
             return Response({
                 'success': False,
                 'message': 'Superadmin cannot create returns.'
             }, status=400)
-        
+
         serializer = StockReturnCreateSerializer(
             data=request.data,
             context={'request': request}
@@ -144,7 +133,7 @@ class StockReturnCreateView(APIView):
                     'success': False,
                     'message': str(e)
                 }, status=400)
-        
+
         return Response({
             'success': False,
             'errors': serializer.errors
@@ -158,17 +147,18 @@ class StockReturnListView(APIView):
     """
     Branch ke apne returns list
     """
-    permission_classes = [IsBranchRole]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/stockReturn"
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def get(self, request):
         user = request.user
-        
+
         if user.role == 'superadmin':
             # Superadmin sees all returns
             qs = StockReturn.objects.prefetch_related('items').order_by('-created_at')
         else:
-            branch = getattr(user, 'branch', None)
+            branch = user.get_effective_branch()
             if not branch:
                 return Response({
                     'success': False,
@@ -177,23 +167,23 @@ class StockReturnListView(APIView):
             qs = StockReturn.objects.filter(
                 branch=branch
             ).prefetch_related('items').order_by('-created_at')
-        
+
         # Filters
         status_filter = request.GET.get('status', '')
         if status_filter:
             qs = qs.filter(status=status_filter)
-        
+
         search = request.GET.get('search', '')
         if search:
             qs = qs.filter(
                 Q(return_no__icontains=search) |
                 Q(branch__branch_name__icontains=search)
             )
-        
+
         paginator = StandardResultsSetPagination()
         paginated = paginator.paginate_queryset(qs, request)
         serializer = StockReturnListSerializer(paginated, many=True)
-        
+
         return paginator.get_paginated_response({
             'success': True,
             'data': serializer.data,
@@ -207,17 +197,18 @@ class StockReturnDetailView(APIView):
     """
     Return detail view
     """
-    permission_classes = [IsBranchRole]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/stockReturn"
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def get(self, request, return_id):
         user = request.user
-        
+
         try:
             if user.role == 'superadmin':
                 return_request = StockReturn.objects.get(id=return_id)
             else:
-                branch = getattr(user, 'branch', None)
+                branch = user.get_effective_branch()
                 if not branch:
                     return Response({
                         'success': False,
@@ -232,7 +223,7 @@ class StockReturnDetailView(APIView):
                 'success': False,
                 'message': 'Return not found.'
             }, status=404)
-        
+
         serializer = StockReturnDetailSerializer(return_request)
         return Response({
             'success': True,
@@ -240,9 +231,6 @@ class StockReturnDetailView(APIView):
         })
 
 
-# ════════════════════════════════════════════════════════════
-# BRANCH: Update packaging status
-# ════════════════════════════════════════════════════════════
 # ════════════════════════════════════════════════════════════
 # BRANCH: Update packaging status
 # ════════════════════════════════════════════════════════════
@@ -254,7 +242,8 @@ class ReturnPackagingUpdateView(APIView):
        History is derived dynamically from StockReturnItem in StockHistoryAPIView,
        same pattern as StockTransferItem — no separate history model needed.
     """
-    permission_classes = [IsBranchRole]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/stockReturn"
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def post(self, request, return_id):
@@ -266,7 +255,7 @@ class ReturnPackagingUpdateView(APIView):
                 'message': 'Branch only action.'
             }, status=400)
 
-        branch = getattr(user, "branch", None)
+        branch = user.get_effective_branch()
         if not branch:
             return Response({
                 'success': False,
@@ -361,12 +350,13 @@ class ReturnApproveRejectView(APIView):
     """
     Superadmin approves or rejects return request
     """
-    permission_classes = [IsSuperAdminRole]
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]
+    page_key = "/stockReturnverification"
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def post(self, request, return_id):
         user = request.user
-        
+
         try:
             return_request = StockReturn.objects.get(id=return_id)
         except StockReturn.DoesNotExist:
@@ -374,22 +364,22 @@ class ReturnApproveRejectView(APIView):
                 'success': False,
                 'message': 'Return not found.'
             }, status=404)
-        
+
         if return_request.status not in ['pending', 'packaging_ready']:
             return Response({
                 'success': False,
                 'message': f'Cannot process return. Current status: {return_request.status}'
             }, status=400)
-        
+
         action = request.data.get('action')  # 'approve' or 'reject'
         note = request.data.get('note', '')
-        
+
         if action not in ['approve', 'reject']:
             return Response({
                 'success': False,
                 'message': 'Action must be "approve" or "reject".'
             }, status=400)
-        
+
         with transaction.atomic():
             if action == 'approve':
                 return_request.status = 'approved'
@@ -404,7 +394,7 @@ class ReturnApproveRejectView(APIView):
                 else:
                     return_request.save(update_fields=['status', 'updated_at'])
                 message = f'Return {return_request.return_no} rejected.'
-        
+
         return Response({
             'success': True,
             'message': message,
@@ -425,7 +415,8 @@ class ReturnReceiveView(APIView):
        deducted during the packaging step (ReturnPackagingUpdateView).
        Deducting again here was causing double stock deduction.
     """
-    permission_classes = [IsSuperAdminRole]
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]
+    page_key = "/stockReturnverification"
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def post(self, request, return_id):
@@ -505,19 +496,20 @@ class ReturnCancelView(APIView):
     """
     Branch cancels their return request
     """
-    permission_classes = [IsBranchRole]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/stockReturn"
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def post(self, request, return_id):
         user = request.user
-        branch = getattr(user, 'branch', None)
-        
+        branch = user.get_effective_branch()
+
         if not branch:
             return Response({
                 'success': False,
                 'message': 'No branch assigned.'
             }, status=400)
-        
+
         try:
             return_request = StockReturn.objects.get(id=return_id, branch=branch)
         except StockReturn.DoesNotExist:
@@ -525,16 +517,16 @@ class ReturnCancelView(APIView):
                 'success': False,
                 'message': 'Return not found.'
             }, status=404)
-        
+
         if return_request.status in ['received', 'rejected']:
             return Response({
                 'success': False,
                 'message': f'Cannot cancel. Status: {return_request.status}'
             }, status=400)
-        
+
         return_request.status = 'cancelled'
         return_request.save(update_fields=['status', 'updated_at'])
-        
+
         return Response({
             'success': True,
             'message': f'Return {return_request.return_no} cancelled.'
@@ -548,36 +540,38 @@ class AdminReturnListView(APIView):
     """
     Superadmin ke liye - all returns from all branches
     """
-    permission_classes = [IsSuperAdminRole]
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]
+    page_key = "/stockReturnverification"
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def get(self, request):
         qs = StockReturn.objects.prefetch_related('items').order_by('-created_at')
-        
+
         # Filters
         status_filter = request.GET.get('status', '')
         if status_filter:
             qs = qs.filter(status=status_filter)
-        
+
         branch_filter = request.GET.get('branch_id', '')
         if branch_filter and branch_filter.isdigit():
             qs = qs.filter(branch_id=int(branch_filter))
-        
+
         search = request.GET.get('search', '')
         if search:
             qs = qs.filter(
                 Q(return_no__icontains=search) |
                 Q(branch__branch_name__icontains=search)
             )
-        
+
         paginator = StandardResultsSetPagination()
         paginated = paginator.paginate_queryset(qs, request)
         serializer = StockReturnListSerializer(paginated, many=True)
-        
+
         return paginator.get_paginated_response({
             'success': True,
             'data': serializer.data,
         })
+
 
 class VerifiedItemsForReturnView(APIView):
     """
@@ -585,19 +579,20 @@ class VerifiedItemsForReturnView(APIView):
     ✅ SHOW: Sirf woh items jo abhi tak return nahi hue (remaining items)
     ✅ Agar 10 aaye the aur 5 return kiye, toh 5 remaining dikhenge
     """
-    permission_classes = [IsBranchRole]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/stockReturn"
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def get(self, request):
         user = request.user
-        branch = getattr(user, 'branch', None)
+        branch = user.get_effective_branch()
         if not branch:
             return Response({'success': False, 'message': 'No branch assigned.'}, status=400)
-        
+
         # Filters
         search = request.GET.get('search', '').strip()
         transfer_filter = request.GET.get('transfer_no', '').strip()
-        
+
         # ✅ Base queryset - ALL verified items from completed transfers
         items = StockTransferItem.objects.filter(
             transfer__to_branch=branch,
@@ -606,11 +601,11 @@ class VerifiedItemsForReturnView(APIView):
         ).select_related(
             'transfer', 'from_item', 'from_variant', 'to_variant'
         ).order_by('-transfer__created_at')
-        
+
         # ✅ Calculate remaining quantity for each item
         # Group by transfer_item_id and sum of returned quantities
         from django.db.models import Sum as SumModel
-        
+
         # Get all return items grouped by source_transfer_item
         returned_qty_map = {}
         return_items = StockReturnItem.objects.filter(
@@ -619,10 +614,10 @@ class VerifiedItemsForReturnView(APIView):
         ).values('source_transfer_item_id').annotate(
             total_returned=SumModel('quantity')
         )
-        
+
         for r in return_items:
             returned_qty_map[r['source_transfer_item_id']] = r['total_returned'] or 0
-        
+
         # Apply filters
         if search:
             items = items.filter(
@@ -630,24 +625,24 @@ class VerifiedItemsForReturnView(APIView):
                 Q(from_barcode__icontains=search) |
                 Q(transfer__transfer_no__icontains=search)
             )
-        
+
         if transfer_filter:
             items = items.filter(transfer__transfer_no__icontains=transfer_filter)
-        
+
         data = []
         for item in items:
             from_item = item.from_item
             from_variant = item.from_variant
-            
+
             # ✅ Calculate remaining quantity
             total_received = item.quantity
             total_returned = returned_qty_map.get(item.id, 0)
             remaining_qty = total_received - total_returned
-            
+
             # ✅ ONLY SHOW ITEMS WITH REMAINING QUANTITY > 0
             if remaining_qty <= 0:
                 continue
-            
+
             data.append({
                 'id': item.id,
                 'item_name': item.from_item_name,
@@ -669,7 +664,7 @@ class VerifiedItemsForReturnView(APIView):
                 'size': getattr(from_variant, 'size', ''),
                 'color': getattr(from_variant, 'color', ''),
             })
-        
+
         # Pagination
         paginator = StandardResultsSetPagination()
         paginated = paginator.paginate_queryset(data, request)
@@ -678,8 +673,8 @@ class VerifiedItemsForReturnView(APIView):
             'data': paginated,
             'total_items': len(data),
         })
-        
-        
+
+
 class StockReturnCreateFromItemsView(APIView):
     """
     Create return from multiple items with custom quantities.
@@ -688,34 +683,35 @@ class StockReturnCreateFromItemsView(APIView):
     Multiple separate return requests are allowed from the same
     transfer, as long as remaining quantity is available.
     """
-    permission_classes = [IsBranchRole]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/stockReturn"
     authentication_classes = [JWTAuthentication, SessionAuthentication]
- 
+
     def post(self, request):
         user = request.user
-        branch = getattr(user, 'branch', None)
+        branch = user.get_effective_branch()
         if not branch:
             return Response({'success': False, 'message': 'No branch assigned.'}, status=400)
- 
+
         items_data = request.data.get('items', [])  # List of {item_id, quantity}
         return_date = request.data.get('return_date')
         note = request.data.get('note', '')
- 
+
         if not items_data:
             return Response({'success': False, 'message': 'No items selected.'}, status=400)
- 
+
         # Get company branch
         from django.contrib.auth import get_user_model
         User = get_user_model()
         superadmin_user = User.objects.filter(role='superadmin').first()
         if not superadmin_user:
             return Response({'success': False, 'message': 'Superadmin not found.'}, status=400)
- 
+
         try:
             company_branch = Branch.objects.get(user=superadmin_user)
         except Branch.DoesNotExist:
             return Response({'success': False, 'message': 'Company branch not found.'}, status=400)
- 
+
         # Get selected items
         item_ids = [item['item_id'] for item in items_data]
         transfer_items = StockTransferItem.objects.filter(
@@ -723,10 +719,10 @@ class StockReturnCreateFromItemsView(APIView):
             transfer__to_branch=branch,
             is_stock_updated=True
         ).select_related('transfer', 'from_item', 'from_variant', 'to_variant')
- 
+
         if not transfer_items.exists():
             return Response({'success': False, 'message': 'No valid items found.'}, status=400)
- 
+
         # Check all items are from same transfer
         transfer_ids = set(item.transfer_id for item in transfer_items)
         if len(transfer_ids) > 1:
@@ -734,15 +730,15 @@ class StockReturnCreateFromItemsView(APIView):
                 'success': False,
                 'message': 'All items must be from the same transfer.'
             }, status=400)
- 
+
         transfer_id = transfer_ids.pop()
         source_transfer = StockTransfer.objects.get(id=transfer_id)
- 
+
         # ✅ FIX 1: All-or-nothing "return already exists" check REMOVED.
         # Multiple partial returns from the same transfer are allowed —
         # per-item remaining-quantity check below (FIX 2) is what actually
         # prevents over-returning.
- 
+
         # ✅ FIX 2: Calculate how much of each transfer_item has ALREADY
         # been returned across any previous return requests, so we can
         # validate against the true remaining quantity.
@@ -752,7 +748,7 @@ class StockReturnCreateFromItemsView(APIView):
         ).values('source_transfer_item_id').annotate(total=SumModel('quantity'))
         for row in prior_returns:
             already_returned_map[row['source_transfer_item_id']] = row['total'] or 0
- 
+
         with transaction.atomic():
             # Create return
             return_request = StockReturn.objects.create(
@@ -765,25 +761,25 @@ class StockReturnCreateFromItemsView(APIView):
                 status='pending',
                 created_by=user,
             )
- 
+
             any_item_created = False
- 
+
             # Create return items with custom quantities
             for item_data in items_data:
                 item_id = item_data['item_id']
                 return_qty = item_data.get('quantity', 0)
- 
+
                 if return_qty <= 0:
                     continue
- 
+
                 transfer_item = next((item for item in transfer_items if item.id == item_id), None)
                 if not transfer_item:
                     continue
- 
+
                 # ✅ FIX 2: check against REMAINING quantity, not original
                 already_returned = already_returned_map.get(transfer_item.id, 0)
                 remaining_qty = transfer_item.quantity - already_returned
- 
+
                 if return_qty > remaining_qty:
                     return_request.delete()
                     return Response({
@@ -793,15 +789,15 @@ class StockReturnCreateFromItemsView(APIView):
                             f"quantity ({remaining_qty}) for {transfer_item.from_item_name}"
                         )
                     }, status=400)
- 
+
                 from_item = transfer_item.from_item
                 from_variant = transfer_item.from_variant
- 
+
                 # branch_variant (to_variant) purane record me NULL ho sakta
                 # hai. Barcode se dobara dhundo; mil jaye toh save bhi kar do.
                 branch_variant = transfer_item.to_variant
                 if not branch_variant:
-                    branch_variant = ItemVariants.objects.filter(
+                    branch_variant = itemvariants.objects.filter(
                         barcode=transfer_item.from_barcode,
                         item__branch=branch,
                         item__created_by_superadmin=True,
@@ -809,7 +805,7 @@ class StockReturnCreateFromItemsView(APIView):
                     if branch_variant:
                         transfer_item.to_variant = branch_variant
                         transfer_item.save(update_fields=['to_variant'])
- 
+
                 if not branch_variant:
                     return_request.delete()
                     return Response({
@@ -819,7 +815,7 @@ class StockReturnCreateFromItemsView(APIView):
                             f"no item found."
                         )
                     }, status=400)
- 
+
                 tax_percent = getattr(from_item, 'taxSlab', '0') or "0"
                 same_state = (branch.state or "") == (company_branch.state or "")
                 gst_result = calculate_gst_split(
@@ -849,20 +845,21 @@ class StockReturnCreateFromItemsView(APIView):
                     net_amount=gst_result["net_amount"],
                 )
                 any_item_created = True
- 
+
             if not any_item_created:
                 return_request.delete()
                 return Response({
                     'success': False,
                     'message': 'No valid items with quantity > 0 to return.'
                 }, status=400)
- 
+
         return Response({
             'success': True,
             'message': f'Return {return_request.return_no} created successfully!',
             'data': StockReturnDetailSerializer(return_request).data
-        }, status=201)   
-        
+        }, status=201)
+
+
 class NextReturnNumberPreviewView(APIView):
     """
     GET /api/stock-returns/next-number-preview/
@@ -874,42 +871,32 @@ class NextReturnNumberPreviewView(APIView):
                             //    null if company branch/superadmin not found.
     }
     """
-    permission_classes = []  # IsBranchRole wahi use karo jo baaki views mein hai
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/stockReturn"
     authentication_classes = [JWTAuthentication, SessionAuthentication]
- 
+
     def get(self, request):
-        from pos.views.stock_return_views import IsBranchRole
-        # ✅ Manual permission check (taaki import order issue na ho)
-        checker = IsBranchRole()
-        if not checker.has_permission(request, self):
-            return Response({'success': False, 'message': 'Not allowed.'}, status=403)
- 
         user = request.user
- 
-        # Superadmin ke liye company branch, warna user ki apni branch
-        if user.role == 'superadmin':
-            branch = Branch.objects.filter(user=user).first()
-        else:
-            branch = getattr(user, 'branch', None)
- 
+        branch = user.get_effective_branch()
+
         if not branch:
             return Response({'success': False, 'message': 'No branch assigned.'}, status=400)
- 
+
         from pos.models.settings import setting
         settings_obj = setting.objects.filter(branch=branch).first()
         prefix = getattr(settings_obj, 'SR', 'RTN') if settings_obj else 'RTN'
- 
+
         fy = get_financial_year()
- 
+
         branch_code = ""
         if branch.branch_code:
             branch_code = branch.branch_code.strip().upper()
- 
+
         # ✅ Sirf PADHTE hain, increment nahi karte — yeh sirf ek estimate hai
         seq = ReturnSequence.objects.filter(financial_year=fy).first()
         next_no = (seq.last_number if seq else 0) + 1
         next_no_str = str(next_no).zfill(4)
- 
+
         if branch_code:
             preview = f"{prefix}/{branch_code}/{fy}/{next_no_str}"
         else:
@@ -931,7 +918,7 @@ class NextReturnNumberPreviewView(APIView):
                     (branch.state or '').strip().lower()
                     == (company_branch.state or '').strip().lower()
                 )
- 
+
         return Response({
             'success': True,
             'next_return_no': preview,

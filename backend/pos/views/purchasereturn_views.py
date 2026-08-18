@@ -1,4 +1,4 @@
-#pos/views/purchasereturn_views.py
+# pos/views/purchasereturn_views.py
 
 from pos.models.bankpayment import BankPayment
 from pos.models.cashpayment import CashPayment
@@ -20,11 +20,21 @@ from pos.models.cashreceipt import CashReceipt
 from pos.models.bankreceipt import BankReceipt
 from pos.models.settings import setting
 
+# ✅ ADD: Permission imports
+from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN CRUD VIEWS (with permission check)
+# ─────────────────────────────────────────────────────────────────────────────
+
 class PurchaseReturnCreateAPIView(APIView):
     """Create Purchase Return with stock update (decreases stock) and payment receipt"""
-    permission_classes = [IsAuthenticated]
-        
-    # ✅ PurchaseReturnCreateAPIView ke andar
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/purchaseReturnList"  # ✅ ADD: Frontend route
+    
     def generate_cash_receipt_voucher(self, branch):
         from datetime import datetime
         settings_obj = setting.objects.filter(branch=branch).first()
@@ -35,11 +45,11 @@ class PurchaseReturnCreateAPIView(APIView):
         fy_start = year if now.month >= 4 else year - 1
         fy_end = fy_start + 1
         fy = f"{str(fy_start)[2:]}-{str(fy_end)[2:]}"
-        pattern = f"{prefix}/{fy}/"  #  pehle define karo
+        pattern = f"{prefix}/{fy}/"
 
         last_voucher = CashReceipt.objects.filter(
             branch=branch,
-            voucher_no__startswith=pattern  #  pattern use karo
+            voucher_no__startswith=pattern
         ).order_by("-id").first()
 
         last_no = 0
@@ -69,11 +79,11 @@ class PurchaseReturnCreateAPIView(APIView):
         fy_start = year if now.month >= 4 else year - 1
         fy_end = fy_start + 1
         fy = f"{str(fy_start)[2:]}-{str(fy_end)[2:]}"
-        pattern = f"{prefix}/{fy}/"  #  pehle define karo
+        pattern = f"{prefix}/{fy}/"
 
         last_voucher = BankReceipt.objects.filter(
             branch=branch,
-            voucher_no__startswith=pattern  #  pattern use karo
+            voucher_no__startswith=pattern
         ).order_by("-id").first()
 
         last_no = 0
@@ -95,6 +105,14 @@ class PurchaseReturnCreateAPIView(APIView):
 
     @transaction.atomic
     def post(self, request):
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
         data = request.data
         items_data = data.get('items', [])
         payment_terms = data.get('payment_terms', 'Credit').lower()
@@ -104,7 +122,7 @@ class PurchaseReturnCreateAPIView(APIView):
 
         try:
             purchase_return = PurchaseReturnMaster.objects.create(
-                branch=request.user.branch,
+                branch=branch,
                 date=data['date'],
                 original_bill_no=data['original_bill_no'],
                 party_id=data['party'],
@@ -118,7 +136,8 @@ class PurchaseReturnCreateAPIView(APIView):
                 total_basic=Decimal(str(data.get('total_basic', 0))),
                 total_tax=Decimal(str(data.get('total_tax', 0))),
                 grand_total=Decimal(str(data.get('grand_total', 0))),
-                narration=data.get('narration', '')
+                narration=data.get('narration', ''),
+                created_by=request.user, 
             )
             print(f" Purchase Return created: {purchase_return.return_no}")
 
@@ -129,7 +148,7 @@ class PurchaseReturnCreateAPIView(APIView):
                 status=status.HTTP_409_CONFLICT
             )
 
-        #  CREDIT RETURN: Supplier balance update karo — SIRF YAHAN, ek hi baar
+        # CREDIT RETURN: Supplier balance update
         if payment_terms == 'credit':
             from pos.models.account import Account
             from pos.models.salesentry import SalesMaster
@@ -140,23 +159,18 @@ class PurchaseReturnCreateAPIView(APIView):
                 f"Balance: {supplier.current_balance} {supplier.current_drcr} | "
                 f"Return: ₹{purchase_return.grand_total}")
 
-            # Purchase Return = Supplier ki liability (Cr) kam hogi
-            # Cr kam karna = "Dr" transaction pass karo update_balance mein
             SalesMaster.update_balance(supplier, purchase_return.grand_total, "Dr")
 
             print(f" After PR - Supplier: {supplier.current_balance} {supplier.current_drcr}")
 
-
-        
         alert_messages = []
         
-        # Process items and update stock (PURCHASE RETURN = DECREASE STOCK)
+        # Process items and update stock
         for it in items_data:
             qty = Decimal(str(it.get('return_quantity', 0)))
             variant_raw = it.get('variant_id')
             purchase_item_id = it.get('purchase_item_id')
             
-            # Verify that we're not returning more than available
             if purchase_item_id:
                 try:
                     purchase_item = PurchaseItem.objects.get(id=purchase_item_id)
@@ -215,41 +229,43 @@ class PurchaseReturnCreateAPIView(APIView):
                 igst=Decimal(str(it.get('igst', 0))),
             )
         
-        # Create Receipt for Cash or Bank payments (Money coming IN from supplier)
+        # Create Receipt for Cash or Bank payments
         if payment_terms == "cash":
             cash_account = data.get('cash_account')
             if cash_account and data.get('party'):
-                prcr_voucher = self.generate_cash_receipt_voucher(request.user.branch)
+                prcr_voucher = self.generate_cash_receipt_voucher(branch)
                 
                 cash_receipt = CashReceipt.objects.create(
                     date=data['date'],
                     voucher_no=prcr_voucher,
                     cash_account_id=cash_account,
                     op_account_id=data['party'],
-                    branch=request.user.branch,
+                    branch=branch,
                     amount=purchase_return.grand_total,
                     narration=f"Auto receipt against Purchase Return {purchase_return.return_no}",
-                    type="PRCR",  # Purchase Return Cash Receipt
-                    purchase_return=purchase_return
+                    type="PRCR",
+                    purchase_return=purchase_return,
+                    created_by=request.user, 
                 )
                 print(f" PRCR CREATED: {cash_receipt.id} - Voucher: {prcr_voucher}")
         
         elif payment_terms == "bank":
             bank_account = data.get('bank_account')
             if bank_account and data.get('party'):
-                prbr_voucher = self.generate_bank_receipt_voucher(request.user.branch)
+                prbr_voucher = self.generate_bank_receipt_voucher(branch)
                 
                 bank_receipt = BankReceipt.objects.create(
                     date=data['date'],
                     voucher_no=prbr_voucher,
                     bank_account_id=bank_account,
                     op_account_id=data['party'],
-                    branch=request.user.branch,
+                    branch=branch,
                     amount=purchase_return.grand_total,
                     mode="Auto",
                     narration=f"Auto receipt against Purchase Return {purchase_return.return_no}",
-                    type="PRBR",  # Purchase Return Bank Receipt
-                    purchase_return=purchase_return
+                    type="PRBR",
+                    purchase_return=purchase_return,
+                    created_by=request.user,
                 )
                 print(f"✅ PRBR CREATED: {bank_receipt.id} - Voucher: {prbr_voucher}")
         
@@ -264,31 +280,38 @@ class PurchaseReturnCreateAPIView(APIView):
         
         return Response(response, status=201)
 
+
 class PurchaseReturnListAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    """List all purchase returns"""
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/purchaseReturnList"  # ✅ ADD: Frontend route
     
     def get(self, request):
         user = request.user
         is_superadmin = user.role == 'superadmin'
+        is_employee = user.role == 'employee'
 
-        # ✅ Branch selection logic
-        if is_superadmin:
-            from pos.models.branch import Branch
-            branch_id_param = request.GET.get('branch_id')
-            if branch_id_param:
+        # ✅ CHANGE: Branch selection logic → get_effective_branch()
+        branch = user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # ✅ FIX: Employee ko bhi branch_id override allow karo
+        # Employee = Mini Superadmin (superadmin branch ke under kaam kar raha hai)
+        branch_id_param = request.GET.get('branch_id')
+        if branch_id_param:
+            # Superadmin hamesha allow
+            if is_superadmin or is_employee:
+                from pos.models.branch import Branch
                 try:
                     branch = Branch.objects.get(id=branch_id_param)
                 except Branch.DoesNotExist:
                     return Response({'error': 'Branch not found'}, status=404)
-            else:
-                try:
-                    branch = Branch.objects.get(user=user)
-                except Branch.DoesNotExist:
-                    return Response({'error': 'Branch not found'}, status=400)
-        else:
-            branch = getattr(user, 'branch', None)
-            if not branch:
-                return Response({"detail": "User does not have a branch assigned."}, status=400)
 
         queryset = PurchaseReturnMaster.objects.filter(
             branch=branch
@@ -303,13 +326,24 @@ class PurchaseReturnListAPIView(APIView):
 
 class PurchaseReturnDetailAPIView(APIView):
     """Get single purchase return details"""
-    permission_classes = [IsAuthenticated]
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/purchaseReturnList"  # ✅ ADD: Frontend route
     
     def get(self, request, return_id):
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
         try:
             purchase_return = PurchaseReturnMaster.objects.get(
                 id=return_id,
-                branch=request.user.branch
+                branch=branch
             )
             serializer = PurchaseReturnMasterSerializer(purchase_return)
             return Response(serializer.data)
@@ -318,14 +352,26 @@ class PurchaseReturnDetailAPIView(APIView):
 
 
 class PurchaseReturnDeleteAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    """Delete a purchase return"""
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/purchaseReturnList"  # ✅ ADD: Frontend route
     
     @transaction.atomic
     def delete(self, request, return_id):
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
         try:
             purchase_return = PurchaseReturnMaster.objects.get(
                 id=return_id,
-                branch=request.user.branch
+                branch=branch
             )
             
             # Reverse stock updates (add stock back)
@@ -350,10 +396,14 @@ class PurchaseReturnDeleteAPIView(APIView):
             return Response({"error": "Purchase Return not found"}, status=404)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# HELPER APIS — No permission gate (only IsAuthenticated)
+# ─────────────────────────────────────────────────────────────────────────────
+
 class PurchaseBillDetailsAPIView(APIView):
-    """Get purchase bill details with all items, already-returned quantities,
-    and a full payment/return history. Purchase entry is ALWAYS included
-    and sorted FIRST (oldest date), so it appears at the top of history."""
+    """Get purchase bill details with all items"""
+    
+    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
     permission_classes = [IsAuthenticated]
 
     def get(self, request, bill_no):
@@ -364,13 +414,21 @@ class PurchaseBillDetailsAPIView(APIView):
         from pos.models.cashpayment import CashPayment
         from pos.models.bankpayment import BankPayment
 
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
         bill_no_decoded = unquote(bill_no)
         return_type = request.GET.get('return_type', 'Partial')
 
         try:
             purchases = PurchaseMaster.objects.filter(
                 billNo=bill_no_decoded,
-                branch=request.user.branch
+                branch=branch
             )
 
             if not purchases.exists():
@@ -431,14 +489,12 @@ class PurchaseBillDetailsAPIView(APIView):
                     status=status.HTTP_404_NOT_FOUND
                 )
 
-            # ══════════════════════════════════════════════════════════════
-            # PAYMENT HISTORY (with Purchase Entry ALWAYS included & FIRST)
-            # ══════════════════════════════════════════════════════════════
+            # Payment History
             payment_history = []
             total_paid = Decimal('0')
             total_returned = Decimal('0')
 
-            # 1️⃣ PURCHASE ENTRY — humesha first entry
+            # Purchase Entry
             payment_history.append({
                 'entry_type': 'Purchase',
                 'type': 'BILL',
@@ -449,7 +505,7 @@ class PurchaseBillDetailsAPIView(APIView):
                 'narration': f'Purchase Bill - {purchase.partyName.account_name}',
             })
 
-            # 2️⃣ Cash Payments (PCP)
+            # Cash Payments
             for cp in CashPayment.objects.filter(purchase=purchase).order_by('date'):
                 payment_history.append({
                     'entry_type': 'Payment',
@@ -462,7 +518,7 @@ class PurchaseBillDetailsAPIView(APIView):
                 })
                 total_paid += cp.amount
 
-            # 3️⃣ Bank Payments (PBP)
+            # Bank Payments
             for bp in BankPayment.objects.filter(purchase=purchase).order_by('date'):
                 payment_history.append({
                     'entry_type': 'Payment',
@@ -475,10 +531,10 @@ class PurchaseBillDetailsAPIView(APIView):
                 })
                 total_paid += bp.amount
 
-            # 4️⃣ Purchase Returns (PR)
+            # Purchase Returns
             for pr in PurchaseReturnMaster.objects.filter(
                 original_bill_no=purchase.billNo,
-                branch=purchase.branch
+                branch=branch
             ).order_by('date'):
                 payment_history.append({
                     'entry_type': 'Return',
@@ -491,8 +547,6 @@ class PurchaseBillDetailsAPIView(APIView):
                 })
                 total_returned += pr.grand_total
 
-            # ✅ Sort ALL entries by date ascending (oldest first)
-            # Purchase bill is usually oldest, so it appears FIRST
             payment_history.sort(key=lambda x: x['date'])
 
             pending_amount = float(purchase.grand_total) - float(total_paid) - float(total_returned)
@@ -518,16 +572,25 @@ class PurchaseBillDetailsAPIView(APIView):
 
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
-            
+
+
 class GeneratePurchaseReturnVoucherAPIView(APIView):
-    """Generate next Purchase Return voucher number for the logged-in branch"""
+    """Generate next Purchase Return voucher number"""
+    
+    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
         from datetime import datetime
         from pos.models.settings import setting
         
-        branch = request.user.branch
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
         
         settings_obj = setting.objects.filter(branch=branch).first()
         prefix = getattr(settings_obj, "PR", "PR") if settings_obj else "PR"
@@ -544,9 +607,8 @@ class GeneratePurchaseReturnVoucherAPIView(APIView):
         fy = f"{str(fy_start)[2:]}-{str(fy_end)[2:]}"
         pattern = f"{prefix}/{fy}/"
         
-        #  Get last number ONLY for THIS branch
         last_return = PurchaseReturnMaster.objects.filter(
-            branch=branch,  #  Branch filter
+            branch=branch,
             return_no__startswith=pattern
         ).order_by("-id").first()
         
@@ -571,43 +633,48 @@ class GeneratePurchaseReturnVoucherAPIView(APIView):
             "last_number": last_no,
             "next_number": next_no,
             "branch": branch.branch_name,
-        })   
-                
+        })
+
+
 class OriginalBillSearchAPIView(APIView):
-    """Search original purchase bills that have remaining items to return"""
+    """Search original purchase bills"""
+    
+    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
         bill_type = request.GET.get('type')
         search = request.GET.get('query', '').strip()
         
         if bill_type == 'purchase':
-            # Get all purchase bills for this branch
             bills = PurchaseMaster.objects.filter(
-                branch=request.user.branch
+                branch=branch
             )
             
-            # Apply search filter if provided
             if search:
                 bills = bills.filter(
                     Q(billNo__icontains=search) |
                     Q(partyName__account_name__icontains=search)
                 )
             
-            # Filter out bills that have no items left to return
             valid_bills = []
             for bill in bills:
-                # Get all items from this bill
                 purchase_items = PurchaseItem.objects.filter(purchase=bill)
                 has_available_items = False
                 
                 for p_item in purchase_items:
-                    # Calculate already returned quantity
                     already_returned = PurchaseReturnItem.objects.filter(
                         purchase_item=p_item
                     ).aggregate(total_returned=Sum('return_quantity'))['total_returned'] or Decimal('0')
                     
-                    # 🔥 IMPORTANT: Use Decimal for comparison
                     available_quantity = p_item.quantity - already_returned
                     if available_quantity > Decimal('0'):
                         has_available_items = True
@@ -616,9 +683,8 @@ class OriginalBillSearchAPIView(APIView):
                 if has_available_items:
                     valid_bills.append(bill)
             
-            # Get values for valid bills
             bills_data = []
-            for bill in valid_bills[:100]:  # Limit to 100
+            for bill in valid_bills[:100]:
                 bills_data.append({
                     'id': bill.id,
                     'billNo': bill.billNo,
@@ -633,14 +699,24 @@ class OriginalBillSearchAPIView(APIView):
             })
         
         return Response({"error": "Invalid bill type"}, status=400)
-    
-    
+
+
 class ReceivePurchaseReturnCreditBillCashAPIView(APIView):
-    """Receive payment for a purchase return credit bill via cash receipt (creates PRCR)"""
+    """Receive payment for purchase return credit bill via cash"""
+    
+    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
     permission_classes = [IsAuthenticated]
     
     @transaction.atomic
     def post(self, request):
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
         data = request.data
         purchase_return_bill_id = data.get('purchase_return_bill_id')
         cash_account_id = data.get('cash_account')
@@ -649,31 +725,30 @@ class ReceivePurchaseReturnCreditBillCashAPIView(APIView):
         try:
             purchase_return_bill = PurchaseReturnMaster.objects.get(
                 id=purchase_return_bill_id,
-                branch=request.user.branch,
+                branch=branch,
                 payment_terms__iexact='credit'
             )
 
-            prcr_voucher = self.generate_cash_receipt_voucher(request.user.branch)
+            prcr_voucher = self.generate_cash_receipt_voucher(branch)
 
             cash_receipt = CashReceipt.objects.create(
                 date=data['date'],
                 voucher_no=prcr_voucher,
                 cash_account_id=cash_account_id,
                 op_account_id=purchase_return_bill.party.id,
-                branch=request.user.branch,
+                branch=branch,
                 amount=amount,
                 narration=f"Payment received against purchase return credit bill {purchase_return_bill.return_no}",
                 type="PRCR",
-                purchase_return=purchase_return_bill
+                purchase_return=purchase_return_bill,
+                created_by=request.user,
             )
 
-            #  Supplier Dr balance kam karo (humne paise receive kar liye)
             from pos.models.account import Account
             from pos.models.salesentry import SalesMaster
             supplier = Account.objects.select_for_update().get(pk=purchase_return_bill.party.pk)
             print(f" Settling PRCR - Supplier: {supplier.account_name} | "
                 f"Balance: {supplier.current_balance} {supplier.current_drcr} | Amount: ₹{amount}")
-            # Supplier Dr tha (humara receivable) — payment aaya toh Dr kam karo = "Cr" transaction
             SalesMaster.update_balance(supplier, amount, "Cr")
             print(f" After settle - Supplier: {supplier.current_balance} {supplier.current_drcr}")
 
@@ -692,14 +767,12 @@ class ReceivePurchaseReturnCreditBillCashAPIView(APIView):
             return Response({'error': 'Purchase return bill not found'}, status=404)
     
     def generate_cash_receipt_voucher(self, branch):
-        """Generate voucher number for PRCR"""
         from datetime import datetime
         from pos.models.settings import setting
 
         settings_obj = setting.objects.filter(branch=branch).first()
         prefix = getattr(settings_obj, "CR", "CR") if settings_obj else "CR"
 
-        #  STEP 1: Financial year calculate karo
         now = datetime.now()
         year = now.year
         if now.month >= 4:
@@ -710,11 +783,8 @@ class ReceivePurchaseReturnCreditBillCashAPIView(APIView):
             fy_end = year
 
         fy = f"{str(fy_start)[2:]}-{str(fy_end)[2:]}"
-
-        #  STEP 2: pattern DEFINE KARO (IMPORTANT)
         pattern = f"{prefix}/{fy}/"
 
-        #  STEP 3: last voucher find karo
         last_voucher = CashReceipt.objects.filter(
             branch=branch,
             voucher_no__startswith=pattern
@@ -733,26 +803,28 @@ class ReceivePurchaseReturnCreditBillCashAPIView(APIView):
         return voucher_no
 
 
-
 class PurchaseReturnCreditBillsAPIView(APIView):
-    """Get Purchase Return credit bills with pending receipt.
+    """Get Purchase Return credit bills with pending receipt"""
     
-    🔥 LOGIC:
-    - Original CASH/BANK + Return CREDIT → ALWAYS show (paisa dena baaki)
-    - Original CREDIT + Return CREDIT:
-      * Agar PCP/PBP original bill ka payment ho chuka → SHOW (return ab pending hai)
-      * Agar koi payment nahi hua → SKIP (auto-adjusted via supplier balance)
-    """
+    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
         from django.db.models import Q, Sum
         from decimal import Decimal
         
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
         search = request.GET.get('query', '').strip()
         
         bills = PurchaseReturnMaster.objects.filter(
-            branch=request.user.branch,
+            branch=branch,
             payment_terms__iexact='credit'
         )
         
@@ -765,17 +837,15 @@ class PurchaseReturnCreditBillsAPIView(APIView):
         
         bills_data = []
         for bill in bills:
-            # Get original bill
             original_bill_terms = "unknown"
             original_bill_paid = Decimal('0')
             try:
                 original_bill = PurchaseMaster.objects.get(
                     billNo=bill.original_bill_no,
-                    branch=request.user.branch
+                    branch=branch
                 )
                 original_bill_terms = original_bill.terms.lower()
                 
-                # 🔥 Check if original bill has PCP/PBP payments
                 if original_bill_terms == "credit":
                     pcp_paid = CashPayment.objects.filter(
                         purchase=original_bill
@@ -789,7 +859,6 @@ class PurchaseReturnCreditBillsAPIView(APIView):
             except PurchaseMaster.DoesNotExist:
                 pass
             
-            # Calculate receipts against this return (PRCR/PRBR)
             total_received = CashReceipt.objects.filter(
                 purchase_return=bill
             ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
@@ -800,26 +869,20 @@ class PurchaseReturnCreditBillsAPIView(APIView):
             
             pending_amount = bill.grand_total - total_received
             
-            # 🔥 DECISION:
             show_bill = False
             
             if original_bill_terms in ["cash", "bank"]:
-                # Original CASH/BANK + Return CREDIT → Always show
                 show_bill = True
                 print(f"  ✅ SHOW PR {bill.return_no}: Original {original_bill_terms}")
                 
             elif original_bill_terms == "credit":
-                # Original CREDIT tha
                 if original_bill_paid > 0:
-                    # PCP/PBP payment already done → Return pending hai
                     show_bill = True
                     print(f"  ✅ SHOW PR {bill.return_no}: Original Credit + PCP/PBP paid ₹{original_bill_paid}")
                 elif total_received > 0:
-                    # PRCR/PRBR receipt already liya → Return pending hai
                     show_bill = True
                     print(f"  ✅ SHOW PR {bill.return_no}: Original Credit + PRCR/PRBR ₹{total_received}")
                 else:
-                    # Auto-adjusted via supplier balance
                     show_bill = False
                     print(f"  ⏭️ SKIP PR {bill.return_no}: Original Credit + No payment/receipt (auto-adjusted)")
             
@@ -842,14 +905,24 @@ class PurchaseReturnCreditBillsAPIView(APIView):
             'type': 'purchaseReturn',
             'bills': bills_data
         })
-        
-        
+
+
 class ReceivePurchaseReturnCreditBillBankAPIView(APIView):
-    """Receive payment for a purchase return credit bill via bank receipt (creates PRBR)"""
+    """Receive payment for purchase return credit bill via bank"""
+    
+    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
     permission_classes = [IsAuthenticated]
     
     @transaction.atomic
     def post(self, request):
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
         data = request.data
         purchase_return_bill_id = data.get('purchase_return_bill_id')
         bank_account_id = data.get('bank_account')
@@ -859,18 +932,18 @@ class ReceivePurchaseReturnCreditBillBankAPIView(APIView):
         try:
             purchase_return_bill = PurchaseReturnMaster.objects.get(
                 id=purchase_return_bill_id,
-                branch=request.user.branch,
+                branch=branch,
                 payment_terms__iexact='credit'
             )
 
-            prbr_voucher = self.generate_bank_receipt_voucher(request.user.branch)
+            prbr_voucher = self.generate_bank_receipt_voucher(branch)
 
             bank_receipt = BankReceipt.objects.create(
                 date=data['date'],
                 voucher_no=prbr_voucher,
                 bank_account_id=bank_account_id,
                 op_account_id=purchase_return_bill.party.id,
-                branch=request.user.branch,
+                branch=branch,
                 amount=amount,
                 mode=mode,
                 cheque_no=data.get('cheque_no'),
@@ -878,10 +951,10 @@ class ReceivePurchaseReturnCreditBillBankAPIView(APIView):
                 cheque_clear_date=data.get('cheque_clear_date'),
                 narration=f"Payment received against purchase return credit bill {purchase_return_bill.return_no}",
                 type="PRBR",
-                purchase_return=purchase_return_bill
+                purchase_return=purchase_return_bill,
+                created_by=request.user,
             )
 
-            #  Supplier Dr balance kam karo (humne paise receive kar liye)
             from pos.models.account import Account
             from pos.models.salesentry import SalesMaster
             supplier = Account.objects.select_for_update().get(pk=purchase_return_bill.party.pk)
@@ -921,8 +994,6 @@ class ReceivePurchaseReturnCreditBillBankAPIView(APIView):
             fy_end = year
 
         fy = f"{str(fy_start)[2:]}-{str(fy_end)[2:]}"
-        
-        #  ADD THIS LINE (IMPORTANT)
         pattern = f"{prefix}/{fy}/"
 
         last_voucher = BankReceipt.objects.filter(
@@ -940,4 +1011,4 @@ class ReceivePurchaseReturnCreditBillBankAPIView(APIView):
         next_no = str(last_no + 1).zfill(4)
         voucher_no = f"{pattern}{next_no}"
 
-        return voucher_no        
+        return voucher_no

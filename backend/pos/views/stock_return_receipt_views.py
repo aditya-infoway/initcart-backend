@@ -16,11 +16,11 @@ from pos.models.account import Account
 from pos.models.stock_return import StockReturn
 from pos.models.cashreceipt import CashReceipt
 from pos.models.bankreceipt import BankReceipt
-from pos.views.stock_return_views import IsBranchRole  # reuse existing permission
+from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee 
 
 
 def get_return_total(stock_return):
-    """Sum of net_amount across all items of a return — already GST-computed at creation."""
+    """Sum of net_amount across all items of a return — already GST-computed at creation."""    
     total = Decimal("0")
     for item in stock_return.items.all():
         total += Decimal(str(item.net_amount or 0))
@@ -46,7 +46,7 @@ def get_own_sundry_creditor_main(branch):
 # ════════════════════════════════════════════════════════════
 class StockReturnCreditBillsView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsBranchRole]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee ]
 
     def get(self, request):
         try:
@@ -98,7 +98,7 @@ class StockReturnCreditBillsView(APIView):
 # ════════════════════════════════════════════════════════════
 class ReceiveStockReturnBillCashView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsBranchRole]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee ]
 
     def post(self, request):
         return_id = request.data.get('stock_return_bill_id')
@@ -190,7 +190,7 @@ class ReceiveStockReturnBillCashView(APIView):
 # ════════════════════════════════════════════════════════════
 class ReceiveStockReturnBillBankView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsBranchRole]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee ]
 
     def post(self, request):
         return_id = request.data.get('stock_return_bill_id')

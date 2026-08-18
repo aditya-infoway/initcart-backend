@@ -1,7 +1,8 @@
 from rest_framework import serializers
 from pos.models.bankreceipt import BankReceipt
+from pos.serializers.mixins_serializers import CreatedByReadMixin
 
-class BankReceiptSerializer(serializers.ModelSerializer):
+class BankReceiptSerializer(CreatedByReadMixin, serializers.ModelSerializer):
     bank_account_name = serializers.CharField(
         source="bank_account.account_name", read_only=True
     )
@@ -41,6 +42,11 @@ class BankReceiptSerializer(serializers.ModelSerializer):
         branch = self.context.get("branch")
         if branch:
             validated_data["branch"] = branch
+        
+        request = self.context.get("request")
+        if request and request.user and request.user.is_authenticated:
+            validated_data["created_by"] = request.user
+        
         return super().create(validated_data)
     
     

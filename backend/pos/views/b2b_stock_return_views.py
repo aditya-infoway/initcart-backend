@@ -30,24 +30,16 @@ from pos.utils.pagination import StandardResultsSetPagination
 from pos.utils.gst_calc import calculate_gst_split
 from pos.utils.transfer_chain import build_transfer_chain
 
+# ✅ ADD: Permission imports
+from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee, IsSuperAdminOrPagePermittedEmployee
+
+
 User = get_user_model()
 
 
-class IsSuperAdminRole(IsAuthenticated):
-    def has_permission(self, request, view):
-        return super().has_permission(request, view) and request.user.role == 'superadmin'
-
-
-class IsBranchRole(IsAuthenticated):
-    def has_permission(self, request, view):
-        if not super().has_permission(request, view):
-            return False
-        user_role = request.user.role
-        if user_role == 'superadmin':
-            return True
-        allowed_roles = ['branch', 'vendor', 'branch_both', 'branch_customer', 'branch_agent', 'branch_single']
-        return user_role in allowed_roles or user_role.startswith('branch')
-
+# ════════════════════════════════════════════════════════════
+# Helper function — company branch fetch
+# ════════════════════════════════════════════════════════════
 
 def _get_company_branch():
     superadmin_user = User.objects.filter(role='superadmin').first()
@@ -66,12 +58,16 @@ class EligibleB2BItemsForReturnView(APIView):
     Har item ke saath uska pura transfer_chain milta hai — superadmin
     tak kitni branches se hoke aayi, kis transfer_no se.
     """
-    permission_classes = [IsBranchRole]
+    # ✅ CHANGE: IsBranchRole → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/b2bstockReturn"  # ✅ ADD: Frontend route
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def get(self, request):
         user = request.user
-        branch = getattr(user, 'branch', None)
+        
+        # ✅ CHANGE: getattr(user, 'branch', None) → get_effective_branch()
+        branch = user.get_effective_branch()
         if not branch:
             return Response({'success': False, 'message': 'No branch assigned.'}, status=400)
 
@@ -163,16 +159,20 @@ class B2BStockReturnCreateView(APIView):
     saath return create karti hai. Hamesha superadmin (company) branch
     ko jaata hai.
     """
-    permission_classes = [IsBranchRole]
+    # ✅ CHANGE: IsBranchRole → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/b2bstockReturn"  # ✅ ADD: Frontend route
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def post(self, request):
         user = request.user
-        branch = getattr(user, 'branch', None)
+        
+        # ✅ CHANGE: getattr(user, 'branch', None) → get_effective_branch()
+        branch = user.get_effective_branch()
         if not branch:
             return Response({'success': False, 'message': 'No branch assigned.'}, status=400)
 
-        items_data = request.data.get('items', [])  # [{item_id, quantity}] — item_id = B2BStockTransferItem.id
+        items_data = request.data.get('items', [])
         return_date = request.data.get('return_date')
         note = request.data.get('note', '')
 
@@ -259,9 +259,6 @@ class B2BStockReturnCreateView(APIView):
                         'message': f"'{transfer_item.from_item_name}' no matching item found in branch."
                     }, status=400)
 
-                # ✅ company_variant barcode se superadmin ke item mein
-                # dhoondhte hain — B2B transfer_item.from_variant sending
-                # branch ka apna variant hota hai, superadmin ka nahi.
                 company_variant = ItemVariants.objects.filter(
                     barcode=transfer_item.from_barcode,
                     item__branch=company_branch,
@@ -323,15 +320,21 @@ class B2BStockReturnCreateView(APIView):
 # BRANCH: List own B2B returns / SUPERADMIN: all
 # ════════════════════════════════════════════════════════════
 class B2BStockReturnListView(APIView):
-    permission_classes = [IsBranchRole]
+    """List B2B returns"""
+    
+    # ✅ CHANGE: IsBranchRole → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/b2bstockReturn"  # ✅ ADD: Frontend route
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def get(self, request):
         user = request.user
+        
         if user.role == 'superadmin':
             qs = B2BStockReturn.objects.prefetch_related('items').order_by('-created_at')
         else:
-            branch = getattr(user, 'branch', None)
+            # ✅ CHANGE: getattr(user, 'branch', None) → get_effective_branch()
+            branch = user.get_effective_branch()
             if not branch:
                 return Response({'success': False, 'message': 'No branch assigned.'}, status=400)
             qs = B2BStockReturn.objects.filter(branch=branch).prefetch_related('items').order_by('-created_at')
@@ -357,16 +360,22 @@ class B2BStockReturnListView(APIView):
 # BRANCH/SUPERADMIN: Return detail
 # ════════════════════════════════════════════════════════════
 class B2BStockReturnDetailView(APIView):
-    permission_classes = [IsBranchRole]
+    """Get B2B return detail"""
+    
+    # ✅ CHANGE: IsBranchRole → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/b2bstockReturn"  # ✅ ADD: Frontend route
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def get(self, request, return_id):
         user = request.user
+        
         try:
             if user.role == 'superadmin':
                 return_request = B2BStockReturn.objects.get(id=return_id)
             else:
-                branch = getattr(user, 'branch', None)
+                # ✅ CHANGE: getattr(user, 'branch', None) → get_effective_branch()
+                branch = user.get_effective_branch()
                 if not branch:
                     return Response({'success': False, 'message': 'No branch assigned.'}, status=400)
                 return_request = B2BStockReturn.objects.get(id=return_id, branch=branch)
@@ -381,15 +390,21 @@ class B2BStockReturnDetailView(APIView):
 # BRANCH: Update packaging status (deduct branch stock)
 # ════════════════════════════════════════════════════════════
 class B2BReturnPackagingUpdateView(APIView):
-    permission_classes = [IsBranchRole]
+    """Branch marks items as packaging ready"""
+    
+    # ✅ CHANGE: IsBranchRole → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/b2bstockReturn"  # ✅ ADD: Frontend route
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def post(self, request, return_id):
         user = request.user
+        
         if user.role == 'superadmin':
             return Response({'success': False, 'message': 'Branch only action.'}, status=400)
 
-        branch = getattr(user, "branch", None)
+        # ✅ CHANGE: getattr(user, "branch", None) → get_effective_branch()
+        branch = user.get_effective_branch()
         if not branch:
             return Response({'success': False, 'message': 'No branch assigned.'}, status=400)
 
@@ -457,11 +472,16 @@ class B2BReturnPackagingUpdateView(APIView):
 # SUPERADMIN: Approve or Reject
 # ════════════════════════════════════════════════════════════
 class B2BReturnApproveRejectView(APIView):
-    permission_classes = [IsSuperAdminRole]
+    """Superadmin approves or rejects B2B return"""
+    
+    # ✅ CHANGE: IsSuperAdminRole → IsSuperAdminOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]
+    page_key = "/b2bstockReturnverification"  # ✅ ADD: Frontend route
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def post(self, request, return_id):
         user = request.user
+        
         try:
             return_request = B2BStockReturn.objects.get(id=return_id)
         except B2BStockReturn.DoesNotExist:
@@ -505,11 +525,16 @@ class B2BReturnApproveRejectView(APIView):
 # SUPERADMIN: Receive (company stock increase)
 # ════════════════════════════════════════════════════════════
 class B2BReturnReceiveView(APIView):
-    permission_classes = [IsSuperAdminRole]
+    """Superadmin receives returned items - STOCK INCREASE"""
+    
+    # ✅ CHANGE: IsSuperAdminRole → IsSuperAdminOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]
+    page_key = "/b2bstockReturnverification"  # ✅ ADD: Frontend route
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def post(self, request, return_id):
         user = request.user
+        
         try:
             return_request = B2BStockReturn.objects.get(id=return_id)
         except B2BStockReturn.DoesNotExist:
@@ -562,12 +587,18 @@ class B2BReturnReceiveView(APIView):
 # BRANCH: Cancel
 # ════════════════════════════════════════════════════════════
 class B2BReturnCancelView(APIView):
-    permission_classes = [IsBranchRole]
+    """Branch cancels their B2B return request"""
+    
+    # ✅ CHANGE: IsBranchRole → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/b2bstockReturn"  # ✅ ADD: Frontend route
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def post(self, request, return_id):
         user = request.user
-        branch = getattr(user, 'branch', None)
+        
+        # ✅ CHANGE: getattr(user, 'branch', None) → get_effective_branch()
+        branch = user.get_effective_branch()
         if not branch:
             return Response({'success': False, 'message': 'No branch assigned.'}, status=400)
 
@@ -588,7 +619,11 @@ class B2BReturnCancelView(APIView):
 # SUPERADMIN: All B2B returns list (admin management page ke liye)
 # ════════════════════════════════════════════════════════════
 class AdminB2BReturnListView(APIView):
-    permission_classes = [IsSuperAdminRole]
+    """Superadmin ke liye - all B2B returns from all branches"""
+    
+    # ✅ CHANGE: IsSuperAdminRole → IsSuperAdminOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]
+    page_key = "/b2bstockReturnverification"  # ✅ ADD: Frontend route
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def get(self, request):
@@ -619,20 +654,18 @@ class AdminB2BReturnListView(APIView):
 # Next return number preview (estimate, no increment)
 # ════════════════════════════════════════════════════════════
 class NextB2BReturnNumberPreviewView(APIView):
-    permission_classes = []
+    """GET /api/b2b-stock-returns/next-number-preview/"""
+    
+    # ✅ CHANGE: permission_classes = [] → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/b2bstockReturn"  # ✅ ADD: Frontend route
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def get(self, request):
-        checker = IsBranchRole()
-        if not checker.has_permission(request, self):
-            return Response({'success': False, 'message': 'Not allowed.'}, status=403)
-
         user = request.user
-        if user.role == 'superadmin':
-            branch = Branch.objects.filter(user=user).first()
-        else:
-            branch = getattr(user, 'branch', None)
-
+        
+        # ✅ CHANGE: get_effective_branch() for both superadmin and branch
+        branch = user.get_effective_branch()
         if not branch:
             return Response({'success': False, 'message': 'No branch assigned.'}, status=400)
 
@@ -662,6 +695,3 @@ class NextB2BReturnNumberPreviewView(APIView):
             )
 
         return Response({'success': True, 'next_return_no': preview, 'same_state': same_state})
-    
-    
-    

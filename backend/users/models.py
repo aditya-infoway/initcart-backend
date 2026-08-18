@@ -1,45 +1,3 @@
-""" from django.contrib.auth.models import AbstractUser
-from django.db import models
-
-class User(AbstractUser):
-    ROLE_CHOICES = (
-        ('superadmin', 'Super Admin'),
-        ('vendor', 'Vendor'),
-        ('branch', 'Branch'),
-        ('agent', 'Agent'),
-        ('customer', 'Customer'),
-    )
-    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='customer')
-    phone = models.CharField(max_length=15, blank=True, null=True)
-    verified = models.BooleanField(default=False)
-
-    def __str__(self):
-        return f"{self.username} ({self.role})"
-class User(AbstractUser):
-    ROLE_CHOICES = (
-        ('superadmin', 'Super Admin'),
-        ('vendor', 'Vendor'),
-        ('branch', 'Branch'),
-        ('agent', 'Agent'),
-        ('customer', 'Customer'),
-    )
-
-    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='customer')
-    phone = models.CharField(max_length=15, blank=True, null=True)
-    verified = models.BooleanField(default=False)
-
-    def save(self, *args, **kwargs):
-        # Auto assign admin privileges
-        if self.role == "superadmin":
-            self.is_staff = True
-            self.is_superuser = True
-
-        super().save(*args, **kwargs)
-
-    def __str__(self):
-        return f"{self.username} ({self.role})"
- """
-
 
 # users/models.py  ── Complete final version
 import uuid
@@ -63,6 +21,7 @@ ROLE_CHOICES = [
     ("branch_customer", "Branch + Customer"),
     ("branch_agent",    "Branch + Agent"),
     ("branch_both",     "Branch + Customer + Agent"),
+    ("employee", "Branch Employee"),
 ]
 
 USER_TYPE_CHOICES = [
@@ -73,6 +32,8 @@ USER_TYPE_CHOICES = [
     ("vendor",          "Vendor"),
     ("branch",          "Branch"),
     ("superadmin",      "Super Admin"),
+    ("employee", "Branch Employee"),
+    
     # ── new compound branch roles ──
     ("branch_customer", "Branch + Customer"),
     ("branch_agent",    "Branch + Agent"),
@@ -101,6 +62,8 @@ class User(AbstractUser):
     ROLE_AGENT      = "agent"
     ROLE_CUSTOMER   = "customer"
     ROLE_BOTH       = "both"
+
+    
 
     email = models.EmailField(
         unique=True,
@@ -142,9 +105,13 @@ class User(AbstractUser):
                 self.user_type = self.role
             elif self.role == "both":
                 self.user_type = "both"
+            elif self.role == "employee":
+                self.user_type = "employee"    
             # ── NEW: branch compound roles keep same value for user_type ──
             elif self.role in ("branch_customer", "branch_agent", "branch_both"):
                 self.user_type = self.role
+            elif self.role == "employee":    
+                self.user_type = "employee"        
             else:
                 self.user_type = "customer"
 
@@ -156,7 +123,26 @@ class User(AbstractUser):
         super().save(*args, **kwargs)
 
     # ── Role helpers ─────────────────────────────────────────────────────────
+    def is_employee(self):
+        return self.role == "employee"
 
+    def get_effective_branch(self):
+        """
+        Business views ke liye single source of truth:
+        - Normal branch/superadmin user -> apni khud ki linked Branch
+        - Employee user -> jis superadmin-branch ke liye create hua tha, wahi Branch
+        """
+        if self.role == "employee":
+            try:
+                return self.employee_profile.branch
+            except Exception:
+                return None
+        try:
+            return self.branch  # existing OneToOne reverse relation (Branch.user)
+        except Exception:
+            return None
+        
+        
     def is_customer(self):
         """Can this user shop / access customer features?"""
         return self.role in (
@@ -194,7 +180,10 @@ class User(AbstractUser):
         return self.role == role_name
 
     # ── Role upgrade utility ─────────────────────────────────────────────────
-
+    def get_display_name(self):
+        full = f"{self.first_name} {self.last_name}".strip()
+        return full if full else self.username
+    
     def upgrade_role(self, add: str):
         new_role = ROLE_UPGRADE_MAP.get(self.role, {}).get(add)
         if new_role:

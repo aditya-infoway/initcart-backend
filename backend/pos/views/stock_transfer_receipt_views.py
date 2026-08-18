@@ -1,7 +1,7 @@
 # pos/views/stock_transfer_receipt_views.py
 # ✅ NEW FILE — Stock Transfer credit bill listing + Cash/Bank receipt receiving
-# Sirf SUPERADMIN role use kar sakta hai (jaisa stock_transfer_views.py mein
-# IsSuperAdminRole already defined hai — same class yahan reuse ho rahi hai)
+# Sirf SUPERADMIN (ya permission-diye-hue employee) use kar sakta hai —
+# ab IsSuperAdminOrPagePermittedEmployee se gate hota hai, page_key="/stockTransfer"
 
 from datetime import datetime
 
@@ -17,7 +17,7 @@ from pos.models.account import Account
 from pos.models.stock_transfer import StockTransfer
 from pos.models.cashreceipt import CashReceipt
 from pos.models.bankreceipt import BankReceipt
-from pos.views.stock_transfer_views import IsSuperAdminRole 
+from ecommerce.permissions import IsSuperAdminOrPagePermittedEmployee  # ✅ FIXED — purana IsSuperAdminRole import hata diya
 
 
 # ════════════════════════════════════════════════════════════
@@ -89,12 +89,15 @@ def get_branch_linked_account(to_branch):
 # ════════════════════════════════════════════════════════════
 class StockTransferCreditBillsView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsSuperAdminRole]
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]  # ✅ FIXED
+    page_key = "/stockTransfer"  # ✅ FIXED — employee ko yahi page permission chahiye hogi
 
     def get(self, request):
         try:
-            my_branch = Branch.objects.get(user=request.user)
-        except Branch.DoesNotExist:
+            my_branch = request.user.get_effective_branch()  # ✅ employee-safe (superadmin ki asli branch use karega)
+        except Exception:
+            my_branch = None
+        if not my_branch:
             return Response({'success': False, 'message': 'Branch not found'}, status=404)
 
         query = request.GET.get('query', '').strip()
@@ -145,7 +148,8 @@ class StockTransferCreditBillsView(APIView):
 # ════════════════════════════════════════════════════════════
 class ReceiveStockTransferBillCashView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsSuperAdminRole]
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]  # ✅ FIXED
+    page_key = "/stockTransfer"  # ✅ FIXED
 
     def post(self, request):
         transfer_id = request.data.get('stock_transfer_bill_id')
@@ -156,9 +160,8 @@ class ReceiveStockTransferBillCashView(APIView):
         if not transfer_id or not cash_account_id or not amount or not date:
             return Response({'detail': 'stock_transfer_bill_id, cash_account, amount and date are required.'}, status=400)
 
-        try:
-            my_branch = Branch.objects.get(user=request.user)
-        except Branch.DoesNotExist:
+        my_branch = request.user.get_effective_branch()  # ✅ employee-safe
+        if not my_branch:
             return Response({'detail': 'Branch not found.'}, status=404)
 
         try:
@@ -241,7 +244,8 @@ class ReceiveStockTransferBillCashView(APIView):
 # ════════════════════════════════════════════════════════════
 class ReceiveStockTransferBillBankView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsSuperAdminRole]
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]  # ✅ FIXED
+    page_key = "/stockTransfer"  # ✅ FIXED
 
     def post(self, request):
         transfer_id = request.data.get('stock_transfer_bill_id')
@@ -256,9 +260,8 @@ class ReceiveStockTransferBillBankView(APIView):
         if not transfer_id or not bank_account_id or not amount or not date:
             return Response({'detail': 'stock_transfer_bill_id, bank_account, amount and date are required.'}, status=400)
 
-        try:
-            my_branch = Branch.objects.get(user=request.user)
-        except Branch.DoesNotExist:
+        my_branch = request.user.get_effective_branch()  # ✅ employee-safe
+        if not my_branch:
             return Response({'detail': 'Branch not found.'}, status=404)
 
         try:
@@ -291,7 +294,7 @@ class ReceiveStockTransferBillBankView(APIView):
         if mode == 'CHEQUE' and not cheque_no:
             return Response({'detail': 'Cheque No is required for CHEQUE mode.'}, status=400)
 
-        party_account, _ = get_branch_linked_account(transfer.to_branch) 
+        party_account, _ = get_branch_linked_account(transfer.to_branch)
         if not party_account:
             return Response({
                 'detail': f'{transfer.to_branch.branch_name}No Sundry Debitor/Creditor account linked in "Branch Master". link it first.'

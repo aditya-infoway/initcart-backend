@@ -8,6 +8,9 @@ from django.db.models import Q, Sum
 from decimal import Decimal
 from datetime import date
 
+# ✅ ADD: Permission imports
+from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
+
 
 class DuePaymentReportAPIView(APIView):
     """
@@ -17,8 +20,12 @@ class DuePaymentReportAPIView(APIView):
       - overdue_only=true   → sirf wo bills jinka due_date aaj se pehle hai
       - type=purchase|sales|purchase_return|sales_return  → filter by type
       - search=<text>       → party name / bill no se search
+      - branch_id=<id>      → Superadmin/Employee ke liye branch filter
     """
-    permission_classes = [IsAuthenticated]
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/duePaymentReport"  # ✅ ADD: Frontend route
 
     def get(self, request):
         from pos.models.purchaseentry import PurchaseMaster, PurchaseItem
@@ -30,7 +37,29 @@ class DuePaymentReportAPIView(APIView):
         from pos.models.cashreceipt import CashReceipt
         from pos.models.bankreceipt import BankReceipt
 
-        branch = request.user.branch
+        user = request.user
+        is_superadmin = user.role == 'superadmin'
+        is_employee = user.role == 'employee'
+
+        # ✅ CHANGE: Branch selection logic → get_effective_branch()
+        branch = user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # ✅ FIX: Employee ko bhi branch_id override allow karo
+        # Employee = Mini Superadmin (superadmin branch ke under kaam kar raha hai)
+        branch_id_param = request.GET.get('branch_id')
+        if branch_id_param:
+            if is_superadmin or is_employee:
+                from pos.models.branch import Branch
+                try:
+                    branch = Branch.objects.get(id=branch_id_param)
+                except Branch.DoesNotExist:
+                    return Response({'error': 'Branch not found'}, status=404)
+
         today = date.today()
 
         overdue_only = request.GET.get('overdue_only', 'false').lower() == 'true'

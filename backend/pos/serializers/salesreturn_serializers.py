@@ -1,6 +1,7 @@
 #pos/serializers/salesreturn_serializers.py
 from rest_framework import serializers
 from pos.models.salesreturn import SalesReturnMaster, SalesReturnItem
+from pos.serializers.mixins_serializers import CreatedByReadMixin
 
 class SalesReturnItemSerializer(serializers.ModelSerializer):
     item_name = serializers.CharField(source='item.itemName', read_only=True)
@@ -25,7 +26,7 @@ class SalesReturnItemSerializer(serializers.ModelSerializer):
             }
         return None
 
-class SalesReturnMasterSerializer(serializers.ModelSerializer):
+class SalesReturnMasterSerializer(CreatedByReadMixin, serializers.ModelSerializer):  
     items = SalesReturnItemSerializer(many=True, read_only=True)
     customer_name = serializers.CharField(source='customer.account_name', read_only=True)
     
@@ -35,7 +36,8 @@ class SalesReturnMasterSerializer(serializers.ModelSerializer):
             'id', 'branch', 'return_no', 'date', 'original_bill_no',
             'customer', 'customer_name', 'reason_for_return', 'approved_by',
             'return_type', 'return_status', 'total_basic', 'total_tax',
-            'grand_total', 'narration', 'created_at', 'items'
+            'grand_total', 'narration', 'created_at', 'items',
+            'created_by', 'created_by_name', 
         ]
         read_only_fields = ['return_no', 'created_at']
         

@@ -9,6 +9,9 @@ from pos.models.salesentry import SalesMaster
 from pos.models.branch import Branch
 from pos.utils.pagination import StandardResultsSetPagination
 
+# ✅ ADD: Permission imports
+from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
+
 
 class SalesBillWiseProfitReportAPIView(APIView):
     """
@@ -16,20 +19,34 @@ class SalesBillWiseProfitReportAPIView(APIView):
     Sales Net = basic_amount (already correct from SalesItem.save())
     Profit = Sales Net - Purchase Cost
     """
-    permission_classes = [IsAuthenticated]
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/salesProfitReport"  # ✅ ADD: Frontend route
 
     def get(self, request):
         user = request.user
         is_superadmin = user.role == 'superadmin'
+        is_employee = user.role == 'employee'
 
         print(f"\n{'='*50}")
         print(f"🔍 PROFIT REPORT API CALLED")
         print(f"User: {user.username}, Role: {user.role}, Superadmin: {is_superadmin}")
         print(f"{'='*50}")
 
-        # Branch handling
+        # ✅ CHANGE: Branch selection logic → get_effective_branch()
+        branch = user.get_effective_branch()
+        if not branch and not is_superadmin:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=400)
+
+        # ✅ FIX: Employee ko bhi branch_id override allow karo
+        branch_id = request.GET.get('branch_id')
+        
+        # Superadmin: kisi bhi branch ka data
         if is_superadmin:
-            branch_id = request.GET.get('branch_id')
             print(f"Branch ID param: {branch_id}")
             if branch_id:
                 try:
@@ -41,9 +58,25 @@ class SalesBillWiseProfitReportAPIView(APIView):
             else:
                 print("No branch_id - fetching ALL branches")
                 queryset = SalesMaster.objects.filter(is_cancelled=False)
+        
+        # ✅ Employee: sirf apni branch, lekin agar branch_id diya hai toh wo bhi allow
+        elif is_employee:
+            if branch_id:
+                try:
+                    branch = Branch.objects.get(id=branch_id)
+                    print(f"✅ Employee viewing branch: {branch.branch_name}")
+                except Branch.DoesNotExist:
+                    return Response({'error': 'Branch not found'}, status=404)
+            else:
+                # Employee ki default branch
+                branch = user.get_effective_branch()
+                if not branch:
+                    return Response({'error': 'Branch not found'}, status=400)
+            queryset = SalesMaster.objects.filter(branch=branch, is_cancelled=False)
+        
         else:
-            branch = getattr(user, 'branch', None)
-            print(f"Normal user branch: {branch}")
+            # Normal user
+            branch = user.get_effective_branch()
             if not branch:
                 return Response({'error': 'Branch not found'}, status=400)
             queryset = SalesMaster.objects.filter(branch=branch, is_cancelled=False)

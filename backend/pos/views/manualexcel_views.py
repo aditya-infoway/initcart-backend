@@ -6,6 +6,7 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.http import HttpResponse
+from rest_framework import status
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
@@ -17,14 +18,32 @@ from django.db import transaction
 from collections import defaultdict
 
 
+from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN CRUD VIEWS (with permission check)
+# ─────────────────────────────────────────────────────────────────────────────
+
 class ManualDownloadExcelTemplate(APIView):
-    permission_classes = [IsAuthenticated]
+    """Download Excel template for manual items import"""
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/ExcelImportExport"  # ✅ ADD: Frontend route
 
     def get(self, request):
-        branch      = request.user.branch
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
         branch_type = branch.branch_type.lower()
 
-        wb      = Workbook()
+        wb = Workbook()
         ws_data = wb.active
         ws_data.title = "Item Data"
 
@@ -37,9 +56,6 @@ class ManualDownloadExcelTemplate(APIView):
         )
 
         # ===== COLUMNS =====
-        # Manual mode:
-        #   - Brand, Category, SubCategory, SubSubCategory → plain text input (no dropdown)
-        #   - No WEBSITE_DISPLAY field
         main_columns = [
             {"header": "ITEM_NAME*",            "width": 30},
             {"header": "BRAND_NAME",             "width": 25},
@@ -67,16 +83,12 @@ class ManualDownloadExcelTemplate(APIView):
         # ===== WRITE HEADERS =====
         for col_idx, col in enumerate(all_headers, 1):
             cell = ws_data.cell(row=1, column=col_idx, value=col["header"])
-            cell.fill   = header_fill
-            cell.font   = header_font
+            cell.fill = header_fill
+            cell.font = header_font
             cell.border = thin_border
             ws_data.column_dimensions[get_column_letter(col_idx)].width = col["width"]
 
-        # # Example rows
-        # ws_data.append(["Example Product"] + [""] * (len(all_headers) - 1))
-        # ws_data.append(["Same ITEM_NAME for multiple rows = multiple variants"] + [""] * (len(all_headers) - 1))
-
-        # ===== DROPDOWNS — only GROUP, UNIT, TAX_SLAB (manual entries) =====
+        # ===== DROPDOWNS — only GROUP, UNIT, TAX_SLAB =====
         dropdown_map = {
             "GROUP_NAME": sorted(list(ItemGroup.objects.filter(branch=branch).values_list('name', flat=True))),
             "UNIT_NAME":  sorted(list(ItemUnit.objects.filter(is_active=True).values_list('symbol', flat=True))),
@@ -84,10 +96,10 @@ class ManualDownloadExcelTemplate(APIView):
         }
 
         hidden_start = len(all_headers) + 2
-        hidden_cols  = {}
+        hidden_cols = {}
 
         for i, (key, values) in enumerate(dropdown_map.items()):
-            col_idx    = hidden_start + i
+            col_idx = hidden_start + i
             col_letter = get_column_letter(col_idx)
             hidden_cols[key] = col_letter
 
@@ -101,22 +113,21 @@ class ManualDownloadExcelTemplate(APIView):
 
         for col_idx, col in enumerate(all_headers, 1):
             col_letter = get_column_letter(col_idx)
-            header     = col["header"].replace("*", "")
+            header = col["header"].replace("*", "")
 
             if header in hidden_cols:
                 hidden_col = hidden_cols[header]
-                length     = len(dropdown_map[header])
-                formula    = f"${hidden_col}$2:${hidden_col}${length + 1}"
+                length = len(dropdown_map[header])
+                formula = f"${hidden_col}$2:${hidden_col}${length + 1}"
                 dv = DataValidation(type="list", formula1=formula, allow_blank=True)
                 ws_data.add_data_validation(dv)
                 dv.add(f"{col_letter}2:{col_letter}{max_row}")
 
-        # ===== CONDITIONAL FORMATTING: SALES_PRICE > MRP highlight =====
-        # Find SALES_PRICE and MRP column letters dynamically
+        # ===== CONDITIONAL FORMATTING =====
         header_names = [col["header"].replace("*", "") for col in all_headers]
         try:
             sales_col_letter = get_column_letter(header_names.index("SALES_PRICE") + 1)
-            mrp_col_letter   = get_column_letter(header_names.index("MRP") + 1)
+            mrp_col_letter = get_column_letter(header_names.index("MRP") + 1)
             red_fill = PatternFill(start_color="FFC7CE", fill_type="solid")
             ws_data.conditional_formatting.add(
                 f"{sales_col_letter}2:{sales_col_letter}{max_row}",
@@ -135,7 +146,11 @@ class ManualDownloadExcelTemplate(APIView):
 
 
 class ManualImportItemsFromExcel(APIView):
-    permission_classes = [IsAuthenticated]
+    """Import manual items from Excel"""
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/ExcelImportExport"  # ✅ ADD: Frontend route
 
     def post(self, request):
         used_barcodes = set()
@@ -144,7 +159,14 @@ class ManualImportItemsFromExcel(APIView):
         if not excel_file:
             return Response({"error": "No file uploaded"}, status=400)
 
-        branch      = request.user.branch
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
         branch_type = branch.branch_type.lower()
 
         variant_field_mapping = {
@@ -195,19 +217,15 @@ class ManualImportItemsFromExcel(APIView):
             if is_empty(val):
                 return ""
 
-            # ===== CASE 1: Excel ne percentage-formatted NUMBER bhej diya (0.05, 0.12, 0.18, 0.28) =====
-            # Ye tab hota hai jab user cell me "5 %" type karke Enter dabata hai —
-            # Excel usko fraction bana deta hai, display sirf "5%" dikhata hai.
             if isinstance(val, (int, float)):
                 num = float(val)
                 if num == 0:
                     return "Tax Free"
-                if 0 < num < 1:          # 0.05 -> 5, 0.12 -> 12, etc.
+                if 0 < num < 1:
                     num = round(num * 100, 2)
                 valid_slabs = {5.0: "5%", 12.0: "12%", 18.0: "18%", 28.0: "28%"}
                 return valid_slabs.get(num, "")
 
-            # ===== CASE 2: Text value aayi (dropdown se select ki hui, ya manually text likhi) =====
             cleaned = re.sub(r"\s+", "", str(val)).upper()
 
             if "TAXFREE" in cleaned or cleaned in ("NIL", "0%", "0"):
@@ -221,7 +239,6 @@ class ManualImportItemsFromExcel(APIView):
             valid_slabs = {5.0: "5%", 12.0: "12%", 18.0: "18%", 28.0: "28%"}
             return valid_slabs.get(num, "")
 
-# ===== NUMERIC-TEXT CLEANER (removes .0 from numeric-looking codes) =====
         def clean_numeric_text_cell(x):
             if pd.isna(x):
                 return None
@@ -238,7 +255,7 @@ class ManualImportItemsFromExcel(APIView):
                 converters={
                     'BARCODE': clean_numeric_text_cell,
                     'HSN_CODE': clean_numeric_text_cell,
-                    'HSN_CODE*': clean_numeric_text_cell,   # template star-header safety
+                    'HSN_CODE*': clean_numeric_text_cell,
                 }
             )
         except Exception as e:
@@ -259,11 +276,10 @@ class ManualImportItemsFromExcel(APIView):
         if missing:
             return Response({"error": f"Missing columns: {', '.join(missing)}"}, status=400)
 
-        # ===== LOOKUPS — only GROUP and UNIT from DB =====
+        # ===== LOOKUPS =====
         group_map = {g.name: g.id for g in ItemGroup.objects.filter(branch=branch)}
-        unit_map  = {u.symbol: u.id for u in ItemUnit.objects.filter(is_active=True)}
+        unit_map = {u.symbol: u.id for u in ItemUnit.objects.filter(is_active=True)}
         
-        # ✅ NEW: existing barcodes for THIS branch
         existing_barcodes = set(
             itemvariants.objects.filter(item__branch=branch)
             .exclude(barcode__isnull=True)
@@ -271,13 +287,12 @@ class ManualImportItemsFromExcel(APIView):
             .values_list("barcode", flat=True)
         )
         
-        # ✅ NEW: existing item names for THIS branch (case-insensitive check ke liye lowercase set)
         existing_item_names = set(
             name.strip().lower()
             for name in items.objects.filter(branch=branch).values_list("itemName", flat=True)
         )
 
-        errors     = []
+        errors = []
         items_data = defaultdict(lambda: {
             "itemName":    "",
             "item_fields": {},
@@ -300,25 +315,22 @@ class ManualImportItemsFromExcel(APIView):
             else:
                 last_item = item_name
 
-            # Pure empty row skip
             if all(is_empty(row.get(c)) for c in ['ITEM_NAME', 'PURCHASE_PRICE', 'SALES_PRICE', 'MRP']):
                 continue
 
-            # If item already flagged with error, skip all its variant rows too
             if items_data[item_name].get("has_error"):
                 continue
 
-            # ===== ITEM FIELDS (only on first occurrence of this item) =====
+            # ===== ITEM FIELDS =====
             if not items_data[item_name]["item_fields"]:
                 val_category = clean(row.get('CATEGORY_NAME'))
-                val_subcat   = clean(row.get('SUB_CATEGORY_NAME'))
-                val_subsub   = clean(row.get('SUB_SUB_CATEGORY_NAME'))
-                val_brand    = clean(row.get('BRAND_NAME'))
-                val_group    = clean(row.get('GROUP_NAME'))
-                val_unit     = clean(row.get('UNIT_NAME'))
-                val_hsn      = clean(row.get('HSN_CODE'))
+                val_subcat = clean(row.get('SUB_CATEGORY_NAME'))
+                val_subsub = clean(row.get('SUB_SUB_CATEGORY_NAME'))
+                val_brand = clean(row.get('BRAND_NAME'))
+                val_group = clean(row.get('GROUP_NAME'))
+                val_unit = clean(row.get('UNIT_NAME'))
+                val_hsn = clean(row.get('HSN_CODE'))
 
-                # ===== REQUIRED ITEM FIELD VALIDATIONS =====
                 item_has_error = False
 
                 if not item_name:
@@ -326,13 +338,12 @@ class ManualImportItemsFromExcel(APIView):
                     item_has_error = True
                 elif item_name.strip().lower() in existing_item_names:
                     errors.append(f"Row {row_num}: Item '{item_name}' already exists in this branch")
-                    item_has_error = True    
-                    
+                    item_has_error = True
+
                 if not val_category:
                     errors.append(f"Row {row_num}: CATEGORY_NAME is required")
                     item_has_error = True
-                    
-                # NEW: hierarchy validation
+
                 if val_subcat and not val_category:
                     errors.append(f"Row {row_num}: SUB_CATEGORY_NAME provided but CATEGORY_NAME is empty")
                     item_has_error = True
@@ -340,7 +351,6 @@ class ManualImportItemsFromExcel(APIView):
                 if val_subsub and not val_subcat:
                     errors.append(f"Row {row_num}: SUB_SUB_CATEGORY_NAME provided but SUB_CATEGORY_NAME is empty")
                     item_has_error = True
-
 
                 if not val_unit:
                     errors.append(f"Row {row_num}: UNIT_NAME is required")
@@ -363,7 +373,6 @@ class ManualImportItemsFromExcel(APIView):
                     continue
 
                 items_data[item_name]["item_fields"] = {
-                    # Manual mode: brand/category/sub/subsub stored as plain text, no FK lookup
                     "brand_name":     val_brand,
                     "category_name":  val_category,
                     "subcat_name":    val_subcat,
@@ -376,8 +385,8 @@ class ManualImportItemsFromExcel(APIView):
 
             # ===== PRICE =====
             purchase_price = to_float(row.get('PURCHASE_PRICE'))
-            sales_price    = to_float(row.get('SALES_PRICE'))
-            mrp            = to_float(row.get('MRP'))
+            sales_price = to_float(row.get('SALES_PRICE'))
+            mrp = to_float(row.get('MRP'))
 
             if purchase_price is None or sales_price is None or mrp is None:
                 errors.append(f"Row {row_num}: PURCHASE_PRICE, SALES_PRICE, MRP are required")
@@ -402,7 +411,7 @@ class ManualImportItemsFromExcel(APIView):
             qty = to_int(row.get('OPENING_STOCK')) or 0
 
             # ===== TAX =====
-            tax_str  = normalize_tax(row.get('TAX_SLAB'))
+            tax_str = normalize_tax(row.get('TAX_SLAB'))
             tax_rate = 0.0
             if tax_str and tax_str != "Tax Free":
                 try:
@@ -410,9 +419,9 @@ class ManualImportItemsFromExcel(APIView):
                 except:
                     tax_rate = 0.0
 
-            basic   = qty * purchase_price
+            basic = qty * purchase_price
             tax_amt = (basic * tax_rate) / 100
-            net     = basic + tax_amt
+            net = basic + tax_amt
 
             variant = {
                 "purchasePrice": purchase_price,
@@ -455,20 +464,18 @@ class ManualImportItemsFromExcel(APIView):
         if errors:
             return Response({"success": False, "errors": errors[:100]}, status=400)
 
-        # ===== EMPTY FILE CHECK =====
         if not any(item["variants"] for item in items_data.values()):
             return Response({
                 "success": False,
                 "errors": ["Excel file is empty or no valid rows found"]
             }, status=400)
 
-        created_items    = 0
+        created_items = 0
         created_variants = 0
 
         # ===== SAVE =====
         with transaction.atomic():
             for item_info in items_data.values():
-                # Skip items that had errors (no variants collected)
                 if not item_info["variants"]:
                     continue
 
@@ -478,7 +485,6 @@ class ManualImportItemsFromExcel(APIView):
                     itemName=item_info["itemName"],
                     branch=branch,
                     entry_type="manual",
-                    # Manual mode: plain text fields (CharField), no FK
                     brand=f["brand_name"],
                     category=f["category_name"],
                     subCategory=f["subcat_name"],
@@ -517,14 +523,24 @@ class ManualImportItemsFromExcel(APIView):
 
 
 class ManualExportItemsToExcel(APIView):
-    """Export manual-mode items to Excel"""
-    permission_classes = [IsAuthenticated]
+    """Export manual items to Excel"""
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/ExcelImportExport"  # ✅ ADD: Frontend route
 
     def get(self, request):
         from openpyxl.utils import get_column_letter
         import pandas as pd
 
-        branch      = request.user.branch
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
         branch_type = branch.branch_type.lower()
 
         item_queryset = items.objects.filter(
@@ -563,13 +579,11 @@ class ManualExportItemsToExcel(APIView):
         )
         response['Content-Disposition'] = 'attachment; filename="manual_items_export.xlsx"'
 
-        #  Excel writer with formatting
         with pd.ExcelWriter(response, engine='openpyxl') as writer:
             df.to_excel(writer, index=False, sheet_name="Item Data")
 
             worksheet = writer.sheets["Item Data"]
 
-            #  Auto column width
             for col_idx, col in enumerate(df.columns, 1):
                 max_length = len(str(col))
 
@@ -580,7 +594,6 @@ class ManualExportItemsToExcel(APIView):
                     except:
                         pass
 
-                #  Smart width control
                 if "BARCODE" in col:
                     width = 25
                 elif "NAME" in col:

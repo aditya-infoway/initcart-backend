@@ -1,4 +1,4 @@
-# pos/views/branch_order_views.py - COMPLETE FIX
+# pos/views/branch_order_views.py
 
 from rest_framework import status, permissions
 from rest_framework.views import APIView
@@ -16,10 +16,12 @@ from ecommerce.serializers.order_serializers import (
 import logging
 import traceback
 
+# ✅ Permission imports
+from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
+
 logger = logging.getLogger(__name__)
 
 
-# ============== FIXED update_order_status with commission trigger ==============
 def update_order_status(order):
     """
     Update overall order status based on all items' status
@@ -63,24 +65,15 @@ def update_order_status(order):
     if old_status == new_status:
         return
     
-    print(f"\n{'='*60}")
-    print(f"📦 ORDER STATUS UPDATE: {order.order_number}")
-    print(f"   Old: {old_status} → New: {new_status}")
-    print(f"   Payment Method: {order.payment_method}")
-    print(f"   Payment Status: {order.payment_status}")
-    print(f"{'='*60}")
-    
     # Update order status
     order.order_status = new_status
     
     # For COD orders, mark payment as completed when delivered
     if new_status == 'delivered' and order.payment_method == 'cod':
         order.payment_status = 'completed'
-        print(f"💰 COD order delivered - Payment marked as completed")
     
-    # IMPORTANT: Save the order - this triggers the signal that processes commission
+    # Save the order - this triggers the signal that processes commission
     order.save()
-    print(f"✅ Order saved - Signal will handle commission processing")
     
     # Update delivery info if needed
     if new_status == 'delivered':
@@ -95,28 +88,13 @@ def handle_stock_on_status_change(order_item, old_status, new_status):
     - When order is CANCELLED/RETURNED: Increase stock (return to inventory)
     """
     if not order_item.product_stock:
-        print(f"   ℹ️ No product_stock linked for {order_item.product_name}")
         return
-    
-    print(f"\n{'='*50}")
-    print(f"🔄 STOCK MANAGEMENT")
-    print(f"   Product: {order_item.product_name}")
-    print(f"   Old Status: '{old_status}' → New Status: '{new_status}'")
-    print(f"   Quantity: {order_item.quantity}")
-    print(f"   Current Stock Before: {order_item.product_stock.stock_quantity}")
-    
-    stock_changed = False
     
     # CASE 1: Order is being DELIVERED - DECREASE stock
     if new_status == 'delivered' and old_status != 'delivered':
         if order_item.product_stock.stock_quantity >= order_item.quantity:
             order_item.product_stock.stock_quantity -= order_item.quantity
             order_item.product_stock.save()
-            print(f"   ✅ Stock DECREASED: -{order_item.quantity}")
-            print(f"   New Stock: {order_item.product_stock.stock_quantity}")
-            stock_changed = True
-        else:
-            print(f"   ⚠️ Insufficient stock! Available: {order_item.product_stock.stock_quantity}, Required: {order_item.quantity}")
     
     # CASE 2: Order is being CANCELLED/RETURNED - INCREASE stock
     elif new_status in ['cancelled', 'refunded', 'failed']:
@@ -124,19 +102,6 @@ def handle_stock_on_status_change(order_item, old_status, new_status):
         if old_status == 'delivered':
             order_item.product_stock.stock_quantity += order_item.quantity
             order_item.product_stock.save()
-            print(f"   ✅ Stock INCREASED (return from delivered): +{order_item.quantity}")
-            print(f"   New Stock: {order_item.product_stock.stock_quantity}")
-            stock_changed = True
-        else:
-            print(f"   ℹ️ No stock change - Order was not delivered before cancellation")
-    
-    else:
-        print(f"   ℹ️ No stock change needed for this status transition")
-    
-    if not stock_changed:
-        print(f"   ℹ️ Stock unchanged: {order_item.product_stock.stock_quantity}")
-    
-    print(f"{'='*50}\n")
 
 
 class BranchOrderListAPIView(APIView):
@@ -144,29 +109,49 @@ class BranchOrderListAPIView(APIView):
     API for branch to list their orders
     Branch ka apna vendor hota hai, uske through orders filter hote hain
     """
-    permission_classes = [permissions.IsAuthenticated]
+    
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/Orders"
     authentication_classes = [JWTAuthentication]
     
     def get(self, request):
         try:
             user = request.user
-            
-            # Check if user has branch
-            if not hasattr(user, 'branch'):
+            is_superadmin = user.role == 'superadmin'
+            is_employee = user.role == 'employee'
+
+            branch = user.get_effective_branch()
+            if not branch:
                 return Response({
                     'success': False,
-                    'message': 'Only branch users can access this endpoint'
-                }, status=status.HTTP_403_FORBIDDEN)
-            
+                    'message': 'No branch linked to this user'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Employee ko bhi branch_id override allow
+            branch_id_param = request.query_params.get('branch_id')
+            if branch_id_param:
+                if is_superadmin or is_employee:
+                    from pos.models.branch import Branch
+                    try:
+                        branch = Branch.objects.get(id=branch_id_param)
+                    except Branch.DoesNotExist:
+                        return Response({'error': 'Branch not found'}, status=404)
+
             # Get vendor from branch user
             try:
-                vendor = Vendor.objects.get(user=user)
+                vendor = Vendor.objects.get(user=branch.user) if branch.user else None
             except Vendor.DoesNotExist:
                 return Response({
                     'success': False,
                     'message': 'Vendor profile not found for this branch'
                 }, status=status.HTTP_404_NOT_FOUND)
             
+            if not vendor:
+                return Response({
+                    'success': False,
+                    'message': 'Vendor profile not found'
+                }, status=status.HTTP_404_NOT_FOUND)
+
             # Get filter parameters
             status_filter = request.query_params.get('status', 'all')
             search = request.query_params.get('search', '')
@@ -252,22 +237,44 @@ class BranchOrderStatsAPIView(APIView):
     """
     API for branch to get order statistics
     """
-    permission_classes = [permissions.IsAuthenticated]
+    
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/Orders"
     authentication_classes = [JWTAuthentication]
     
     def get(self, request):
         try:
             user = request.user
-            
-            if not hasattr(user, 'branch'):
+            is_superadmin = user.role == 'superadmin'
+            is_employee = user.role == 'employee'
+
+            branch = user.get_effective_branch()
+            if not branch:
                 return Response({
                     'success': False,
-                    'message': 'Only branch users can access this endpoint'
-                }, status=status.HTTP_403_FORBIDDEN)
-            
+                    'message': 'No branch linked to this user'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Employee ko bhi branch_id override allow
+            branch_id_param = request.query_params.get('branch_id')
+            if branch_id_param:
+                if is_superadmin or is_employee:
+                    from pos.models.branch import Branch
+                    try:
+                        branch = Branch.objects.get(id=branch_id_param)
+                    except Branch.DoesNotExist:
+                        return Response({'error': 'Branch not found'}, status=404)
+
+            # Get vendor from branch user
             try:
-                vendor = Vendor.objects.get(user=user)
+                vendor = Vendor.objects.get(user=branch.user) if branch.user else None
             except Vendor.DoesNotExist:
+                return Response({
+                    'success': False,
+                    'message': 'Vendor profile not found for this branch'
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            if not vendor:
                 return Response({
                     'success': False,
                     'message': 'Vendor profile not found'
@@ -306,22 +313,44 @@ class BranchOrderDetailAPIView(APIView):
     """
     API for branch to view order details
     """
-    permission_classes = [permissions.IsAuthenticated]
+    
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/Orders"
     authentication_classes = [JWTAuthentication]
     
     def get(self, request, order_id):
         try:
             user = request.user
-            
-            if not hasattr(user, 'branch'):
+            is_superadmin = user.role == 'superadmin'
+            is_employee = user.role == 'employee'
+
+            branch = user.get_effective_branch()
+            if not branch:
                 return Response({
                     'success': False,
-                    'message': 'Only branch users can access this endpoint'
-                }, status=status.HTTP_403_FORBIDDEN)
-            
+                    'message': 'No branch linked to this user'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Employee ko bhi branch_id override allow
+            branch_id_param = request.query_params.get('branch_id')
+            if branch_id_param:
+                if is_superadmin or is_employee:
+                    from pos.models.branch import Branch
+                    try:
+                        branch = Branch.objects.get(id=branch_id_param)
+                    except Branch.DoesNotExist:
+                        return Response({'error': 'Branch not found'}, status=404)
+
+            # Get vendor from branch user
             try:
-                vendor = Vendor.objects.get(user=user)
+                vendor = Vendor.objects.get(user=branch.user) if branch.user else None
             except Vendor.DoesNotExist:
+                return Response({
+                    'success': False,
+                    'message': 'Vendor profile not found for this branch'
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            if not vendor:
                 return Response({
                     'success': False,
                     'message': 'Vendor profile not found'
@@ -362,22 +391,44 @@ class BranchOrderStatusUpdateAPIView(APIView):
     API for branch to update order item status
     Commission is automatically triggered via the post_save signal
     """
-    permission_classes = [permissions.IsAuthenticated]
+    
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/Orders"
     authentication_classes = [JWTAuthentication]
     
     def post(self, request):
         try:
             user = request.user
-            
-            if not hasattr(user, 'branch'):
+            is_superadmin = user.role == 'superadmin'
+            is_employee = user.role == 'employee'
+
+            branch = user.get_effective_branch()
+            if not branch:
                 return Response({
                     'success': False,
-                    'message': 'Only branch users can access this endpoint'
-                }, status=status.HTTP_403_FORBIDDEN)
-            
+                    'message': 'No branch linked to this user'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Employee ko bhi branch_id override allow
+            branch_id_param = request.query_params.get('branch_id')
+            if branch_id_param:
+                if is_superadmin or is_employee:
+                    from pos.models.branch import Branch
+                    try:
+                        branch = Branch.objects.get(id=branch_id_param)
+                    except Branch.DoesNotExist:
+                        return Response({'error': 'Branch not found'}, status=404)
+
+            # Get vendor from branch user
             try:
-                vendor = Vendor.objects.get(user=user)
+                vendor = Vendor.objects.get(user=branch.user) if branch.user else None
             except Vendor.DoesNotExist:
+                return Response({
+                    'success': False,
+                    'message': 'Vendor profile not found for this branch'
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            if not vendor:
                 return Response({
                     'success': False,
                     'message': 'Vendor profile not found'
@@ -399,14 +450,6 @@ class BranchOrderStatusUpdateAPIView(APIView):
                 )
                 old_status = order_item.item_status
                 new_status = serializer.validated_data['item_status']
-                
-                print(f"\n{'='*60}")
-                print(f"📝 ORDER ITEM STATUS UPDATE (POS/Branch)")
-                print(f"   Order Item ID: {order_item.id}")
-                print(f"   Product: {order_item.product_name}")
-                print(f"   Status: {old_status} → {new_status}")
-                print(f"   Quantity: {order_item.quantity}")
-                print(f"{'='*60}")
                 
                 order_item.item_status = new_status
                 order_item.save()
@@ -433,23 +476,11 @@ class BranchOrderStatusUpdateAPIView(APIView):
                     vendor=vendor
                 )
                 
-                print(f"\n{'='*60}")
-                print(f"📝 ORDER STATUS UPDATE - ALL ITEMS (POS/Branch)")
-                print(f"   Order ID: {order_id}")
-                print(f"   Items found: {order_items.count()}")
-                print(f"   New Status: {new_status}")
-                print(f"{'='*60}")
-                
                 order_obj = None
                 updated_count = 0
                 
                 for order_item in order_items:
                     old_status = order_item.item_status
-                    
-                    print(f"\n   📦 Product: {order_item.product_name}")
-                    print(f"      Old Status: {old_status}")
-                    print(f"      New Status: {new_status}")
-                    print(f"      Quantity: {order_item.quantity}")
                     
                     order_item.item_status = new_status
                     order_item.save()
@@ -462,9 +493,6 @@ class BranchOrderStatusUpdateAPIView(APIView):
                 # Update overall order status - THIS TRIGGERS COMMISSION
                 if order_obj:
                     update_order_status(order_obj)
-                
-                print(f"\n✅ Updated {updated_count} items to status: {new_status}")
-                print(f"{'='*60}\n")
                 
                 return Response({
                     'success': True,

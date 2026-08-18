@@ -3,6 +3,7 @@ from django.db import models
 from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 from django.contrib.auth import get_user_model
+from pos.models.mixins import CreatedByMixin
 import uuid
 import os
 import time
@@ -33,7 +34,7 @@ def branch_idproof_path(instance, filename):
 def branch_licence_path(instance, filename):
     return os.path.join("branch-license", unique_filename(instance, filename, "branch-license"))
 
-class Branch(models.Model):
+class Branch(CreatedByMixin,models.Model):
     BRANCH_TYPE_CHOICES = [
         ('fashion', 'Fashion'),
         ('mart', 'Mart'),

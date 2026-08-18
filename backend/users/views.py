@@ -8,7 +8,7 @@ from django.http import JsonResponse
 from django.core.cache import cache
 from .models import User
 from django.contrib.auth.hashers import make_password  # already check_password hai, make_password add karo
-from django.db.models import Q
+from django.db.models import Q  
 
 
 def handler429(request, exception):
@@ -169,7 +169,7 @@ class SuperAdminChangeCredentialsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def patch(self, request):
-        user = request.user
+        user = request.user 
 
         if getattr(user, "role", None) != "superadmin":
             return Response(

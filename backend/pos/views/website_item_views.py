@@ -15,26 +15,31 @@ from pos.serializers.item_serializers import (
     ItemWithVariantsSerializer
 )
 from pos.services.item_product_sync import ItemToProductSyncService
-from ecommerce.permissions import IsSuperAdmin
-
-
-# pos/views/website_item_views.py
+from ecommerce.permissions import IsSuperAdmin, IsSuperAdminOrBranchOrPagePermittedEmployee
 
 from rest_framework.pagination import PageNumberPagination
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN CRUD VIEWS (with permission check)
+# ─────────────────────────────────────────────────────────────────────────────
+
 class WebsiteItemsListAPI(APIView):
     """List all items from branch that are marked for website display"""
-    permission_classes = [IsAuthenticated]
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/WebItems"  # ✅ ADD: Frontend route
     authentication_classes = [JWTAuthentication, SessionAuthentication]
     
     def get(self, request):
-        branch = getattr(request.user, 'branch', None)
-        
+        # ✅ CHANGE: getattr(request.user, 'branch', None) → get_effective_branch()
+        branch = request.user.get_effective_branch()
         if not branch:
-            return Response(
-                {"error": "User has no branch associated"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
         
         # Get items from this branch that are marked for website display
         items_qs = items.objects.filter(
@@ -89,17 +94,20 @@ class WebsiteItemsListAPI(APIView):
 
 class WebsiteItemDetailAPI(APIView):
     """Get details of a single item for website display"""
-    permission_classes = [IsAuthenticated]
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/WebItems"  # ✅ ADD: Frontend route
     authentication_classes = [JWTAuthentication, SessionAuthentication]
     
     def get(self, request, pk):
-        branch = getattr(request.user, 'branch', None)
-        
+        # ✅ CHANGE: getattr(request.user, 'branch', None) → get_effective_branch()
+        branch = request.user.get_effective_branch()
         if not branch:
-            return Response(
-                {"error": "User has no branch associated"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
         
         try:
             item = items.objects.select_related(
@@ -121,9 +129,13 @@ class WebsiteItemDetailAPI(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
+
 class UpdateWebsiteItemAPI(APIView):
     """Update item and sync changes to linked product"""
-    permission_classes = [IsAuthenticated]
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/WebItems"  # ✅ ADD: Frontend route
     authentication_classes = [JWTAuthentication, SessionAuthentication]
     
     def put(self, request, pk):
@@ -138,13 +150,13 @@ class UpdateWebsiteItemAPI(APIView):
         from django.core.files.storage import default_storage
         from django.utils import timezone
         
-        branch = getattr(request.user, 'branch', None)  
-        
+        # ✅ CHANGE: getattr(request.user, 'branch', None) → get_effective_branch()
+        branch = request.user.get_effective_branch()
         if not branch:
-            return Response(
-                {"error": "User has no branch associated"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
         
         try:
             item = items.objects.get(id=pk, branch=branch)
@@ -392,21 +404,24 @@ class UpdateWebsiteItemAPI(APIView):
             "message": message,
             "item": serializer.data
         }, status=status.HTTP_200_OK)
-        
-#  NEW: Delete website item and optionally its linked product
+
+
 class DeleteWebsiteItemAPI(APIView):
     """Delete item and optionally its linked product"""
-    permission_classes = [IsAuthenticated]
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/WebItems"  # ✅ ADD: Frontend route
     authentication_classes = [JWTAuthentication, SessionAuthentication]
     
     def delete(self, request, pk):
-        branch = getattr(request.user, 'branch', None)
-        
+        # ✅ CHANGE: getattr(request.user, 'branch', None) → get_effective_branch()
+        branch = request.user.get_effective_branch()
         if not branch:
-            return Response(
-                {"error": "User has no branch associated"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
         
         try:
             item = items.objects.get(id=pk, branch=branch)
@@ -430,8 +445,14 @@ class DeleteWebsiteItemAPI(APIView):
         }, status=status.HTTP_200_OK)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ADMIN VIEWS — SUPERADMIN ONLY (No employee access)
+# ─────────────────────────────────────────────────────────────────────────────
+
 class AdminWebsiteItemsListAPI(APIView):
     """Admin view to list all items pending for website approval"""
+    
+    # ✅ KEEP: IsSuperAdmin (No employee access)
     permission_classes = [IsAuthenticated, IsSuperAdmin]
     authentication_classes = [JWTAuthentication, SessionAuthentication]
     
@@ -448,7 +469,7 @@ class AdminWebsiteItemsListAPI(APIView):
         if status_filter:
             items_qs = items_qs.filter(website_status=status_filter)
         
-        #  Fix: Filter by branch - handle both ID and name
+        # Fix: Filter by branch - handle both ID and name
         branch_filter = request.GET.get('branch')
         if branch_filter:
             # Try to filter by ID first (if numeric)
@@ -469,9 +490,11 @@ class AdminWebsiteItemsListAPI(APIView):
             "items": serializer.data
         }, status=status.HTTP_200_OK)
 
-# NEW: Admin approve/reject item to create product
+
 class AdminApproveWebsiteItemAPI(APIView):
     """Admin approve or reject item for website display"""
+    
+    # ✅ KEEP: IsSuperAdmin (No employee access)
     permission_classes = [IsAuthenticated, IsSuperAdmin]
     authentication_classes = [JWTAuthentication, SessionAuthentication]
     
@@ -509,9 +532,10 @@ class AdminApproveWebsiteItemAPI(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-#     NEW: Manual sync item to product (force sync)
 class ManualSyncItemToProductAPI(APIView):
     """Manually sync an item to product (for debugging/recovery)"""
+    
+    # ✅ KEEP: IsSuperAdmin (No employee access)
     permission_classes = [IsAuthenticated, IsSuperAdmin]
     authentication_classes = [JWTAuthentication, SessionAuthentication]
     
@@ -539,10 +563,12 @@ class ManualSyncItemToProductAPI(APIView):
             }, status=status.HTTP_400_BAD_REQUEST)
 
 
-#    NEW: Dashboard stats for website items
 class WebsiteItemsDashboardAPI(APIView):
     """Get dashboard statistics for website items"""
-    permission_classes = [IsAuthenticated]
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/WebItems"  # ✅ ADD: Frontend route
     authentication_classes = [JWTAuthentication, SessionAuthentication]
     
     def get(self, request):
@@ -550,8 +576,14 @@ class WebsiteItemsDashboardAPI(APIView):
         
         # Check if user is admin or branch user
         if hasattr(user, 'branch'):
-            # Branch user stats
-            branch = user.branch
+            # ✅ CHANGE: user.branch → get_effective_branch()
+            branch = user.get_effective_branch()
+            if not branch:
+                return Response({
+                    "success": False,
+                    "error": "No branch linked to this user"
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
             items_qs = items.objects.filter(branch=branch, website_display=True)
             
             stats = {

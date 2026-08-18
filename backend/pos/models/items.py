@@ -4,13 +4,14 @@ from pos.models.branch import Branch
 from ecommerce.models.category import Category, SubCategory, SubSubCategory
 from ecommerce.models.vendor import Brand
 from django.core.validators import MinValueValidator
+from pos.models.mixins import CreatedByMixin
 
 ENTRY_TYPE_CHOICES = [
     ('company', 'Company'),
     ('manual', 'Manual'),
 ]
 
-class items(models.Model):
+class items(CreatedByMixin, models.Model):
     # Basic fields
     entry_type = models.CharField(max_length=10, choices=ENTRY_TYPE_CHOICES)
     itemName = models.CharField(max_length=100)

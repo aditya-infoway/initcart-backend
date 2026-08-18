@@ -3,6 +3,7 @@ from rest_framework import serializers
 from pos.models.purchasereturn import PurchaseReturnMaster, PurchaseReturnItem
 from pos.models.account import Account
 from pos.models.items import items, itemvariants
+from pos.serializers.mixins_serializers import CreatedByReadMixin
 
 class PurchaseReturnItemSerializer(serializers.ModelSerializer):
     item_name = serializers.CharField(source='item.itemName', read_only=True)
@@ -15,7 +16,7 @@ class PurchaseReturnItemSerializer(serializers.ModelSerializer):
             'hsn_code', 'batch_no', 'return_quantity', 'price',
             'discount_percent', 'tax_percent', 'basic_amount',
             'discount_amount', 'tax_amount', 'net_amount',
-            'cgst', 'sgst', 'igst'
+            'cgst', 'sgst', 'igst',
         ]
     
     def get_variant_details(self, obj):
@@ -27,7 +28,7 @@ class PurchaseReturnItemSerializer(serializers.ModelSerializer):
             }
         return None
 
-class PurchaseReturnMasterSerializer(serializers.ModelSerializer):
+class PurchaseReturnMasterSerializer(CreatedByReadMixin, serializers.ModelSerializer):
     items = PurchaseReturnItemSerializer(many=True, read_only=True)
     party_name = serializers.CharField(source='party.account_name', read_only=True)
     
@@ -37,6 +38,12 @@ class PurchaseReturnMasterSerializer(serializers.ModelSerializer):
             'id', 'branch', 'return_no', 'date', 'original_bill_no',
             'party', 'party_name', 'reason_for_return', 'approved_by',
             'return_type', 'return_status', 'total_basic', 'total_tax',
-            'grand_total', 'narration', 'created_at', 'items'
+            'grand_total', 'narration', 'created_at', 'items', 'created_by',
+            'created_by_name',
         ]
         read_only_fields = ['return_no', 'created_at']
+    def create(self, validated_data):
+        request = self.context.get("request")
+        if request and request.user and request.user.is_authenticated:
+            validated_data["created_by"] = request.user
+        return super().create(validated_data)    

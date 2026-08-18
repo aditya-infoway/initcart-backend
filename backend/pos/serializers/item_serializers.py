@@ -10,6 +10,7 @@ import json
 import random
 import string
 from django.db.models.deletion import ProtectedError
+from pos.serializers.mixins_serializers import CreatedByReadMixin
 
 class VariantSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
@@ -37,7 +38,7 @@ class VariantSerializer(serializers.ModelSerializer):
             item_id = self.context.get('item_id')
             
             if request and hasattr(request, 'user') and request.user:
-                branch = getattr(request.user, 'branch', None)
+                branch = request.user.get_effective_branch()
                 if branch:
                     qs = itemvariants.objects.filter(barcode=value, item__branch=branch)
                     
@@ -101,12 +102,12 @@ class itemSerializers(serializers.ModelSerializer):
         request = self.context.get("request", None)
         user = getattr(request, "user", None)
 
-        if not user or not hasattr(user, "branch") or not user.branch:
+        branch = user.get_effective_branch() if user else None
+        if not branch:
             raise serializers.ValidationError(
                 {"branch": "User has no branch assigned or request is not authenticated"}
             )
 
-        branch = user.branch
         branch_type = branch.branch_type
 
         BRANCH_REQUIRED_FIELDS = {
@@ -133,6 +134,12 @@ class itemSerializers(serializers.ModelSerializer):
         print(f"=== CREATE CALLED ===")
         import traceback
         traceback.print_stack() 
+        
+        # ✅ Use request only once
+        request = self.context.get("request")         
+        if request and request.user and request.user.is_authenticated:  
+            validated_data["created_by"] = request.user  
+        
         variants_data = validated_data.pop("variants", [])
         group_id = validated_data.pop("group_id", None)
         unit_id = validated_data.pop("unit_id", None)
@@ -140,14 +147,14 @@ class itemSerializers(serializers.ModelSerializer):
         unit_name = validated_data.pop("unit_name", None)
         branch_fields = validated_data.pop("branch_fields", None)
         
-        request = self.context.get("request")
-        user = getattr(request, "user", None)
+        # ✅ Use the existing request variable - don't redefine it
+        user = getattr(request, "user", None)  # Use request from above
         
         # Handle branch fields (size, color, srno, warrantydate)
         if branch_fields:
             for key, value in branch_fields.items():
                 validated_data[key] = value
-        
+            
         # Handle brand/category/subCategory/subSubCategory
         def handle(value, fk_field, text_field):
             if value in [None, ""]:
@@ -169,19 +176,20 @@ class itemSerializers(serializers.ModelSerializer):
         handle(subCategory_val, "c_subCategory_id", "subCategory")
         handle(subSubCategory_val, "c_subSubCategory_id", "subSubCategory")
 
-        if user and hasattr(user, "branch"):
-            validated_data["branch"] = user.branch
+        user_branch = user.get_effective_branch() if user else None
+        if user_branch:
+            validated_data["branch"] = user_branch
             
             # Handle group
             if group_id:
                 try:
-                    validated_data["group"] = ItemGroup.objects.get(id=group_id, branch=user.branch)
+                    validated_data["group"] = ItemGroup.objects.get(id=group_id, branch=user_branch)
                 except ItemGroup.DoesNotExist:
                     pass
             elif group_name:
                 group, created = ItemGroup.objects.get_or_create(
                     name=group_name,
-                    branch=user.branch,
+                    branch=user_branch,
                     defaults={'description': f'Created from item {validated_data.get("itemName", "")}'}
                 )
                 validated_data["group"] = group
@@ -240,6 +248,7 @@ class itemSerializers(serializers.ModelSerializer):
         
         request = self.context.get("request")
         user = getattr(request, "user", None)
+        user_branch = user.get_effective_branch() if user else None 
         
         if branch_fields:
             for key, value in branch_fields.items():
@@ -269,13 +278,13 @@ class itemSerializers(serializers.ModelSerializer):
         if group_id is not None or group_name is not None:
             if group_id:
                 try:
-                    instance.group = ItemGroup.objects.get(id=group_id, branch=user.branch)
+                    instance.group = ItemGroup.objects.get(id=group_id, branch=user_branch)
                 except ItemGroup.DoesNotExist:
                     instance.group = None
             elif group_name:
                 group, created = ItemGroup.objects.get_or_create(
                     name=group_name,
-                    branch=user.branch,
+                    branch=user_branch,
                     defaults={'description': f'Updated from item {instance.itemName}'}
                 )
                 instance.group = group
@@ -381,7 +390,7 @@ class itemSerializers(serializers.ModelSerializer):
         
 
 # Update ItemWithVariantsSerializer
-class ItemWithVariantsSerializer(serializers.ModelSerializer):
+class ItemWithVariantsSerializer(CreatedByReadMixin, serializers.ModelSerializer):
     brand = serializers.SerializerMethodField()
     category = serializers.SerializerMethodField()
     subCategory = serializers.SerializerMethodField()
@@ -430,6 +439,8 @@ class ItemWithVariantsSerializer(serializers.ModelSerializer):
             "linked_product",
             "created_at",
             "updated_at",
+            "created_by",
+            "created_by_name",
         ]
 
 
@@ -480,7 +491,7 @@ class ItemWithVariantsSerializer(serializers.ModelSerializer):
         return None
 # pos/serializers/item_serializers.py - Update AdminWebsiteItemListSerializer
 
-class AdminWebsiteItemListSerializer(serializers.ModelSerializer):
+class AdminWebsiteItemListSerializer(CreatedByReadMixin, serializers.ModelSerializer):
     branch_name = serializers.CharField(source='branch.branch_name', read_only=True)
     variants_count = serializers.SerializerMethodField()
     total_stock = serializers.SerializerMethodField()
@@ -523,7 +534,7 @@ class AdminWebsiteItemListSerializer(serializers.ModelSerializer):
             'specifications', 'warranty_available', 'warranty_period',
             'warranty_type', 'warranty_description', 'return_policy',
             'estimated_delivery_time', 'free_shipping', 'product_condition',
-            'variants'
+            'variants', "created_by", "created_by_name",
         ]
     
     def get_variants_count(self, obj):
@@ -559,7 +570,7 @@ class AdminWebsiteItemListSerializer(serializers.ModelSerializer):
             return obj.c_subCategory.name
         return obj.subCategory or None
     
-class WebsiteItemListSerializer(serializers.ModelSerializer):
+class WebsiteItemListSerializer(CreatedByReadMixin, serializers.ModelSerializer):
     branch_name = serializers.CharField(source='branch.branch_name', read_only=True)
     variants_count = serializers.SerializerMethodField()
     total_stock = serializers.SerializerMethodField()
@@ -591,7 +602,7 @@ class WebsiteItemListSerializer(serializers.ModelSerializer):
             'short_description', 'full_description', 'has_description', 'has_images', 
             'has_specifications', 'has_warranty', 'completion_percentage',
             'platform_charge_percent', 'vendor_receivable', 'platform_deduction',
-            'variants',
+            'variants',"created_by","created_by_name",
         ]
     
     def get_variants_count(self, obj):

@@ -5,9 +5,10 @@ from django.db import models, transaction
 from pos.models.account import Account
 from pos.models.branch import Branch
 from decimal import Decimal
+from pos.models.mixins import CreatedByMixin
 
 
-class CashReceipt(models.Model):
+class CashReceipt(CreatedByMixin, models.Model):
     TYPE_CHOICES = [
         ('CR', 'Cash Receipt'),
         ('SCR', 'Sales Cash Receipt'),

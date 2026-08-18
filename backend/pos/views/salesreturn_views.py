@@ -1,4 +1,5 @@
-#pos/views/salesreturn_views.py
+# pos/views/salesreturn_views.py
+
 from pos.models.bankreceipt import BankReceipt
 from pos.models.cashreceipt import CashReceipt
 from rest_framework.views import APIView
@@ -19,9 +20,20 @@ from pos.models.bankpayment import BankPayment
 from pos.models.settings import setting
 from pos.utils.pagination import StandardResultsSetPagination
 
+# ✅ ADD: Permission imports
+from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN CRUD VIEWS (with permission check)
+# ─────────────────────────────────────────────────────────────────────────────
 
 class SalesReturnCreateAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    """Create a new sales return"""
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/salesReturnList"  # ✅ ADD: Frontend route
     
     def generate_cash_payment_voucher(self, branch):
         """Generate voucher number for Sales Return Cash Payment (SRCP)"""
@@ -99,6 +111,14 @@ class SalesReturnCreateAPIView(APIView):
 
     @transaction.atomic
     def post(self, request):
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
         data = request.data
         items_data = data.get('items', [])
         payment_terms = data.get('payment_terms', 'Credit').lower()
@@ -108,7 +128,7 @@ class SalesReturnCreateAPIView(APIView):
 
         # Sales Return Master create karo
         sales_return = SalesReturnMaster.objects.create(
-            branch=request.user.branch,
+            branch=branch,
             date=data['date'],
             original_bill_no=data['original_bill_no'],
             customer_id=data['customer'],
@@ -122,22 +142,17 @@ class SalesReturnCreateAPIView(APIView):
             total_basic=Decimal(str(data.get('total_basic', 0))),
             total_tax=Decimal(str(data.get('total_tax', 0))),
             grand_total=Decimal(str(data.get('grand_total', 0))),
-            narration=data.get('narration', '')
+            narration=data.get('narration', ''),
+            created_by=request.user, 
         )
 
-        # ✅ CREDIT RETURN: Customer balance SIRF YAHAN update karo — ek hi baar
+        #  CREDIT RETURN: Customer balance SIRF YAHAN update karo — ek hi baar
         if payment_terms == 'credit':
             from pos.models.account import Account
             from pos.models.salesentry import SalesMaster as SM
 
             customer = Account.objects.select_for_update().get(pk=sales_return.customer.pk)
-
-
-
-            # Credit Sales Return = Customer Dr kam karo (Cr transaction)
             SM.update_balance(customer, sales_return.grand_total, "Cr")
-
-    
 
         alert_messages = []
         
@@ -147,7 +162,6 @@ class SalesReturnCreateAPIView(APIView):
             variant_raw = it.get('variant_id')
             sales_item_id = it.get('sales_item_id')
             
-            # Verify that we're not returning more than available
             if sales_item_id:
                 try:
                     sales_item = SalesItem.objects.get(id=sales_item_id)
@@ -203,7 +217,6 @@ class SalesReturnCreateAPIView(APIView):
             )
         
         # ✅ Create Payment for Cash or Bank (Money going OUT to customer)
-        # 🔥 CREATE PAYMENT WITH PROPER INSUFFICIENT BALANCE HANDLING
         payment_error = None
         
         if payment_terms == "cash":
@@ -211,55 +224,49 @@ class SalesReturnCreateAPIView(APIView):
             if cash_account_id and data.get('customer'):
                 try:
                     from pos.models.account import Account
-                    cash_account = Account.objects.get(id=cash_account_id, branch=request.user.branch)
+                    cash_account = Account.objects.get(id=cash_account_id, branch=branch)
                     
-                    # 🔥 Check if sufficient balance
                     if cash_account.current_balance < sales_return.grand_total:
                         payment_error = f"Insufficient balance in {cash_account.account_name}. Available: ₹{cash_account.current_balance}, Required: ₹{sales_return.grand_total}"
-                       
                     else:
-                        srcp_voucher = self.generate_cash_payment_voucher(request.user.branch)
+                        srcp_voucher = self.generate_cash_payment_voucher(branch)
                         
                         cash_payment = CashPayment.objects.create(
                             date=data['date'],
                             voucher_no=srcp_voucher,
                             cash_account_id=cash_account_id,
                             op_account_id=data['customer'],
-                            branch=request.user.branch,
+                            branch=branch,
                             amount=sales_return.grand_total,
                             mode="Cash",
                             narration=f"Auto payment against Sales Return {sales_return.return_no}",
                             type="SRCP",
                             sales_return=sales_return
                         )
-                   
                         
                 except Account.DoesNotExist:
                     payment_error = "Selected cash account not found"
                 except Exception as e:
                     payment_error = f"Payment failed: {str(e)}"
-                 
         
         elif payment_terms == "bank":
             bank_account_id = data.get('bank_account')
             if bank_account_id and data.get('customer'):
                 try:
                     from pos.models.account import Account
-                    bank_account = Account.objects.get(id=bank_account_id, branch=request.user.branch)
+                    bank_account = Account.objects.get(id=bank_account_id, branch=branch)
                     
-                    # 🔥 Check if sufficient balance
                     if bank_account.current_balance < sales_return.grand_total:
                         payment_error = f"Insufficient balance in {bank_account.account_name}. Available: ₹{bank_account.current_balance}, Required: ₹{sales_return.grand_total}"
-                        
                     else:
-                        srbp_voucher = self.generate_bank_payment_voucher(request.user.branch)
+                        srbp_voucher = self.generate_bank_payment_voucher(branch)
                         
                         bank_payment = BankPayment.objects.create(
                             date=data['date'],
                             voucher_no=srbp_voucher,
                             bank_account_id=bank_account_id,
                             op_account_id=data['customer'],
-                            branch=request.user.branch,
+                            branch=branch,
                             amount=sales_return.grand_total,
                             mode="Auto",
                             narration=f"Auto payment against Sales Return {sales_return.return_no}",
@@ -267,12 +274,10 @@ class SalesReturnCreateAPIView(APIView):
                             sales_return=sales_return
                         )
                         
-                        
                 except Account.DoesNotExist:
                     payment_error = "Selected bank account not found"
                 except Exception as e:
                     payment_error = f"Payment failed: {str(e)}"
-                 
         
         response = {
             "message": "Sales Return Created Successfully",
@@ -283,9 +288,7 @@ class SalesReturnCreateAPIView(APIView):
         if alert_messages:
             response["stock_alerts"] = alert_messages
         
-        # 🔥 If payment failed due to insufficient balance, rollback and return error
         if payment_error:
-            # Rollback the transaction
             transaction.set_rollback(True)
             return Response(
                 {"error": payment_error},
@@ -295,33 +298,37 @@ class SalesReturnCreateAPIView(APIView):
         return Response(response, status=201)
 
 
-# salesreturn_views.py - Fix SalesReturnListAPIView
-
 class SalesReturnListAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    """List all sales returns"""
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/salesReturnList"  # ✅ ADD: Frontend route
 
     def get(self, request):
         user = request.user
         is_superadmin = user.role == 'superadmin'
+        is_employee = user.role == 'employee'
 
-        # ✅ Branch selection logic
-        if is_superadmin:
-            from pos.models.branch import Branch
-            branch_id_param = request.GET.get('branch_id')
-            if branch_id_param:
+        # ✅ CHANGE: Branch selection logic → get_effective_branch()
+        branch = user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # ✅ FIX: Employee ko bhi branch_id override allow karo
+        # Employee = Mini Superadmin (superadmin branch ke under kaam kar raha hai)
+        branch_id_param = request.GET.get('branch_id')
+        if branch_id_param:
+            # Superadmin hamesha allow
+            if is_superadmin or is_employee:
+                from pos.models.branch import Branch
                 try:
                     branch = Branch.objects.get(id=branch_id_param)
                 except Branch.DoesNotExist:
                     return Response({'error': 'Branch not found'}, status=404)
-            else:
-                try:
-                    branch = Branch.objects.get(user=user)
-                except Branch.DoesNotExist:
-                    return Response({'error': 'Branch not found'}, status=400)
-        else:
-            branch = getattr(user, 'branch', None)
-            if not branch:
-                return Response({"detail": "User does not have a branch assigned."}, status=400)
 
         queryset = SalesReturnMaster.objects.filter(
             branch=branch
@@ -332,16 +339,27 @@ class SalesReturnListAPIView(APIView):
 
         serializer = SalesReturnMasterSerializer(paginated_salesreturn, many=True)
         return paginator.get_paginated_response(serializer.data)
-
-
+    
 class SalesReturnDetailAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    """Get single sales return details"""
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/salesReturnList"  # ✅ ADD: Frontend route
     
     def get(self, request, return_id):
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
         try:
             sales_return = SalesReturnMaster.objects.get(
                 id=return_id,
-                branch=request.user.branch
+                branch=branch
             )
             serializer = SalesReturnMasterSerializer(sales_return)
             return Response(serializer.data)
@@ -350,14 +368,26 @@ class SalesReturnDetailAPIView(APIView):
 
 
 class SalesReturnDeleteAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    """Delete a sales return"""
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/salesReturnList"  # ✅ ADD: Frontend route
     
     @transaction.atomic
     def delete(self, request, return_id):
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
         try:
             sales_return = SalesReturnMaster.objects.get(
                 id=return_id,
-                branch=request.user.branch
+                branch=branch
             )
             
             # Reverse stock updates (decrease stock back)
@@ -382,16 +412,30 @@ class SalesReturnDeleteAPIView(APIView):
             return Response({"error": "Sales Return not found"}, status=404)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# HELPER/Lookup APIS — No permission gate (only IsAuthenticated)
+# ─────────────────────────────────────────────────────────────────────────────
+
 class OriginalBillSearchAPIView(APIView):
     """Search original sales bills that have remaining items to return"""
+    
+    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
         bill_type = request.GET.get('type')
         search = request.GET.get('query', '').strip()
         
         if bill_type == 'sales':
-            bills = SalesMaster.objects.filter(branch=request.user.branch)
+            bills = SalesMaster.objects.filter(branch=branch)
             
             if search:
                 bills = bills.filter(
@@ -434,8 +478,9 @@ class OriginalBillSearchAPIView(APIView):
 
 class SalesBillDetailsAPIView(APIView):
     """Get sales bill details with items, already-returned quantities,
-    and a full payment / return history. Sales entry is ALWAYS included
-    and sorted FIRST, so it appears at the top of history."""
+    and a full payment / return history."""
+    
+    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
     permission_classes = [IsAuthenticated]
  
     def get(self, request, bill_no):
@@ -446,13 +491,21 @@ class SalesBillDetailsAPIView(APIView):
         from pos.models.cashreceipt import CashReceipt
         from pos.models.bankreceipt import BankReceipt
  
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+ 
         bill_no_decoded = unquote(bill_no)
         return_type = request.GET.get('return_type', 'Partial')
  
         try:
             sales = SalesMaster.objects.get(
                 bill_no=bill_no_decoded,
-                branch=request.user.branch
+                branch=branch
             )
  
             sales_items = SalesItem.objects.filter(
@@ -497,14 +550,12 @@ class SalesBillDetailsAPIView(APIView):
                     status=status.HTTP_404_NOT_FOUND
                 )
  
-            # ══════════════════════════════════════════════════════════════
-            # PAYMENT HISTORY (with Sales Entry ALWAYS included & FIRST)
-            # ══════════════════════════════════════════════════════════════
+            # PAYMENT HISTORY
             payment_history = []
             total_paid = Decimal('0')
             total_returned = Decimal('0')
  
-            # 1️⃣ SALES ENTRY — humesha first entry
+            # 1️⃣ SALES ENTRY
             payment_history.append({
                 'entry_type': 'Sale',
                 'type': 'BILL',
@@ -515,7 +566,7 @@ class SalesBillDetailsAPIView(APIView):
                 'narration': f'Sales Bill - {sales.customer.account_name}',
             })
  
-            # 2️⃣ Cash receipts (SCR / any type linked to this sale)
+            # 2️⃣ Cash receipts
             for cr in CashReceipt.objects.filter(sales_entry=sales).order_by('date'):
                 payment_history.append({
                     'entry_type': 'Receipt',
@@ -528,7 +579,7 @@ class SalesBillDetailsAPIView(APIView):
                 })
                 total_paid += cr.amount
  
-            # 3️⃣ Bank receipts (SBR / any type linked to this sale)
+            # 3️⃣ Bank receipts
             for br in BankReceipt.objects.filter(sales_entry=sales).order_by('date'):
                 payment_history.append({
                     'entry_type': 'Receipt',
@@ -541,10 +592,10 @@ class SalesBillDetailsAPIView(APIView):
                 })
                 total_paid += br.amount
  
-            # 4️⃣ Sales returns against this bill
+            # 4️⃣ Sales returns
             for sr in SalesReturnMaster.objects.filter(
                 original_bill_no=sales.bill_no,
-                branch=sales.branch
+                branch=branch
             ).order_by('date'):
                 payment_history.append({
                     'entry_type': 'Return',
@@ -557,10 +608,7 @@ class SalesBillDetailsAPIView(APIView):
                 })
                 total_returned += sr.grand_total
  
-            # ✅ Sort ALL entries by date ascending (oldest first)
-            # Sales bill is usually oldest, so it appears FIRST
             payment_history.sort(key=lambda x: x['date'])
- 
             pending_amount = float(sales.grand_total) - float(total_paid) - float(total_returned)
  
             return Response({
@@ -574,7 +622,6 @@ class SalesBillDetailsAPIView(APIView):
                 'payment_terms': sales.payment_terms,
                 'grand_total': float(sales.grand_total),
                 'items': items_data,
-                # ── summary (always populated) ────────────────────────
                 'total_paid': float(total_paid),
                 'total_returned': float(total_returned),
                 'pending_amount': pending_amount,
@@ -592,13 +639,23 @@ class SalesBillDetailsAPIView(APIView):
 
 class GenerateSalesReturnVoucherAPIView(APIView):
     """Generate next Sales Return voucher number"""
+    
+    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
         from datetime import datetime
         from pos.models.settings import setting
         
-        settings_obj = setting.objects.filter(branch=request.user.branch).first()
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        settings_obj = setting.objects.filter(branch=branch).first()
         prefix = getattr(settings_obj, "SR", "SR") if settings_obj else "SR"
         
         now = datetime.now()
@@ -613,7 +670,7 @@ class GenerateSalesReturnVoucherAPIView(APIView):
         fy = f"{str(fy_start)[2:]}-{str(fy_end)[2:]}"
         
         last_return = SalesReturnMaster.objects.filter(
-            branch=request.user.branch,
+            branch=branch,
             return_no__startswith=f"{prefix}/{fy}/"
         ).order_by("-id").first()
         
@@ -635,25 +692,29 @@ class GenerateSalesReturnVoucherAPIView(APIView):
             "next_number": last_no + 1
         })
         
+
 class SalesReturnCreditBillsAPIView(APIView):
-    """Get Sales Return credit bills with pending payment.
+    """Get Sales Return credit bills with pending payment."""
     
-    🔥 LOGIC (Same as PurchaseReturnCreditBillsAPIView):
-    - Original CASH/BANK + Return CREDIT → ALWAYS show (paisa dena baaki)
-    - Original CREDIT + Return CREDIT:
-      * Agar SCR/SBR original bill ka receipt ho chuka → SHOW (return ab pending hai)
-      * Agar koi receipt nahi hua → SKIP (auto-adjusted via customer balance)
-    """
+    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         from django.db.models import Q, Sum
         from decimal import Decimal
 
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
         search = request.GET.get('query', '').strip()
 
         bills = SalesReturnMaster.objects.filter(
-            branch=request.user.branch,
+            branch=branch,
             payment_terms__iexact='credit'
         )
 
@@ -666,17 +727,15 @@ class SalesReturnCreditBillsAPIView(APIView):
 
         bills_data = []
         for bill in bills:
-            # Get original bill
             original_bill_terms = "unknown"
             original_bill_received = Decimal('0')
             try:
                 original_bill = SalesMaster.objects.get(
                     bill_no=bill.original_bill_no,
-                    branch=request.user.branch
+                    branch=branch
                 )
                 original_bill_terms = original_bill.payment_terms.lower()
                 
-                # 🔥 Check if original bill has SCR/SBR receipts
                 if original_bill_terms == "credit":
                     scr_received = CashReceipt.objects.filter(
                         sales_entry=original_bill
@@ -690,7 +749,6 @@ class SalesReturnCreditBillsAPIView(APIView):
             except SalesMaster.DoesNotExist:
                 pass
             
-            # Calculate payments against this return (SRCP/SRBP)
             total_paid = CashPayment.objects.filter(
                 sales_return=bill
             ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
@@ -701,30 +759,18 @@ class SalesReturnCreditBillsAPIView(APIView):
             
             pending_amount = bill.grand_total - total_paid
             
-            # 🔥 DECISION:
             show_bill = False
             
             if original_bill_terms in ["cash", "bank"]:
-                # Original CASH/BANK + Return CREDIT → Always show
                 show_bill = True
                 
-                
             elif original_bill_terms == "credit":
-                # Original CREDIT tha
                 if original_bill_received > 0:
-                    # SCR/SBR receipt already done → Return pending hai
                     show_bill = True
-                    
                 elif total_paid > 0:
-                    # SRCP/SRBP payment already kiya → Return pending hai
                     show_bill = True
-                
                 else:
-                    # Auto-adjusted via customer balance
                     show_bill = False
-                    
-            
-           
             
             if show_bill and pending_amount > 0:
                 bills_data.append({
@@ -744,37 +790,46 @@ class SalesReturnCreditBillsAPIView(APIView):
 
 class SettleCreditBillAPIView(APIView):
     """Settle a credit sales return bill via cash payment"""
+    
+    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
     permission_classes = [IsAuthenticated]
     
     @transaction.atomic
     def post(self, request):
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
         data = request.data
         bill_id = data.get('bill_id')
         cash_account_id = data.get('cash_account')
         amount = Decimal(str(data.get('amount', 0)))
         
         try:
-            # Get the credit sales return bill
             credit_bill = SalesReturnMaster.objects.get(
                 id=bill_id,
-                branch=request.user.branch,
+                branch=branch,
                 payment_terms='credit'
             )
             
-            # Create a new cash payment against this bill
-            srcp_voucher = self.generate_cash_payment_voucher(request.user.branch)
+            srcp_voucher = self.generate_cash_payment_voucher(branch)
             
             cash_payment = CashPayment.objects.create(
                 date=data['date'],
                 voucher_no=srcp_voucher,
                 cash_account_id=cash_account_id,
                 op_account_id=credit_bill.customer.id,
-                branch=request.user.branch,
+                branch=branch,
                 amount=amount,
                 mode="Cash",
                 narration=f"Payment against credit bill {credit_bill.return_no}",
                 type="SRCP",
-                sales_return=credit_bill
+                sales_return=credit_bill,
+                created_by=request.user,
             )
             
             return Response({
@@ -801,11 +856,11 @@ class SettleCreditBillAPIView(APIView):
         fy_start = year if now.month >= 4 else year - 1
         fy_end = fy_start + 1
         fy = f"{str(fy_start)[2:]}-{str(fy_end)[2:]}"
-        pattern = f"{prefix}/{fy}/"  # ✅ pehle define
+        pattern = f"{prefix}/{fy}/"
 
         last_voucher = CashPayment.objects.filter(
             branch=branch,
-            voucher_no__startswith=pattern  # ✅ FY filter
+            voucher_no__startswith=pattern
         ).order_by("-id").first()
 
         last_no = 0
@@ -822,15 +877,25 @@ class SettleCreditBillAPIView(APIView):
             next_no += 1
             voucher_no = f"{pattern}{str(next_no).zfill(4)}"
 
-        return voucher_no   
-    
-    
+        return voucher_no
+
+
 class SettleCreditBillBankAPIView(APIView):
     """Settle a credit sales return bill via bank payment"""
+    
+    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
     permission_classes = [IsAuthenticated]
     
     @transaction.atomic
     def post(self, request):
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
         data = request.data
         bill_id = data.get('bill_id')
         bank_account_id = data.get('bank_account')
@@ -838,22 +903,20 @@ class SettleCreditBillBankAPIView(APIView):
         mode = data.get('mode', 'UPI')
         
         try:
-            # Get the credit sales return bill
             credit_bill = SalesReturnMaster.objects.get(
                 id=bill_id,
-                branch=request.user.branch,
+                branch=branch,
                 payment_terms='credit'
             )
             
-            # Create a new bank payment against this bill
-            srbp_voucher = self.generate_bank_payment_voucher(request.user.branch)
+            srbp_voucher = self.generate_bank_payment_voucher(branch)
             
             bank_payment = BankPayment.objects.create(
                 date=data['date'],
                 voucher_no=srbp_voucher,
                 bank_account_id=bank_account_id,
                 op_account_id=credit_bill.customer.id,
-                branch=request.user.branch,
+                branch=branch,
                 amount=amount,
                 mode=mode,
                 cheque_no=data.get('cheque_no'),
@@ -861,7 +924,8 @@ class SettleCreditBillBankAPIView(APIView):
                 cheque_clear_date=data.get('cheque_clear_date'),
                 narration=f"Payment against credit bill {credit_bill.return_no}",
                 type="SRBP",
-                sales_return=credit_bill
+                sales_return=credit_bill,
+                created_by=request.user,
             )
             
             return Response({
@@ -888,11 +952,11 @@ class SettleCreditBillBankAPIView(APIView):
         fy_start = year if now.month >= 4 else year - 1
         fy_end = fy_start + 1
         fy = f"{str(fy_start)[2:]}-{str(fy_end)[2:]}"
-        pattern = f"{prefix}/{fy}/"  # ✅ pehle define
+        pattern = f"{prefix}/{fy}/"
 
         last_voucher = BankPayment.objects.filter(
             branch=branch,
-            voucher_no__startswith=pattern  # ✅ FY filter
+            voucher_no__startswith=pattern
         ).order_by("-id").first()
 
         last_no = 0
@@ -909,8 +973,4 @@ class SettleCreditBillBankAPIView(APIView):
             next_no += 1
             voucher_no = f"{pattern}{str(next_no).zfill(4)}"
 
-        return voucher_no   
-    
-    
-    
-       
+        return voucher_no

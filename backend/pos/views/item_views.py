@@ -23,35 +23,33 @@ from pos.serializers.item_serializers import (
 )
 from pos.utils.pagination import StandardResultsSetPagination 
 from django.db.models.deletion import ProtectedError
+from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
+from pos.serializers.mixins_serializers import CreatedByReadMixin
+
 
 
 # ------------------ Item CRUD ------------------
 class ItemCreate(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/AddItems"
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def post(self, request):
         user = request.user 
         is_superadmin = user.role == 'superadmin'
+        acts_as_admin = is_superadmin or user.role == 'employee'  # 👈 employee superadmin jaisi authority
 
-        # Normal branch sirf manual bana sakti hai
+        # Normal branch (vendor/branch role) sirf manual bana sakti hai
         entry_type = request.data.get('entry_type', 'manual')
-        if not is_superadmin and entry_type == 'company':
+        if not acts_as_admin and entry_type == 'company':
             return Response(
                 {"success": False, "message": "Normal branches can only create manual items."},
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        if is_superadmin:
-            # superadmin ke liye branch unki apni hogi
-            try:
-                branch = Branch.objects.get(user=user)
-            except Branch.DoesNotExist:
-                return Response({"success": False, "message": "Superadmin branch not found."}, status=400)
-        else:
-            branch = getattr(user, "branch", None)
-            if not branch:
-                return Response({"success": False, "message": "User has no branch"}, status=400)
+        branch = user.get_effective_branch()
+        if not branch:
+            return Response({"success": False, "message": "No branch linked to this user"}, status=400)
 
         serializer = itemSerializers(data=request.data, context={"request": request})
         if not serializer.is_valid():
@@ -59,17 +57,15 @@ class ItemCreate(APIView):
 
         item = serializer.save(
             branch=branch,
-            created_by_superadmin=is_superadmin
+            created_by_superadmin=acts_as_admin   # 👈 employee ke items bhi "company/superadmin" items maane jayenge
         )
-
         return Response({"success": True, "item_id": item.id}, status=status.HTTP_201_CREATED)
 
     def get(self, request):
-        try:
-            branch = request.user.branch
-        except Exception:
-            return Response({"success": False, "message": "User has no branch associated"}, status=400)
-        return Response({"success": True, "branch_id": branch.id, "branch_type": branch.branch_type})
+            branch = request.user.get_effective_branch()
+            if not branch:
+                return Response({"success": False, "message": "User has no branch associated"}, status=400)
+            return Response({"success": True, "branch_id": branch.id, "branch_type": branch.branch_type})
 
 
 
@@ -99,22 +95,26 @@ class Itemvariantview(APIView):
 
 # ------------------ Item Delete (FIXED) ------------------
 class Itemdelete(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/AddItems"
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def delete(self, request, id):
         user = request.user
         is_superadmin = user.role == 'superadmin'
+        acts_as_admin = is_superadmin or user.role == 'employee'
 
-        if is_superadmin:
+        branch = user.get_effective_branch()
+        if not branch:
+            return Response({"error": "No branch linked to this user"}, status=400)
+
+        if acts_as_admin:
             try:
-                branch = Branch.objects.get(user=user)
                 item = items.objects.get(id=id, branch=branch)
-            except (Branch.DoesNotExist, items.DoesNotExist):
+            except items.DoesNotExist:
                 return Response({"error": "Item not found"}, status=404)
         else:
-            branch = getattr(user, "branch", None)
-            # Normal branch sirf apne manual items delete kar sakti hai
+            # Normal branch/vendor sirf apne manual items delete kar sakte hain
             try:
                 item = items.objects.get(id=id, branch=branch, created_by_superadmin=False)
             except items.DoesNotExist:
@@ -126,22 +126,25 @@ class Itemdelete(APIView):
 
 
 class Itemupdate(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/AddItems"
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def put(self, request, id):
         user = request.user
         is_superadmin = user.role == 'superadmin'
+        acts_as_admin = is_superadmin or user.role == 'employee'
 
-        if is_superadmin:
+        branch = user.get_effective_branch()
+        if not branch:
+            return Response({"error": "No branch linked to this user"}, status=400)
+
+        if acts_as_admin:
             try:
-                branch = Branch.objects.get(user=user)
                 item = items.objects.get(id=id, branch=branch)
-            except (Branch.DoesNotExist, items.DoesNotExist):
+            except items.DoesNotExist:
                 return Response({"error": "Item not found"}, status=404)
         else:
-            branch = getattr(user, "branch", None)
-            # Normal branch sirf apne manual items edit kar sakti hai
             try:
                 item = items.objects.get(id=id, branch=branch, created_by_superadmin=False)
             except items.DoesNotExist:
@@ -163,15 +166,8 @@ class UserBranchTypeView(APIView):
 
     def get(self, request):
         user = request.user
-        if user.role == 'superadmin':
-            try:
-                branch = Branch.objects.get(user=user)
-                return Response({"branch_type": branch.branch_type})
-            except Branch.DoesNotExist:
-                return Response({"error": "Superadmin branch not found"}, status=400)
-        try:
-            branch = user.branch
-        except Branch.DoesNotExist:
+        branch = user.get_effective_branch()
+        if not branch:
             return Response({"error": "User has no branch"}, status=400)
         return Response({"branch_type": branch.branch_type})
 
@@ -216,28 +212,30 @@ class Itemview(APIView):
     - superadmin ke created items bhi dikhenge (read-only)
     - apne manual items bhi dikhenge
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/AddItems"
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def get(self, request):
         user = request.user
         is_superadmin = user.role == 'superadmin'
+        acts_as_admin = is_superadmin or user.role == 'employee'   # 👈 naya add kiya
 
         # Tab filter
-        tab = request.GET.get('tab', 'all')  # company | manual | all | superadmin_items | my_items
+        tab = request.GET.get('tab', 'all')
         search_term = request.GET.get('search', '').strip()
         category_filter = request.GET.get('category', '').strip()
         brand_filter = request.GET.get('brand', '').strip()
         group_filter = request.GET.get('group', '').strip()
         entry_type_filter = request.GET.get('entry_type', '').strip()
 
-        if is_superadmin:
-            try:
-                branch = Branch.objects.get(user=user)
-            except Branch.DoesNotExist:
-                return Response({"success": False, "message": "Superadmin branch not found."}, status=400)
+        branch = user.get_effective_branch()
+        if not branch:
+            return Response({"success": False, "message": "No branch linked to this user"}, status=400)
 
-            # Superadmin apne saare items dekh sakta hai
+        if acts_as_admin:   # 👈 is_superadmin se acts_as_admin kiya
+
+            # Superadmin/Employee dono apne saare items dekh sakte hain
             qs = items.objects.filter(branch=branch).select_related(
                 "c_brand", "c_category", "c_subCategory", "c_subSubCategory", "group", "unit"
             )
@@ -250,12 +248,7 @@ class Itemview(APIView):
             # 'all' = kuch filter nahi
 
         else:
-            branch = getattr(user, "branch", None)
-            if not branch:
-                return Response({"success": False, "message": "User has no branch"}, status=400)
-
             if tab == 'superadmin_items':
-                # ✅ Sirf wo superadmin items jo IS branch mein transfer ho chuki hain
                 qs = items.objects.filter(
                     branch=branch,
                     created_by_superadmin=True
@@ -268,10 +261,10 @@ class Itemview(APIView):
                 ).select_related("c_brand", "c_category", "c_subCategory", "c_subSubCategory", "group", "unit")
 
             else:  # all
-                # ✅ Sirf is branch ki items — superadmin wali bhi, apni bhi
                 qs = items.objects.filter(
-                    branch=branch  # ← yahi tha missing, pehle created_by_superadmin=True sab branches se aa raha tha
+                    branch=branch
                 ).select_related("c_brand", "c_category", "c_subCategory", "c_subSubCategory", "group", "unit")
+
         # Search
         if search_term:
             qs = qs.filter(
@@ -302,7 +295,10 @@ class Itemview(APIView):
 
         paginator = StandardResultsSetPagination()
         paginated_items = paginator.paginate_queryset(qs, request)
-        serializer = ItemWithVariantsSerializer(paginated_items, many=True, context={"request": request, "branch": branch if not is_superadmin else None})
+        serializer = ItemWithVariantsSerializer(
+            paginated_items, many=True,
+            context={"request": request, "branch": branch if not is_superadmin else None}   # 👈 ye line waisi hi, is_superadmin (change nahi)
+        )
 
         return paginator.get_paginated_response({
             "success": True,
@@ -319,17 +315,13 @@ class ItemFilterOptionsAPI(APIView):
         user = request.user
         is_superadmin = user.role == 'superadmin'
 
+        branch = user.get_effective_branch()
+        if not branch:
+            return Response({"success": False, "message": "No branch linked to this user"}, status=400)
+
         if is_superadmin:
-            try:
-                branch = Branch.objects.get(user=user)
-            except Branch.DoesNotExist:
-                return Response({"success": False, "message": "Branch not found"}, status=400)
             item_qs = items.objects.filter(branch=branch)
         else:
-            branch = getattr(user, "branch", None)
-            if not branch:
-                return Response({"success": False, "message": "User has no branch"}, status=400)
-            # Normal branch ke liye superadmin + apne items
             item_qs = items.objects.filter(
                 Q(created_by_superadmin=True) | Q(branch=branch)
             )
@@ -363,17 +355,10 @@ class Itemvariantview(APIView):
         is_superadmin = user.role == 'superadmin'
         item_id = request.GET.get("item")
 
-        if is_superadmin:
-            try:
-                branch = Branch.objects.get(user=user)
-            except Branch.DoesNotExist:
-                return Response({"success": False, "variants": []}, status=400)
-            qs = itemvariants.objects.filter(item__branch=branch)
-        else:
-            branch = getattr(user, "branch", None)
-            if not branch:
-                return Response({"success": False, "variants": []}, status=400)
-            qs = itemvariants.objects.filter(item__branch=branch)
+        branch = user.get_effective_branch()
+        if not branch:
+            return Response({"success": False, "variants": []}, status=400)
+        qs = itemvariants.objects.filter(item__branch=branch)
 
         if item_id:
             qs = qs.filter(item__id=item_id)
@@ -387,15 +372,9 @@ class Itemvariantview(APIView):
         is_superadmin = user.role == 'superadmin'
         item_id = request.data.get("item")
 
-        if is_superadmin:
-            try:
-                branch = Branch.objects.get(user=user)
-            except Branch.DoesNotExist:
-                return Response({"success": False, "message": "No branch"}, status=400)
-        else:
-            branch = getattr(user, "branch", None)
-            if not branch:
-                return Response({"success": False, "message": "No branch"}, status=400)
+        branch = user.get_effective_branch()
+        if not branch:
+            return Response({"success": False, "message": "No branch"}, status=400)
 
         try:
             item = items.objects.get(id=item_id, branch=branch)
@@ -422,15 +401,9 @@ class CheckBranchBarcodeView(APIView):
         user = request.user
         is_superadmin = user.role == 'superadmin'
 
-        if is_superadmin:
-            try:
-                branch = Branch.objects.get(user=user)
-            except Branch.DoesNotExist:
-                return Response({"exists": False, "message": "No branch associated"})
-        else:
-            branch = getattr(user, "branch", None)
-            if not branch:
-                return Response({"exists": False, "message": "No branch associated"})
+        branch = user.get_effective_branch()
+        if not branch:
+            return Response({"exists": False, "message": "No branch associated"})
 
         qs = itemvariants.objects.filter(barcode=barcode, item__branch=branch)
         if exclude_variant:
@@ -455,13 +428,9 @@ class Itemvariantdelete(APIView):
             user = request.user
             is_superadmin = user.role == 'superadmin'
 
-            if is_superadmin:
-                branch = Branch.objects.get(user=user)
-                if variant.item.branch != branch:
-                    return Response({"error": "Unauthorized"}, status=403)
-            else:
-                if variant.item.branch != request.user.branch:
-                    return Response({"error": "Unauthorized"}, status=403)
+            branch = user.get_effective_branch()
+            if not branch or variant.item.branch != branch:
+                return Response({"error": "Unauthorized"}, status=403)
 
             try:
                 variant.delete()
@@ -530,14 +499,16 @@ class ItemDetailAPIView(APIView):
         user = request.user
         is_superadmin = user.role == 'superadmin'
 
+        branch = user.get_effective_branch()
+        if not branch:
+            return Response({"error": "No branch linked to this user"}, status=400)
+
         if is_superadmin:
-            branch = Branch.objects.get(user=user)
             try:
                 item = items.objects.get(id=pk, branch=branch)
             except items.DoesNotExist:
                 return Response({"error": "Item not found"}, status=404)
         else:
-            branch = getattr(user, "branch", None)
             try:
                 item = items.objects.get(
                     Q(id=pk, created_by_superadmin=True) |
@@ -558,14 +529,16 @@ class ItemWithVariantsDetailAPIView(APIView):
         user = request.user
         is_superadmin = user.role == 'superadmin'
 
+        branch = user.get_effective_branch()
+        if not branch:
+            return Response({"error": "No branch linked to this user"}, status=400)
+
         if is_superadmin:
             try:
-                branch = Branch.objects.get(user=user)
                 item = items.objects.get(id=pk, branch=branch)
-            except (Branch.DoesNotExist, items.DoesNotExist):
+            except items.DoesNotExist:
                 return Response({"error": "Item not found"}, status=404)
         else:
-            branch = getattr(user, "branch", None)
             try:
                 item = items.objects.get(
                     Q(id=pk, created_by_superadmin=True) |
