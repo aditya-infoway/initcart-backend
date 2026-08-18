@@ -1,4 +1,5 @@
 # pos/views/cashpayment_views.py
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -12,11 +13,24 @@ from pos.models.settings import setting
 from pos.serializers.cashpayment_serializers import CashPaymentSerializer
 from pos.utils.pagination import StandardResultsSetPagination
 
+# ✅ ADD: Permission imports
+from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN CRUD VIEWS (with permission check)
+# ─────────────────────────────────────────────────────────────────────────────
+
 class CashPaymentCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    """Create and list cash payments (CP, PCP, SRCP, STCP, STRCP)"""
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/Cash-Payment"  # ✅ ADD: Frontend route
 
     def get_branch(self, user):
-        return getattr(user, "branch", None)
+        # ✅ CHANGE: getattr(user, "branch", None) → get_effective_branch()
+        return user.get_effective_branch()
 
     def generate_voucher_number(self, branch):
         """
@@ -61,38 +75,40 @@ class CashPaymentCreateView(APIView):
     def get(self, request):
         user = request.user
         is_superadmin = user.role == 'superadmin'
+        is_employee = user.role == 'employee'  # ✅ ADD
 
-        if is_superadmin:
-            from pos.models.branch import Branch
-            branch_id_param = request.GET.get('branch_id')
-            if branch_id_param:
+        # ✅ CHANGE: Branch selection logic → get_effective_branch()
+        branch = user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # ✅ FIX: Employee ko bhi branch_id override allow karo
+        branch_id_param = request.GET.get('branch_id')
+        if branch_id_param:
+            if is_superadmin or is_employee:  # ✅ Employee allow
+                from pos.models.branch import Branch
                 try:
                     branch = Branch.objects.get(id=branch_id_param)
                 except Branch.DoesNotExist:
                     return Response({'error': 'Branch not found'}, status=404)
-            else:
-                try:
-                    branch = Branch.objects.get(user=user)
-                except Branch.DoesNotExist:
-                    return Response({'error': 'Branch not found'}, status=400)
-        else:
-            branch = self.get_branch(user)
-            if not branch:
-                return Response({"detail": "User does not have a branch assigned."}, status=400)
 
         payments = CashPayment.objects.filter(branch=branch).order_by("-date", "-created_at")
         paginator = StandardResultsSetPagination()
         paginated_payments = paginator.paginate_queryset(payments, request)
         serializer = CashPaymentSerializer(paginated_payments, many=True)
         return paginator.get_paginated_response(serializer.data)
-
+    
     def post(self, request):
-        branch = self.get_branch(request.user)
+        # ✅ CHANGE: get_branch() → get_effective_branch()
+        branch = request.user.get_effective_branch()
         if not branch:
-            return Response(
-                {"detail": "User does not have a branch assigned."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
 
         payment_type = request.data.get("type", "CP")
         
@@ -113,7 +129,7 @@ class CashPaymentCreateView(APIView):
         print(f"Creating Cash Payment - Type: {payment_type}, Voucher: {voucher_no}")
         print(f"Data: {data}")
         
-        serializer = CashPaymentSerializer(data=data, context={"branch": branch})
+        serializer = CashPaymentSerializer(data=data, context={"branch": branch, "request": request})
         if serializer.is_valid():
             try:
                 with transaction.atomic():

@@ -2,12 +2,13 @@
 
 from rest_framework import serializers
 from pos.models.group_unit import ItemGroup, ItemUnit
+from pos.serializers.mixins_serializers import CreatedByReadMixin  
 
 
-class ItemGroupSerializer(serializers.ModelSerializer):
+class ItemGroupSerializer(CreatedByReadMixin, serializers.ModelSerializer):
     class Meta:
         model = ItemGroup
-        fields = ['id', 'name', 'description', 'created_at']
+        fields = ['id', 'name', 'description', 'created_at','created_by', 'created_by_name']
         read_only_fields = ['created_at']
 
 
@@ -25,11 +26,19 @@ class GroupCreateSerializer(serializers.ModelSerializer):
 
     def validate_name(self, value):
         request = self.context.get('request')
-        branch = request.user.branch
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            raise serializers.ValidationError("No branch linked to this user")
         if ItemGroup.objects.filter(name__iexact=value, branch=branch).exists():
             raise serializers.ValidationError(f"Group '{value}' already exists for your branch")
         return value
 
+    def create(self, validated_data):
+        request = self.context.get('request')
+        if request and request.user and request.user.is_authenticated:
+            validated_data["created_by"] = request.user
+        return super().create(validated_data)
 
 class UnitCreateSerializer(serializers.ModelSerializer):
     """

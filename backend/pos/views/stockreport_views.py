@@ -1,4 +1,5 @@
 # pos/views/stockreport_views.py
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
@@ -21,36 +22,58 @@ from pos.models.b2b_sales import B2BSaleItem
 from django.db.models import Q
 from pos.models.b2b_sales import B2BSaleItem
 
-class StockReportAPIView(APIView):
-    permission_classes = [IsAuthenticated]
- 
-    def get(self, request):
+# ✅ ADD: Permission imports
+from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STOCK REPORT VIEW (with permission check)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class StockReportAPIView(APIView):
+    """Get stock report for current branch"""
+    
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/stock-report"
+
+    def get(self, request):
         user = request.user
         is_superadmin = user.role == 'superadmin'
- 
-        if is_superadmin:
-            from pos.models.branch import Branch
- 
-            branch_id_param = request.GET.get('branch_id')
- 
-            if branch_id_param:
+        is_employee = user.role == 'employee'
+
+        # ✅ FIX: Branch selection logic - Employee ko sirf apni branch
+        branch = user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=400)
+
+        # ✅ FIX: Branch filter - Superadmin ko kisi bhi branch ka data, Employee ko sirf apna
+        branch_id_param = request.GET.get('branch_id')
+        if branch_id_param:
+            # Superadmin hamesha allow
+            if is_superadmin:
+                from pos.models.branch import Branch
                 try:
                     branch = Branch.objects.get(id=branch_id_param)
                 except Branch.DoesNotExist:
                     return Response({'error': 'Branch not found'}, status=404)
-            else:
-                try:
-                    branch = Branch.objects.get(user=user)
-                except Branch.DoesNotExist:
-                    return Response({'error': 'Superadmin branch not found'}, status=400)
-        else:
-            branch = getattr(user, 'branch', None)
-            if not branch:
-                return Response({'error': 'User branch not found'}, status=400)
- 
+            # ✅ Employee allow karo agar uski branch superadmin branch hai
+            elif is_employee:
+                employee_branch = user.get_effective_branch()
+                if employee_branch and employee_branch.user and employee_branch.user.role == 'superadmin':
+                    from pos.models.branch import Branch
+                    try:
+                        branch = Branch.objects.get(id=branch_id_param)
+                    except Branch.DoesNotExist:
+                        return Response({'error': 'Branch not found'}, status=404)
+                else:
+                    # Employee ki branch superadmin branch nahi hai, toh apni branch hi use kare
+                    pass
+
         branch_id = branch.id
- 
+
         variants_qs = list(
             itemvariants.objects.select_related(
                 "item",
@@ -63,36 +86,31 @@ class StockReportAPIView(APIView):
                 item__branch_id=branch_id
             ).order_by('item__itemName', 'id')
         )
- 
+
         if not variants_qs:
             paginator = StandardResultsSetPagination()
             paginated_result = paginator.paginate_queryset([], request)
             return paginator.get_paginated_response(paginated_result)
- 
+
         variant_ids = [v.id for v in variants_qs]
         barcodes = [v.barcode for v in variants_qs if v.barcode]
- 
+
         from ecommerce.models.order import OrderItem
- 
-        # ---------------------------------------------------------------
-        #  BULK AGGREGATIONS (ek-ek query, saare variants ke liye ek saath)
-        # ---------------------------------------------------------------
- 
-        # Total purchases per variant
+
+        # ── BULK AGGREGATIONS ──────────────────────────────────
+
         purchase_map = {
             row['variant_id']: row['total']
             for row in PurchaseItem.objects.filter(variant_id__in=variant_ids)
             .values('variant_id').annotate(total=Sum('quantity'))
         }
- 
-        # Total purchase returns per variant
+
         purchase_return_map = {
             row['variant_id']: row['total']
             for row in PurchaseReturnItem.objects.filter(variant_id__in=variant_ids)
             .values('variant_id').annotate(total=Sum('return_quantity'))
         }
- 
-        # Transfer received - to_variant FK se direct match (B2B jaisa hi pattern)
+
         transfer_received_map = {
             row['to_variant_id']: row['total']
             for row in StockTransferItem.objects.filter(
@@ -102,7 +120,6 @@ class StockReportAPIView(APIView):
             ).values('to_variant_id').annotate(total=Sum('quantity'))
         }
 
-        # Transfer sent - only superadmin branch
         transfer_sent_map = {}
         if is_superadmin:
             transfer_sent_map = {
@@ -113,8 +130,7 @@ class StockReportAPIView(APIView):
                     is_stock_updated=True,
                 ).values('from_variant_id').annotate(total=Sum('quantity'))
             }
- 
-        # Stock return packaged - only normal branch
+
         stock_return_packaged_map = {}
         if not is_superadmin:
             stock_return_packaged_map = {
@@ -125,8 +141,7 @@ class StockReportAPIView(APIView):
                     is_packaging_ready=True,
                 ).values('branch_variant_id').annotate(total=Sum('quantity'))
             }
- 
-        # Stock return received - only superadmin
+
         stock_return_received_map = {}
         if is_superadmin:
             stock_return_received_map = {
@@ -138,8 +153,6 @@ class StockReportAPIView(APIView):
                 ).values('company_variant_id').annotate(total=Sum('quantity'))
             }
 
-        # ✅ B2B stock received — to_variant direct match, koi branch check ki zaroorat nahi
-        # (to_variant already destination-branch ka variant hai)
         b2b_received_map = {
             row['to_variant_id']: row['total']
             for row in B2BStockTransferItem.objects.filter(
@@ -149,9 +162,6 @@ class StockReportAPIView(APIView):
             ).values('to_variant_id').annotate(total=Sum('quantity'))
         }
 
-        
-        
-        # B2B stock sent — from_variant direct match, packaging-ready ho chuki ho
         b2b_sent_map = {
             row['from_variant_id']: row['total']
             for row in B2BStockTransferItem.objects.filter(
@@ -160,8 +170,7 @@ class StockReportAPIView(APIView):
                 is_packaged=True,
             ).values('from_variant_id').annotate(total=Sum('quantity'))
         }
-        
-        #  B2B return packaged - branch side deduction (bulk map)
+
         b2b_return_packaged_map = {}
         if not is_superadmin:
             b2b_return_packaged_map = {
@@ -173,7 +182,6 @@ class StockReportAPIView(APIView):
                 ).values('branch_variant_id').annotate(total=Sum('quantity'))
             }
 
-        #  B2B return received - superadmin side increase (bulk map)
         b2b_return_received_map = {}
         if is_superadmin:
             b2b_return_received_map = {
@@ -184,7 +192,7 @@ class StockReportAPIView(APIView):
                     is_returned_to_company=True,
                 ).values('company_variant_id').annotate(total=Sum('quantity'))
             }
-        
+
         b2bsale_sent_map = {}
         if is_superadmin:
             b2bsale_sent_map = {
@@ -197,15 +205,12 @@ class StockReportAPIView(APIView):
                 ).values('from_variant_id').annotate(total=Sum('quantity'))
             }
 
-        
-        # Total sales POS per variant
         sales_pos_map = {
             row['variant_id']: row['total']
             for row in SalesItem.objects.filter(variant_id__in=variant_ids)
             .values('variant_id').annotate(total=Sum('qty'))
         }
- 
-        # Total sales website (delivered) per variant
+
         sales_website_map = {
             row['product_stock_id']: row['total']
             for row in OrderItem.objects.filter(
@@ -213,15 +218,13 @@ class StockReportAPIView(APIView):
                 item_status='delivered',
             ).values('product_stock_id').annotate(total=Sum('quantity'))
         }
- 
-        # Total sales returns per variant
+
         sales_return_map = {
             row['variant_id']: row['total']
             for row in SalesReturnItem.objects.filter(variant_id__in=variant_ids)
             .values('variant_id').annotate(total=Sum('return_quantity'))
         }
- 
-        # Last purchase price per variant (bulk, without per-row query)
+
         last_purchase_ids = list(
             PurchaseItem.objects.filter(variant_id__in=variant_ids)
             .values('variant_id').annotate(last_id=Max('id'))
@@ -232,21 +235,18 @@ class StockReportAPIView(APIView):
             for row in PurchaseItem.objects.filter(id__in=last_purchase_ids)
             .values('variant_id', 'price')
         }
- 
-        # ---------------------------------------------------------------
-        #  Ab sirf Python-side loop, DB hit nahi (sab dict lookup se)
-        # ---------------------------------------------------------------
+
+        # ── BUILD RESULT ──────────────────────────────────────
         result = []
         variants_to_update = []
- 
+
         for variant in variants_qs:
             vid = variant.id
-            barcode = variant.barcode
- 
+
             opening_stock = Decimal(str(variant.opStock or 0))
             total_purchased = purchase_map.get(vid) or Decimal('0')
             total_purchase_returns = purchase_return_map.get(vid) or Decimal('0')
-            total_transfer_received = transfer_received_map.get(vid) or Decimal('0')   # ✅ FIXED
+            total_transfer_received = transfer_received_map.get(vid) or Decimal('0')
             total_transfer_sent = transfer_sent_map.get(vid) or Decimal('0')
             total_stock_return_packaged = stock_return_packaged_map.get(vid) or Decimal('0')
             total_stock_return_received = stock_return_received_map.get(vid) or Decimal('0')
@@ -260,7 +260,6 @@ class StockReportAPIView(APIView):
             total_sales_returns = sales_return_map.get(vid) or Decimal('0')
             total_b2bsale_sent = b2bsale_sent_map.get(vid) or Decimal('0')
 
- 
             calculated_stock = (
                 opening_stock
                 + total_purchased
@@ -269,27 +268,26 @@ class StockReportAPIView(APIView):
                 - total_transfer_sent
                 - total_stock_return_packaged
                 + total_stock_return_received
-                + total_b2b_received     
-                - total_b2b_sent 
-                - total_b2b_return_packaged  
-                + total_b2b_return_received 
+                + total_b2b_received
+                - total_b2b_sent
+                - total_b2b_return_packaged
+                + total_b2b_return_received
                 - total_sold
                 + total_sales_returns
                 - total_b2bsale_sent
-
             )
- 
+
             if calculated_stock < 0:
                 calculated_stock = Decimal('0')
- 
+
             db_stock = Decimal(str(variant.current_stock or 0))
             if db_stock != calculated_stock:
-                variant.current_stock = float(calculated_stock) 
+                variant.current_stock = float(calculated_stock)
                 variants_to_update.append(variant)
- 
+
             last_price = last_price_map.get(vid)
             last_price = float(last_price) if last_price is not None else float(variant.purchasePrice or 0)
-            
+
             result.append({
                 'variantId': variant.id,
                 'id': variant.item.id,
@@ -321,20 +319,24 @@ class StockReportAPIView(APIView):
                 'current_stock': float(calculated_stock),
                 'created_by_superadmin': variant.item.created_by_superadmin,
             })
- 
-        # Ek hi bulk UPDATE query - N individual .save() ki jagah
+
         if variants_to_update:
             itemvariants.objects.bulk_update(variants_to_update, ['current_stock'], batch_size=500)
- 
-        # ✅ Pagination
+
         paginator = StandardResultsSetPagination()
         paginated_result = paginator.paginate_queryset(result, request)
         return paginator.get_paginated_response(paginated_result)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# STOCK HISTORY VIEW (with permission check)
+# ─────────────────────────────────────────────────────────────────────────────
 
 class StockHistoryAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    """Get stock history for a specific variant"""
+    
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/stock-report"
 
     def get(self, request, item_id):
         from ecommerce.models.order import OrderItem
@@ -348,19 +350,14 @@ class StockHistoryAPIView(APIView):
         user = request.user
         is_superadmin = user.role == 'superadmin'
 
-        # ✅ Branch fetch
-        if is_superadmin:
-            from pos.models.branch import Branch
-            try:
-                branch = Branch.objects.get(user=user)
-            except Branch.DoesNotExist:
-                return Response({"error": "Branch not found"}, status=400)
-        else:
-            branch = getattr(user, 'branch', None)
-            if not branch:
-                return Response({"error": "Branch not found"}, status=400)
+        # ✅ CHANGE: Branch fetch → get_effective_branch()
+        branch = user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=400)
 
-        #  Variant fetch - branch check ke saath
         try:
             variant = itemvariants.objects.get(
                 id=variant_id,
@@ -368,8 +365,6 @@ class StockHistoryAPIView(APIView):
             )
         except itemvariants.DoesNotExist:
             return Response({"error": "Variant not found"}, status=404)
-        
-        barcode = variant.barcode
 
         history = []
 
@@ -419,7 +414,7 @@ class StockHistoryAPIView(APIView):
                 "currentStock": float(running_stock),
             })
 
-        #  Transfer Received - to_variant FK se direct match
+        # Stock Transfer Received
         for st in StockTransferItem.objects.filter(
             to_variant=variant,
             transfer__to_branch=branch,
@@ -444,7 +439,6 @@ class StockHistoryAPIView(APIView):
                 transfer__from_branch=branch,
                 is_stock_updated=True
             ).select_related('transfer', 'transfer__to_branch').order_by('transfer__updated_at'):
-
                 qty = -Decimal(str(st.quantity))
                 running_stock += qty
                 history.append({
@@ -457,14 +451,12 @@ class StockHistoryAPIView(APIView):
                     "currentStock": float(running_stock),
                 })
 
-        #  STOCK RETURN PACKAGED - Branch stock deduction (ONLY FOR BRANCH)
-        #  ADD THIS - NEW
+        # Stock Return Packaged - Branch side
         if not is_superadmin:
             for sr in StockReturnItem.objects.filter(
                 branch_variant_id=variant_id,
                 return_request__branch=branch,
                 is_packaging_ready=True,
-                # is_returned_to_company=False
             ).select_related('return_request', 'return_request__to_branch').order_by('return_request__updated_at'):
                 qty = -Decimal(str(sr.quantity))
                 running_stock += qty
@@ -478,8 +470,7 @@ class StockHistoryAPIView(APIView):
                     "currentStock": float(running_stock),
                 })
 
-        #  STOCK RETURN RECEIVED - Company stock increase (ONLY FOR SUPERADMIN)
-        #  ADD THIS - NEW
+        # Stock Return Received - Superadmin side
         if is_superadmin:
             for sr in StockReturnItem.objects.filter(
                 company_variant_id=variant_id,
@@ -498,7 +489,7 @@ class StockHistoryAPIView(APIView):
                     "currentStock": float(running_stock),
                 })
 
-        #  B2B Stock Transfer Received
+        # B2B Stock Transfer Received
         for bt in B2BStockTransferItem.objects.filter(
             to_variant_id=variant_id,
             transfer__to_branch=branch,
@@ -516,7 +507,7 @@ class StockHistoryAPIView(APIView):
                 "currentStock": float(running_stock),
             })
 
-        #  B2B Stock Transfer Sent (packaging ready)
+        # B2B Stock Transfer Sent
         for bt in B2BStockTransferItem.objects.filter(
             from_variant_id=variant_id,
             transfer__from_branch=branch,
@@ -533,9 +524,8 @@ class StockHistoryAPIView(APIView):
                 "billAmount": float(bt.rate * bt.quantity),
                 "currentStock": float(running_stock),
             })
-        
-        
-        #  NEW — B2B STOCK RETURN PACKAGED (Branch side stock deduction)
+
+        # B2B Stock Return Packaged - Branch side
         if not is_superadmin:
             for br in B2BStockReturnItem.objects.filter(
                 branch_variant_id=variant_id,
@@ -554,7 +544,7 @@ class StockHistoryAPIView(APIView):
                     "currentStock": float(running_stock),
                 })
 
-        #  NEW — B2B STOCK RETURN RECEIVED (Superadmin/Company side stock increase)
+        # B2B Stock Return Received - Superadmin side
         if is_superadmin:
             for br in B2BStockReturnItem.objects.filter(
                 company_variant_id=variant_id,
@@ -572,8 +562,8 @@ class StockHistoryAPIView(APIView):
                     "billAmount": float(br.quantity * br.rate),
                     "currentStock": float(running_stock),
                 })
-                
-                #  NEW: B2B SALE SENT - Superadmin branch se stock deduct (creation pe hi ho chuka hai)
+
+        # B2B Sale Sent - Superadmin side
         if is_superadmin:
             for b2b_item in B2BSaleItem.objects.filter(
                 from_variant_id=variant_id,
@@ -593,8 +583,6 @@ class StockHistoryAPIView(APIView):
                     "currentStock": float(running_stock),
                 })
 
-       
-                        
         # Sales POS
         for s in SalesItem.objects.filter(
             variant_id=variant_id
@@ -652,7 +640,7 @@ class StockHistoryAPIView(APIView):
 
         history.sort(key=lambda x: safe_date(x["date"]))
 
-        # Sort ke baad running stock recalculate karo
+        # Recalculate running stock after sort
         running_stock = Decimal('0')
         for row in history:
             qty = Decimal(str(row["qty"]))
@@ -662,7 +650,7 @@ class StockHistoryAPIView(APIView):
                 running_stock += qty
             row["currentStock"] = float(running_stock)
 
-        # DB update
+        # Update DB
         try:
             if Decimal(str(variant.current_stock or 0)) != running_stock:
                 variant.current_stock = float(running_stock)

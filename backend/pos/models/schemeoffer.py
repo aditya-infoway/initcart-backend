@@ -6,9 +6,10 @@ from django.core.exceptions import ValidationError
 from django.db import models
 
 from pos.models.branch import Branch
+from pos.models.mixins import CreatedByMixin
 
 
-class SchemeOffer(models.Model):
+class SchemeOffer(CreatedByMixin, models.Model):  
     """
     A branch-scoped sales scheme/offer.
     Only the main branch (superadmin) can create/edit/delete these.

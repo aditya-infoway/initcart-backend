@@ -7,8 +7,9 @@ from pos.models.account import Account
 from pos.models.purchaseentry import PurchaseItem
 from django.core.validators import MinValueValidator
 from decimal import Decimal
+from pos.models.mixins import CreatedByMixin
 
-class PurchaseReturnMaster(models.Model):
+class PurchaseReturnMaster(CreatedByMixin, models.Model):
     """Main Purchase Return record"""
     branch = models.ForeignKey(Branch, on_delete=models.CASCADE, related_name='purchase_returns')
     return_no = models.CharField(max_length=50)

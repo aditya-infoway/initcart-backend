@@ -6,9 +6,9 @@ from pos.models.branch import Branch
 from decimal import Decimal
 from django.db import transaction
 from pos.models.settings import setting
+from pos.models.mixins import CreatedByMixin
 
-
-class SalesMaster(models.Model):
+class SalesMaster(CreatedByMixin, models.Model):
     branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
     bill_no = models.CharField(max_length=50, db_index=True)
     date = models.DateField()

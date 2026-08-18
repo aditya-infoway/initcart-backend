@@ -1,4 +1,5 @@
 # pos/views/b2b_sales_views.py
+
 from rest_framework.views import APIView
 from rest_framework.viewsets import ModelViewSet
 from rest_framework.decorators import action
@@ -23,31 +24,27 @@ from pos.models.settings import setting as SettingModel
 from pos.utils.gst_calc import calculate_gst_split
 from pos.utils.variant_mapping import get_or_create_dest_variant
 
-# ✅ Reuse existing superadmin permission (no duplication)
-from pos.views.stock_transfer_views import IsSuperAdminRole
+# ✅ ADD: Permission imports
+from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee, IsSuperAdminOrPagePermittedEmployee
 
 
-class IsFranchiseBranchRole(IsAuthenticated):
-    """Sirf franchise-ownership wali branch (ya superadmin, admin-view ke liye) allow"""
-    def has_permission(self, request, view):
-        if not super().has_permission(request, view):
-            return False
-        user_role = request.user.role
-        if user_role == 'superadmin':
-            return True
-        allowed_roles = ['branch', 'vendor', 'branch_both', 'branch_customer', 'branch_agent', 'branch_single']
-        if not (user_role in allowed_roles or user_role.startswith('branch')):
-            return False
-        branch = Branch.objects.filter(user=request.user).first()
-        return bool(branch and branch.ownership_type == 'franchise')
-
+# ─────────────────────────────────────────────────────────────────────────────
+# PERMISSION CLASSES (removing custom, using standard ones)
+# ─────────────────────────────────────────────────────────────────────────────
 
 # ════════════════════════════════════════════════════════════
 # B2B SALE VIEWSET (Superadmin side)
 # ════════════════════════════════════════════════════════════
 class B2BSaleViewSet(ModelViewSet):
+    """
+    Superadmin creates B2B Sale from their branch to franchise branch.
+    Stock DEDUCTION happens at creation time (source branch).
+    """
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsSuperAdminRole]
+    
+    # ✅ CHANGE: IsSuperAdminRole → IsSuperAdminOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]
+    page_key = "/b2bsales"  # ✅ ADD: Frontend route
     http_method_names = ['get', 'post', 'patch', 'delete']
 
     def get_queryset(self):
@@ -100,7 +97,6 @@ class B2BSaleViewSet(ModelViewSet):
             return Response({'success': False, 'message': 'Already cancelled.'}, status=400)
 
         with transaction.atomic():
-            #  Sirf jo items abhi tak verify NAHI hue, unka stock source branch me wapas
             for item in sale.items.filter(is_stock_updated=False):
                 variant = item.from_variant
                 variant.current_stock = (variant.current_stock or 0) + item.quantity
@@ -115,8 +111,14 @@ class B2BSaleViewSet(ModelViewSet):
 # FRANCHISE BRANCHES LIST (destination dropdown + details ke liye)
 # ════════════════════════════════════════════════════════════
 class FranchiseBranchListView(APIView):
+    """
+    Get all franchise branches for dropdown
+    """
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsSuperAdminRole]
+    
+    # ✅ CHANGE: IsSuperAdminRole → IsSuperAdminOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]
+    page_key = "/b2bsales"  # ✅ ADD: Frontend route
 
     def get(self, request):
         branches = Branch.objects.filter(
@@ -127,20 +129,26 @@ class FranchiseBranchListView(APIView):
             'branch_name': b.branch_name,
             'city': b.city,
             'state': b.state,
-            'phone': b.phone,          # ✅ NEW
-            'email': b.email,          # ✅ NEW
-            'address': b.address,      # ✅ NEW
-            'pincode': b.pincode,      # ✅ NEW
-            'owner_name': b.owner_name,  # ✅ NEW
+            'phone': b.phone,
+            'email': b.email,
+            'address': b.address,
+            'pincode': b.pincode,
+            'owner_name': b.owner_name,
         } for b in branches]
         return Response({'success': True, 'data': data})
 
 
-# ════════════════════════════════════════════════════════════
-# GST PREVIEW (item entry row ke live tax calc ke liye)
-# ════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
+# HELPER/Lookup APIS — No permission gate (only IsAuthenticated)
+# ─────────────────────────────────────────────────────────────────────────────
+
 class B2BSaleItemTaxAPIView(APIView):
+    """
+    GST preview for B2B sale item row
+    """
     authentication_classes = [JWTAuthentication]
+    
+    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -195,23 +203,59 @@ class B2BSaleItemTaxAPIView(APIView):
         }, status=status.HTTP_200_OK)
 
 
-# ════════════════════════════════════════════════════════════
-# PENDING B2B SALES (Franchise branch ke liye)
-# ════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
+# FRANCHISE BRANCH VIEWS — Both Superadmin and Franchise Branch can access
+# ─────────────────────────────────────────────────────────────────────────────
+
+class IsFranchiseBranchRole(IsAuthenticated):
+    """Sirf franchise-ownership wali branch (ya superadmin, admin-view ke liye) allow"""
+    def has_permission(self, request, view):
+        if not super().has_permission(request, view):
+            return False
+        user_role = request.user.role
+        if user_role == 'superadmin':
+            return True
+        allowed_roles = ['branch', 'vendor', 'branch_both', 'branch_customer', 'branch_agent', 'branch_single']
+        if not (user_role in allowed_roles or user_role.startswith('branch')):
+            return False
+        branch = Branch.objects.filter(user=request.user).first()
+        return bool(branch and branch.ownership_type == 'franchise')
+
+
 class PendingB2BSaleView(APIView):
+    """
+    Franchise branch ke liye pending B2B sales list
+    """
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsFranchiseBranchRole]
+    
+    # ✅ CHANGE: IsFranchiseBranchRole → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/b2bsales"  # ✅ ADD: Frontend route
 
     def get(self, request):
-        try:
-            branch = Branch.objects.get(user=request.user)
-        except Branch.DoesNotExist:
-            return Response({'success': False, 'message': 'Branch not found'}, status=404)
-
-        sales = B2BSale.objects.filter(
-            to_branch=branch,
-            status__in=['pending', 'completed'],
-        ).distinct().prefetch_related('items')
+        user = request.user
+        
+        # Superadmin can see all pending sales
+        if user.role == 'superadmin':
+            sales = B2BSale.objects.filter(
+                status__in=['pending', 'completed'],
+            ).distinct().prefetch_related('items')
+        else:
+            branch = user.get_effective_branch()
+            if not branch:
+                return Response({'success': False, 'message': 'No branch assigned.'}, status=400)
+            
+            # ✅ Check if franchise branch
+            if branch.ownership_type != 'franchise':
+                return Response({
+                    'success': False,
+                    'message': 'Only franchise branches can access this view.'
+                }, status=400)
+            
+            sales = B2BSale.objects.filter(
+                to_branch=branch,
+                status__in=['pending', 'completed'],
+            ).distinct().prefetch_related('items')
 
         data = []
         for s in sales:
@@ -236,23 +280,40 @@ class PendingB2BSaleView(APIView):
         return paginator.get_paginated_response({'success': True, 'data': paginated})
 
 
-# ════════════════════════════════════════════════════════════
-# SALE ITEM DETAIL (Franchise branch verify page ke liye)
-# ════════════════════════════════════════════════════════════
 class B2BSaleItemDetailView(APIView):
+    """
+    Franchise branch verify page — sale item details
+    """
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsFranchiseBranchRole]
+    
+    # ✅ CHANGE: IsFranchiseBranchRole → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/b2bsales"  # ✅ ADD: Frontend route
 
     def get(self, request, sale_id):
-        try:
-            branch = Branch.objects.get(user=request.user)
-        except Branch.DoesNotExist:
-            return Response({'success': False, 'message': 'Branch not found'}, status=404)
-
-        try:
-            sale = B2BSale.objects.get(id=sale_id, to_branch=branch)
-        except B2BSale.DoesNotExist:
-            return Response({'success': False, 'message': 'Sale not found'}, status=404)
+        user = request.user
+        
+        # Superadmin can view any sale
+        if user.role == 'superadmin':
+            try:
+                sale = B2BSale.objects.get(id=sale_id)
+            except B2BSale.DoesNotExist:
+                return Response({'success': False, 'message': 'Sale not found'}, status=404)
+        else:
+            branch = user.get_effective_branch()
+            if not branch:
+                return Response({'success': False, 'message': 'No branch assigned.'}, status=400)
+            
+            if branch.ownership_type != 'franchise':
+                return Response({
+                    'success': False,
+                    'message': 'Only franchise branches can access this view.'
+                }, status=400)
+            
+            try:
+                sale = B2BSale.objects.get(id=sale_id, to_branch=branch)
+            except B2BSale.DoesNotExist:
+                return Response({'success': False, 'message': 'Sale not found'}, status=404)
 
         data = []
         for item in sale.items.all():
@@ -307,18 +368,41 @@ class B2BSaleItemDetailView(APIView):
         })
 
 
-# ════════════════════════════════════════════════════════════
-# VERIFY SINGLE ITEM — sirf ADD hoga destination me (deduct pehle ho chuka)
-# ════════════════════════════════════════════════════════════
 class VerifyB2BSaleItemView(APIView):
+    """
+    Verify single B2B sale item — ADD stock to destination branch
+    """
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsFranchiseBranchRole]
+    
+    # ✅ CHANGE: IsFranchiseBranchRole → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/b2bsales"  # ✅ ADD: Frontend route
 
     def post(self, request, sale_id, item_id):
-        try:
-            branch = Branch.objects.get(user=request.user)
-        except Branch.DoesNotExist:
-            return Response({'success': False, 'message': 'Branch not found'}, status=404)
+        user = request.user
+        
+        # Superadmin can verify any sale
+        if user.role == 'superadmin':
+            try:
+                sale = B2BSale.objects.get(id=sale_id)
+                branch = sale.to_branch
+            except B2BSale.DoesNotExist:
+                return Response({'success': False, 'message': 'Sale not found'}, status=404)
+        else:
+            branch = user.get_effective_branch()
+            if not branch:
+                return Response({'success': False, 'message': 'No branch assigned.'}, status=400)
+            
+            if branch.ownership_type != 'franchise':
+                return Response({
+                    'success': False,
+                    'message': 'Only franchise branches can verify stock.'
+                }, status=400)
+            
+            try:
+                sale = B2BSale.objects.get(id=sale_id, to_branch=branch)
+            except B2BSale.DoesNotExist:
+                return Response({'success': False, 'message': 'Sale not found'}, status=404)
 
         if not Account.objects.filter(branch=branch, group='Sundry Creditor(Main)').exists():
             return Response({
@@ -326,11 +410,6 @@ class VerifyB2BSaleItemView(APIView):
                 'error_code': 'NO_SUNDRY_CREDITOR_ACCOUNT',
                 'message': 'Please create a Sundry Creditor(Main) account before verifying stock.'
             }, status=400)
-
-        try:
-            sale = B2BSale.objects.get(id=sale_id, to_branch=branch)
-        except B2BSale.DoesNotExist:
-            return Response({'success': False, 'message': 'Sale not found'}, status=404)
 
         if sale.status == 'cancelled':
             return Response({'success': False, 'message': 'Sale has been cancelled.'}, status=400)
@@ -347,16 +426,12 @@ class VerifyB2BSaleItemView(APIView):
         with transaction.atomic():
             from_variant = item.from_variant
 
-            # ✅ FIXED — barcode filter ki jagah FK-mapping based lookup
-            # (Stock Transfer verify jaisa hi pattern; VariantBranchMapping
-            # already sale-creation time pe ban chuki hoti hai)
             dest_variant, _created = get_or_create_dest_variant(from_variant, branch, sync_fields=True)
             dest_item = dest_variant.item
 
             if website_display:
                 Items.objects.filter(id=dest_item.id).update(website_display=True, website_status='pending')
 
-            # ✅ SIRF ADD — source ka deduction creation time pe ho chuka hai
             dest_variant.current_stock = (dest_variant.current_stock or 0) + item.quantity
             dest_variant.purchasePrice = from_variant.branchPrice
             dest_variant.save(update_fields=['current_stock', 'purchasePrice'])
@@ -372,6 +447,7 @@ class VerifyB2BSaleItemView(APIView):
 
                 from pos.utils.b2b_purchase_entry import create_purchase_entry_from_b2b_sale
                 create_purchase_entry_from_b2b_sale(sale)
+                
         return Response({
             'success': True,
             'message': f'Verified: {item.quantity} x {item.from_item_name}. Stock added to your branch.',
@@ -435,18 +511,41 @@ class VerifyB2BSaleItemView(APIView):
         return dest_item
 
 
-# ════════════════════════════════════════════════════════════
-# VERIFY ALL ITEMS
-# ════════════════════════════════════════════════════════════
 class VerifyAllB2BSaleItemsView(APIView):
+    """
+    Verify all pending B2B sale items at once
+    """
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsFranchiseBranchRole]
+    
+    # ✅ CHANGE: IsFranchiseBranchRole → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/b2bsales"  # ✅ ADD: Frontend route
 
     def post(self, request, sale_id):
-        try:
-            branch = Branch.objects.get(user=request.user)
-        except Branch.DoesNotExist:
-            return Response({'success': False, 'message': 'Branch not found'}, status=404)
+        user = request.user
+        
+        # Superadmin can verify any sale
+        if user.role == 'superadmin':
+            try:
+                sale = B2BSale.objects.get(id=sale_id)
+                branch = sale.to_branch
+            except B2BSale.DoesNotExist:
+                return Response({'success': False, 'message': 'Sale not found'}, status=404)
+        else:
+            branch = user.get_effective_branch()
+            if not branch:
+                return Response({'success': False, 'message': 'No branch assigned.'}, status=400)
+            
+            if branch.ownership_type != 'franchise':
+                return Response({
+                    'success': False,
+                    'message': 'Only franchise branches can verify stock.'
+                }, status=400)
+            
+            try:
+                sale = B2BSale.objects.get(id=sale_id, to_branch=branch)
+            except B2BSale.DoesNotExist:
+                return Response({'success': False, 'message': 'Sale not found'}, status=404)
 
         if not Account.objects.filter(branch=branch, group='Sundry Creditor(Main)').exists():
             return Response({
@@ -454,11 +553,6 @@ class VerifyAllB2BSaleItemsView(APIView):
                 'error_code': 'NO_SUNDRY_CREDITOR_ACCOUNT',
                 'message': 'Please create a Sundry Creditor(Main) account before verifying stock.'
             }, status=400)
-
-        try:
-            sale = B2BSale.objects.get(id=sale_id, to_branch=branch)
-        except B2BSale.DoesNotExist:
-            return Response({'success': False, 'message': 'Sale not found'}, status=404)
 
         if sale.status == 'cancelled':
             return Response({'success': False, 'message': 'Sale has been cancelled.'}, status=400)
@@ -470,12 +564,10 @@ class VerifyAllB2BSaleItemsView(APIView):
         website_display = request.data.get('website_display', False)
         verified_count = 0
 
-        # ✅ NEW — isi request ke andar same item dubara process ho toh dobara na bane
         with transaction.atomic():
             for item in pending_items:
                 from_variant = item.from_variant
 
-                # ✅ FIXED — barcode/manual-create logic hataya, FK-mapping use karo
                 dest_variant, _created = get_or_create_dest_variant(from_variant, branch, sync_fields=True)
 
                 if website_display:
@@ -499,21 +591,23 @@ class VerifyAllB2BSaleItemsView(APIView):
 
                 from pos.utils.b2b_purchase_entry import create_purchase_entry_from_b2b_sale
                 create_purchase_entry_from_b2b_sale(sale)
-                
+
         return Response({'success': True, 'message': f'{verified_count} item(s) verified successfully.'})
-    
-    
-    
+
+
 # ════════════════════════════════════════════════════════════
 # NEXT SALE NO PREVIEW (form open hote hi dikhane ke liye)
 # ════════════════════════════════════════════════════════════
 class B2BSaleNextNumberView(APIView):
+    """
+    Get next B2B sale number preview
+    """
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsSuperAdminRole]
+    
+    # ✅ CHANGE: IsSuperAdminRole → IsSuperAdminOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]
+    page_key = "/b2bsales"  # ✅ ADD: Frontend route
 
     def get(self, request):
-        # ✅ Sirf preview — koi record save nahi hota
         next_no = B2BSale.get_next_sale_no()
-        return Response({'success': True, 'sale_no': next_no})    
-    
-    
+        return Response({'success': True, 'sale_no': next_no})

@@ -5,9 +5,10 @@ from pos.models.account import Account
 from django.core.validators import MinValueValidator
 from decimal import Decimal
 from pos.models.salesentry import SalesItem, SalesMaster
+from pos.models.mixins import CreatedByMixin
 
 
-class SalesReturnMaster(models.Model):
+class SalesReturnMaster(CreatedByMixin, models.Model):
     branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
     return_no = models.CharField(max_length=50)
     date = models.DateField()

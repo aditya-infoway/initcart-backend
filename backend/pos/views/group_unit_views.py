@@ -9,46 +9,64 @@ from pos.serializers.group_unit_serializers import (
     ItemGroupSerializer, ItemUnitSerializer,
     GroupCreateSerializer, UnitCreateSerializer
 )
-from pos.utils.pagination import StandardResultsSetPagination  # ✅ IMPORTANT: Yeh line add karo
+from pos.utils.pagination import StandardResultsSetPagination
 
+# ✅ ADD: Permission imports
+from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN GROUP CRUD (with permission check)
+# ─────────────────────────────────────────────────────────────────────────────
 
 class GroupListCreateAPI(APIView):
     """List all groups for current branch or create a new group"""
-    permission_classes = [IsAuthenticated]
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/createGroup"  # ✅ ADD: Frontend route
     
     def get(self, request):
         """Get all groups for the user's branch WITH PAGINATION"""
-        branch = request.user.branch
-        # ✅ ORDER BY add kiya for consistent ordering
+        
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                'success': False,
+                'message': 'No branch linked to this user'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
         groups = ItemGroup.objects.filter(branch=branch).order_by('-created_at')
         
-        # ✅ YAHI SE PAGINATION START HOTI HAI
         paginator = StandardResultsSetPagination()
         paginated_groups = paginator.paginate_queryset(groups, request)
-        # ✅ YAHI TAK PAGINATION
         
         serializer = ItemGroupSerializer(paginated_groups, many=True)
         
-        # ✅ Paginated response return karo
         return paginator.get_paginated_response({
             'success': True,
             'groups': serializer.data
         })
     
     def post(self, request):
-        """Create a new group for the branch"""
-        branch = request.user.branch
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                'success': False,
+                'message': 'No branch linked to this user'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # ✅ ADD context with request
         serializer = GroupCreateSerializer(
             data=request.data,
-            context={'request': request}
+            context={'request': request}   # ✅ ADD
         )
         
         if serializer.is_valid():
-            group = ItemGroup.objects.create(
-                name=serializer.validated_data['name'],
-                description=serializer.validated_data.get('description', ''),
-                branch=branch
-            )
+            # ✅ Use serializer.save() instead of manual create
+            group = serializer.save(branch=branch)   # ✅ CHANGE
             return Response({
                 'success': True,
                 'message': 'Group created successfully',
@@ -59,11 +77,12 @@ class GroupListCreateAPI(APIView):
             'success': False,
             'errors': serializer.errors
         }, status=status.HTTP_400_BAD_REQUEST)
-
-
 class GroupDetailAPI(APIView):
     """Update or delete a specific group"""
-    permission_classes = [IsAuthenticated]
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/createGroup"  # ✅ ADD: Frontend route
     
     def get_object(self, pk, branch):
         try:
@@ -73,7 +92,15 @@ class GroupDetailAPI(APIView):
     
     def put(self, request, pk):
         """Update group"""
-        branch = request.user.branch
+        
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                'success': False,
+                'message': 'No branch linked to this user'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
         group = self.get_object(pk, branch)
         
         if not group:
@@ -94,7 +121,15 @@ class GroupDetailAPI(APIView):
     
     def delete(self, request, pk):
         """Delete group (only if no items use it)"""
-        branch = request.user.branch
+        
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                'success': False,
+                'message': 'No branch linked to this user'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
         group = self.get_object(pk, branch)
         
         if not group:
@@ -117,13 +152,28 @@ class GroupDetailAPI(APIView):
         })
 
 
-# pos/views/group_unit_views.py mein AllUnitsListAPI update karo
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN UNIT CRUD (with permission check)
+# ─────────────────────────────────────────────────────────────────────────────
 
 class UnitListCreateAPI(APIView):
     """List all global units or create new (admin only)"""
-    permission_classes = [IsAuthenticated]
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/createGroup"  # ✅ ADD: Frontend route
 
     def get(self, request):
+        """Get all units WITH PAGINATION"""
+        
+        # ✅ ADD: Effective branch check (though units are global, still need user validation)
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                'success': False,
+                'message': 'No branch linked to this user'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
         units = ItemUnit.objects.filter(is_active=True).order_by('unit_type', 'name')
         
         paginator = StandardResultsSetPagination()
@@ -136,7 +186,16 @@ class UnitListCreateAPI(APIView):
         })
 
     def post(self, request):
-        """Naya global unit banao - ideally admin only"""
+        """Create a new global unit"""
+        
+        # ✅ ADD: Effective branch check
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                'success': False,
+                'message': 'No branch linked to this user'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
         serializer = UnitCreateSerializer(data=request.data)
         
         if serializer.is_valid():
@@ -155,7 +214,10 @@ class UnitListCreateAPI(APIView):
 
 class UnitDetailAPI(APIView):
     """Update or delete a specific unit"""
-    permission_classes = [IsAuthenticated]
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/createGroup"  # ✅ ADD: Frontend route
     
     def get_object(self, pk, branch):
         try:
@@ -165,7 +227,15 @@ class UnitDetailAPI(APIView):
     
     def put(self, request, pk):
         """Update unit"""
-        branch = request.user.branch
+        
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                'success': False,
+                'message': 'No branch linked to this user'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
         unit = self.get_object(pk, branch)
         
         if not unit:
@@ -187,7 +257,15 @@ class UnitDetailAPI(APIView):
     
     def delete(self, request, pk):
         """Delete unit (only if no items use it)"""
-        branch = request.user.branch
+        
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                'success': False,
+                'message': 'No branch linked to this user'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
         unit = self.get_object(pk, branch)
         
         if not unit:
@@ -208,14 +286,27 @@ class UnitDetailAPI(APIView):
             'success': True,
             'message': 'Unit deleted successfully'
         })
-        
-#this both below api is only for dropdowns 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DROPDOWN HELPER APIS — NO PERMISSION GATE (only IsAuthenticated)
+# ─────────────────────────────────────────────────────────────────────────────
+
 class AllGroupsListAPI(APIView):
     """Get all groups without pagination (for dropdowns)"""
+    
+    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
-        branch = request.user.branch
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                'success': False,
+                'message': 'No branch linked to this user'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
         groups = ItemGroup.objects.filter(branch=branch).order_by('name')
         serializer = ItemGroupSerializer(groups, many=True)
         return Response({
@@ -226,13 +317,23 @@ class AllGroupsListAPI(APIView):
 
 class AllUnitsListAPI(APIView):
     """Get all GLOBAL units for dropdown - no branch filter"""
+    
+    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # ✅ ADD: Basic branch validation (even though units are global)
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                'success': False,
+                'message': 'No branch linked to this user'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
         # Ab branch filter nahi - global units
         units = ItemUnit.objects.filter(is_active=True).order_by('unit_type', 'name')
         serializer = ItemUnitSerializer(units, many=True)
         return Response({
             'success': True,
             'units': serializer.data
-        })       
+        })

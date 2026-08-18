@@ -10,19 +10,23 @@ from django.db.models import Q
 from pos.models.account import Account
 from pos.models.branch import Branch
 from pos.serializers.account_serializer import AccountSerializer, SupplierSerializer, AccountviewSerializer, AccountTermsSerializers
-from pos.utils.pagination import StandardResultsSetPagination  
+from pos.utils.pagination import StandardResultsSetPagination
+from ecommerce.permissions import IsSuperAdmin, IsSuperAdminOrBranchOrPagePermittedEmployee
 
 
 class AccountCreateView(APIView):
-    permission_classes = [IsAuthenticated]
-
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/addAccounts"
     """ API View for creating a new account. """
     def post(self, request):
-        # Automatically assign the branch from logged-in user
-        data = request.data.copy()
-        data['branch'] = request.user.branch.id  # assign branch_id
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({"error": "No branch linked to this user"}, status=400)
 
-        serializer = AccountSerializer(data=data)
+        data = request.data.copy()
+        data['branch'] = branch.id
+
+        serializer = AccountSerializer(data=data, context={"request": request})
         if serializer.is_valid():
             serializer.save()
             return Response(
@@ -30,71 +34,79 @@ class AccountCreateView(APIView):
                 status=status.HTTP_201_CREATED
             )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
 
-class SupplierListAPIView(APIView): 
-    permission_classes = [IsAuthenticated] 
-    def get(self, request): 
-        suppliers = Account.objects.filter(group="Supplier", branch=request.user.branch) 
-        serializer = SupplierSerializer(suppliers, many=True) 
-        return Response(serializer.data)
-    
 
-class AccountAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+class SupplierListAPIView(APIView):
+    """Get all suppliers for dropdown"""
+    permission_classes = [IsAuthenticated]   
+    # page_key = "/addAccounts"
 
     def get(self, request):
-        # Get all accounts for the user's branch except Cash and Bank accounts
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=400)
+            
+        suppliers = Account.objects.filter(group="Supplier", branch=branch)
+        serializer = SupplierSerializer(suppliers, many=True)
+        return Response(serializer.data)
+
+
+class AccountAPIView(APIView):
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/addAccounts"
+
+    def get(self, request):
         accounts = Account.objects.filter(
-            branch=request.user.branch
+            branch=request.user.get_effective_branch()
         ).exclude(
             Q(group__iexact="Case In Hand") | Q(group__iexact="Bank Account")
-        ).order_by('-id')  # ✅ ORDER BY add kiya
+        ).order_by('-id')
 
-        # ✅ PAGINATION ADD KARO
         paginator = StandardResultsSetPagination()
         paginated_accounts = paginator.paginate_queryset(accounts, request)
-        
+
         serializer = SupplierSerializer(paginated_accounts, many=True)
-        
-        # ✅ Paginated response return karo
+
         return paginator.get_paginated_response(serializer.data)
 
 
 class AccountListAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/addAccounts"
 
     def get(self, request):
-        user_branch = getattr(request.user, "branch", None)
+        user_branch = request.user.get_effective_branch()
         if not user_branch:
             return Response(
                 {"error": "User branch not found"},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        accounts = Account.objects.filter(branch=user_branch).order_by('-id')  # ✅ ORDER BY add kiya
-        
-        # ✅ PAGINATION ADD KARO
+        accounts = Account.objects.filter(branch=user_branch).order_by('-id')
+
         paginator = StandardResultsSetPagination()
         paginated_accounts = paginator.paginate_queryset(accounts, request)
-        
+
         serializer = AccountviewSerializer(paginated_accounts, many=True)
-        
-        # ✅ Paginated response return karo
+
         return paginator.get_paginated_response(serializer.data)
-    
+
 
 class AccountUpdateAPIView(generics.RetrieveUpdateAPIView):
-    permission_classes = [IsAuthenticated]
-    
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/addAccounts"
+
     queryset = Account.objects.all()
     serializer_class = AccountSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    lookup_field = "id"  # URL will use /api/account/<id>/
-    
+    lookup_field = "id"
+
 
 class AccountsByTermsAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated]   
+    # page_key = "/addAccounts"
 
     def get(self, request, *args, **kwargs):
         terms = request.query_params.get('terms', None)
@@ -103,7 +115,7 @@ class AccountsByTermsAPIView(APIView):
             return Response({"error": "terms parameter is required"}, status=400)
 
         terms = terms.lower()
-        branch = request.user.branch  # current user's branch
+        branch = request.user.get_effective_branch()
 
         if terms == "credit":
             accounts = Account.objects.none()
@@ -122,18 +134,18 @@ class AccountsByTermsAPIView(APIView):
 
         serializer = AccountTermsSerializers(accounts, many=True)
         return Response(serializer.data)
-    
-    
+
+
 class AccountTypeAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    """Get accounts by type (Bank, Cash) for dropdown"""
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/addAccounts"
 
     def get(self, request, *args, **kwargs):
         account_type = request.query_params.get("type", "").strip()
-        user = request.user
 
-        try:
-            user_branch = Branch.objects.get(user=user)
-        except Branch.DoesNotExist:
+        user_branch = request.user.get_effective_branch()
+        if not user_branch:
             return Response({"error": "User branch not found"}, status=400)
 
         accounts = Account.objects.filter(branch=user_branch.id).order_by('-id')
@@ -145,19 +157,24 @@ class AccountTypeAPIView(APIView):
 
         serializer = AccountTermsSerializers(accounts, many=True)
         return Response(serializer.data)
-    
+
 
 class CustomerCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/addAccounts"
 
     def post(self, request):
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({"error": "No branch linked to this user"}, status=400)
+
         data = request.data.copy()
-        data['branch'] = request.user.branch.id
+        data['branch'] = branch.id
         data['group'] = 'Customer'
         data['drcr'] = 'Dr'
         data['current_balance'] = 0
-        
-        serializer = AccountSerializer(data=data)
+
+        serializer = AccountSerializer(data=data, context={"request" : request})
         if serializer.is_valid():
             serializer.save()
             return Response({
@@ -165,19 +182,14 @@ class CustomerCreateView(APIView):
                 "customer": serializer.data
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
-from ecommerce.permissions import IsSuperAdmin
-from pos.models.branch import Branch
 
 
 class BranchLinkableAccountsAPIView(APIView):
     """
     GET /api/branch-linkable-accounts/?branch_id=<id optional>
-    Sirf superadmin. Already kisi branch se linked accounts exclude ho jayenge,
-    except agar ?branch_id diya hai (edit mode) — tab uss branch ke apne current
-    selections wapas dikhenge taaki dropdown me apna hi selection dikhta rahe.
+    Sirf superadmin. Already kisi branch se linked accounts exclude ho jayenge.
     """
-    permission_classes = [IsSuperAdmin]
+    permission_classes = [IsSuperAdmin]  # Sirf superadmin, employee ko access nahi
 
     def get(self, request):
         branch_id = request.query_params.get('branch_id', '').strip()
@@ -216,7 +228,3 @@ class BranchLinkableAccountsAPIView(APIView):
                 {"id": a.id, "account_name": a.account_name, "group": a.group} for a in creditor_qs
             ],
         })
-        
-        
-            
-    

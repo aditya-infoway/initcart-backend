@@ -13,6 +13,8 @@ from pos.serializers.stock_transfer_serializers import (
 )
 #  Reuse existing helpers — no duplication
 from pos.serializers.stock_transfer_serializers import variant_info_str
+from pos.serializers.mixins_serializers import CreatedByReadMixin
+
 
 
 
@@ -50,10 +52,10 @@ class B2BSaleCreateSerializer(serializers.Serializer):
         user = request.user
         items_data = validated_data.pop('items')
 
-        try:
-            from_branch = Branch.objects.get(user=user)
-        except Branch.DoesNotExist:
-            raise serializers.ValidationError("Super Admin branch not found.")
+        # ✅ FIXED: use get_effective_branch()
+        from_branch = user.get_effective_branch()
+        if not from_branch:
+            raise serializers.ValidationError("No branch linked to this user.")
 
         try:
             to_branch = Branch.objects.get(id=validated_data['to_branch_id'])
@@ -63,7 +65,7 @@ class B2BSaleCreateSerializer(serializers.Serializer):
         # ✅ CRITICAL — sirf Franchise branches hi B2B Sale receive kar sakti hain
         if to_branch.ownership_type != 'franchise':
             raise serializers.ValidationError(
-                "B2B Sale only for Franchise-ownership ."
+                "B2B Sale only for Franchise-ownership branches."
             )
 
         if from_branch.id == to_branch.id:
@@ -81,6 +83,8 @@ class B2BSaleCreateSerializer(serializers.Serializer):
                 created_by=user,
                 status='pending',
             )
+
+
 
             settings_obj = setting.objects.filter(branch=from_branch).first()
             gst_toggle = getattr(settings_obj, 'stock_transfer_gst_toggle', False)
@@ -167,8 +171,12 @@ class B2BSaleListSerializer(serializers.ModelSerializer):
     from_branch_name = serializers.CharField(source='from_branch.branch_name', read_only=True)
     to_branch_name   = serializers.CharField(source='to_branch.branch_name', read_only=True)
     item_count       = serializers.IntegerField(source='items.count', read_only=True)
+    created_by_name  = serializers.SerializerMethodField()   
 
     class Meta:
         model  = B2BSale
         fields = ['id', 'sale_no', 'from_branch_name', 'to_branch_name',
-                  'sale_date', 'status', 'item_count', 'created_at']
+                  'sale_date', 'status', 'item_count', 'created_at', 'created_by_name']  
+
+    def get_created_by_name(self, obj):
+        return obj.created_by.username if obj.created_by else None   

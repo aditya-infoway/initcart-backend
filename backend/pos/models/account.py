@@ -1,8 +1,9 @@
 # pos/models/account.py
 from django.db import models
 from pos.models.branch import Branch
+from pos.models.mixins import CreatedByMixin
 
-class Account(models.Model):
+class Account(CreatedByMixin, models.Model):
     DRCR_CHOICES = (
         ("Dr", "Receivable"),
         ("Cr", "Payable"),

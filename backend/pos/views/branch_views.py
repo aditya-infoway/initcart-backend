@@ -20,12 +20,13 @@ from django.contrib.auth import get_user_model
 
 from pos.models.settings import setting
 from pos.views.settings_views import ensure_branch_setting
-from django.contrib.auth.hashers import make_password  # already check_password hai, make_password add karo
+from django.contrib.auth.hashers import make_password 
 from django.db.models import Q
 
 
 # Models
 from pos.models.branch import Branch
+from pos.models.employee import Employee
 
 # Serializers
 from pos.serializers.branch_serializers import (
@@ -34,7 +35,7 @@ from pos.serializers.branch_serializers import (
 )
 
 # Permissions
-from ecommerce.permissions import IsSuperAdmin
+from ecommerce.permissions import IsSuperAdmin, IsSuperAdminOrPagePermittedEmployee
 
 User = get_user_model()
 
@@ -44,7 +45,8 @@ User = get_user_model()
 class BranchViewSet(viewsets.ModelViewSet):
     queryset = Branch.objects.all().order_by('-created_at')
     authentication_classes = [JWTAuthentication, SessionAuthentication]
-    permission_classes = [IsSuperAdmin]  # Only Super Admin can access
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]
+    page_key = "/branchMaster"
     parser_classes = [MultiPartParser, FormParser]
     
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
@@ -71,7 +73,7 @@ class BranchViewSet(viewsets.ModelViewSet):
         if not password:
             return Response({"error": "Password is required"}, status=400)
 
-        serializer = BranchCreateSerializer(data=data)
+        serializer = BranchCreateSerializer(data=data,  context={"request": request})
 
         if serializer.is_valid():
             branch = serializer.save()
@@ -209,7 +211,70 @@ class BranchLoginViewset(APIView):
                 {"success": False, "message": "Email/Phone & Password required"},
                 status=400,
             )
+        # ────────────────────────────────────────────────────────────
+        # STEP -1: Employee login (superadmin branch ke andar limited-access user)
+        # ────────────────────────────────────────────────────────────
+        employee = Employee.objects.filter(
+            Q(email__iexact=identifier) | Q(mobile=identifier),
+            status='active'
+        ).select_related('user', 'branch').first()
 
+        if employee:
+            if not employee.user:
+                return Response({"success": False, "message": "Employee account not properly configured"}, status=400)
+
+            auth_user = authenticate(username=employee.user.username, password=password)
+            if not auth_user:
+                return Response({"success": False, "message": "Invalid credentials"}, status=400)
+
+            branch = employee.branch
+            permissions_data = [
+                {
+                    "page_key": p.page_key,
+                    "can_view": p.can_view,
+                    "can_add": p.can_add,
+                    "can_edit": p.can_edit,
+                    "can_delete": p.can_delete,
+                }
+                for p in employee.permissions.all()
+            ]
+
+            refresh = RefreshToken.for_user(auth_user)
+
+            return Response({
+                "success": True,
+                "message": f"Welcome {employee.full_name}",
+                "branch": {
+                    "id": branch.id,
+                    "email": branch.email,
+                    "branch_name": branch.branch_name,
+                    "owner_name": branch.owner_name,
+                    "branch_type": branch.branch_type,
+                    "phone": branch.phone,
+                    "status": branch.status,
+                },
+                "user": {
+                    "id": auth_user.id,
+                    "username": auth_user.username,
+                    "email": auth_user.email,
+                    "role": "employee",
+                },
+                "employee": {
+                    "id": employee.id,
+                    "full_name": employee.full_name,
+                    "department": employee.department,
+                },
+                "permissions": permissions_data,
+                "prefixes": {
+                    "gst_toggle": False,
+                    "PI": "PI", "SI": "SI", "BP": "BP",
+                    "CP": "CP", "CR": "CR", "BR": "BR",
+                    "JE": "JE", "contra": "CN",
+                },
+                "access": str(refresh.access_token),
+                "refresh": str(refresh),
+            })
+        
         # ────────────────────────────────────────────────────────────
         # STEP 0: Superadmin's OWN branch — decoupled branch-password login
         # Agar branch ka apna password set ho chuka hai, to sirf wahi valid hai.
@@ -528,9 +593,8 @@ class BranchMeView(APIView):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get(self, request):
-        try:
-            branch = Branch.objects.get(user=request.user)
-        except Branch.DoesNotExist:
+        branch = request.user.get_effective_branch()
+        if not branch:
             return Response(
                 {"success": False, "message": "Branch profile not linked with this user"},
                 status=404
@@ -539,13 +603,15 @@ class BranchMeView(APIView):
         return Response({"success": True, "data": serializer.data})
 
     def patch(self, request):
-        try:
-            branch = Branch.objects.get(user=request.user)
-        except Branch.DoesNotExist:
+        branch = request.user.get_effective_branch()
+        if not branch:
             return Response(
                 {"success": False, "message": "Branch profile not linked with this user"},
                 status=404
             )
+        # ⚠️ Employee superadmin panel settings (branch_name, logo, branch_password etc.) edit NAHI kar sakta
+        if getattr(request.user, "role", None) == "employee":
+            return Response({"success": False, "message": "Employees cannot edit branch settings"}, status=403)
 
         is_superadmin = getattr(request.user, "role", None) == "superadmin"
 

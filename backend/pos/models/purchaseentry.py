@@ -4,9 +4,10 @@ from pos.models.account import Account
 from pos.models.items import items,itemvariants
 from pos.models.branch import Branch
 from pos.models.b2b_sales import B2BSale
+from pos.models.mixins import CreatedByMixin
 
 
-class PurchaseMaster(models.Model):
+class PurchaseMaster(CreatedByMixin, models.Model):
     date = models.DateField()
     partyName = models.ForeignKey(Account, on_delete=models.CASCADE, blank=True, null=True)
     branch = models.ForeignKey(Branch, on_delete=models.CASCADE, blank=True, null=True)
@@ -22,9 +23,9 @@ class PurchaseMaster(models.Model):
     bank_account = models.ForeignKey(Account, on_delete=models.SET_NULL, null=True, blank=True, related_name="bank_purchases")
     case_account = models.ForeignKey(Account, on_delete=models.SET_NULL, null=True, blank=True, related_name="case_purchases")
     purchasebill_no = models.CharField(max_length=50)
-    frightcharge = models.DecimalField(max_digits=5, decimal_places=2, default=0)
-    otherexpnse = models.DecimalField(default=0, max_digits=5, decimal_places=2)
-    roundamount = models.DecimalField(default=0, max_digits=5, decimal_places=2)
+    frightcharge = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    otherexpnse = models.DecimalField(default=0, max_digits=10, decimal_places=2)
+    roundamount = models.DecimalField(default=0, max_digits=10, decimal_places=2)
     created_at = models.DateTimeField(auto_now_add=True)
 
     # ✅ NEW — Traceability + duplicate-guard: B2B Sale se auto-generate hua hai to yahan link milega
@@ -240,7 +241,10 @@ class PurchaseItem(models.Model):
             net_amount = amount_after_discount
 
         # ---------- GST SPLIT ----------
-        if self.purchase.branch.state == self.purchase.partyName.state:
+        branch_state_norm = (self.purchase.branch.state or "").strip().lower()
+        party_state_norm = (self.purchase.partyName.state or "").strip().lower()
+
+        if branch_state_norm and party_state_norm and branch_state_norm == party_state_norm:
             half_tax = (total_tax / Decimal('2')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
             self.cgst = half_tax
             self.sgst = half_tax

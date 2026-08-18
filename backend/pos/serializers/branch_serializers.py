@@ -4,6 +4,7 @@ from django.contrib.auth.hashers import make_password
 from django.contrib.auth import get_user_model
 from pos.models.branch import Branch
 from pos.models.account import Account
+from pos.serializers.mixins_serializers import CreatedByReadMixin,CreatedByWriteMixin
 
 User = get_user_model()
 
@@ -12,7 +13,7 @@ DEBITOR_GROUPS = ['Customer - Sundry Debitor', 'Sundry Debitor(Internal)']
 CREDITOR_GROUPS = ['Supplier - Sundry Creditor', 'Sundry Creditor(Internal)']
 
 
-class BranchCreateSerializer(serializers.ModelSerializer):
+class BranchCreateSerializer(CreatedByWriteMixin,serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True)
     sundry_debitor_account = serializers.PrimaryKeyRelatedField(
         queryset=Account.objects.filter(group__in=DEBITOR_GROUPS),
@@ -59,12 +60,18 @@ class BranchCreateSerializer(serializers.ModelSerializer):
             last_name=" ".join(validated_data.get("owner_name", "").split()[1:]) or ""
         )
 
-        validated_data["password"] = make_password(raw_password)  # ✅ hashed, plain-text wala dead block hata diya
+        validated_data["password"] = make_password(raw_password)
+
+        # ✅ Yahan manually created_by set karo
+        request = self.context.get("request")
+        if request and request.user and request.user.is_authenticated:
+            validated_data["created_by"] = request.user
+
         branch = Branch.objects.create(user=user, **validated_data)
         return branch
 
 #  BRANCH LIST SERIALIZER
-class BranchListSerializer(serializers.ModelSerializer):
+class BranchListSerializer(CreatedByReadMixin, serializers.ModelSerializer):
     branch_logo_url = serializers.SerializerMethodField()
     created_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
     updated_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
@@ -82,7 +89,7 @@ class BranchListSerializer(serializers.ModelSerializer):
             "email", "phone", "status", "city", "state",
             "branch_logo", "branch_logo_url", "created_at", "updated_at",
             "sundry_debitor_account_name","sundry_creditor_account_name",
-            "ownership_type",
+            "ownership_type","created_by", "created_by_name"
         ]
 
     def get_branch_logo_url(self, obj):

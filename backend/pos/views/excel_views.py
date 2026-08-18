@@ -11,6 +11,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.formatting.rule import CellIsRule
 from pos.models.items import items, itemvariants
 from pos.models.group_unit import ItemGroup, ItemUnit
 from ecommerce.models.category import Category, SubCategory, SubSubCategory
@@ -18,16 +19,32 @@ from ecommerce.models.vendor import Brand
 from decimal import Decimal
 from django.db import transaction
 from collections import defaultdict
-from openpyxl.formatting.rule import CellIsRule
-
-
 from openpyxl.workbook.defined_name import DefinedName
 
+# ✅ ADD: Permission imports
+from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN CRUD VIEWS (with permission check)
+# ─────────────────────────────────────────────────────────────────────────────
+
 class DownloadExcelTemplate(APIView):
-    permission_classes = [IsAuthenticated]
+    """Download Excel template for company items import"""
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/ExcelImportExport"  # ✅ ADD: Frontend route
 
     def get(self, request):
-        branch = request.user.branch
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
         branch_type = branch.branch_type.lower()
 
         wb = Workbook()
@@ -68,9 +85,7 @@ class DownloadExcelTemplate(APIView):
 
         all_headers = main_columns + [{"header": col, "width": 20} for col in variant_columns]
 
-        # FIX: max_row must be defined BEFORE it's used below (was previously
-        # defined later in the "APPLY NORMAL DROPDOWN" section, which caused
-        # UnboundLocalError when the TAX_SLAB text-format block ran first).
+        # FIX: max_row must be defined BEFORE it's used below
         max_row = 500
 
         # ===== HEADERS =====
@@ -82,18 +97,12 @@ class DownloadExcelTemplate(APIView):
             ws_data.column_dimensions[get_column_letter(col_idx)].width = col["width"]
 
         # Force TAX_SLAB column to TEXT format so Excel never auto-converts
-        # plain numbers like "5" into "500%" on save.
         for col_idx, col in enumerate(all_headers, 1):
             header = col["header"].replace("*", "")
             if header == "TAX_SLAB":
                 col_letter = get_column_letter(col_idx)
                 for row_num in range(2, max_row + 1):
                     ws_data.cell(row=row_num, column=col_idx).number_format = '@'
-
-        # ws_data.append(["Example Product"] + [""] * (len(all_headers) - 1))
-        # ws_data.append([
-        #     "Same ITEM_NAME for multiple rows = multiple variants",
-        # ] + [""] * (len(all_headers) - 1))
 
         # ===== NORMAL DROPDOWN DATA =====
         dropdown_map = {
@@ -119,8 +128,6 @@ class DownloadExcelTemplate(APIView):
             ws_data.column_dimensions[col_letter].hidden = True
 
         # ===== APPLY NORMAL DROPDOWN =====
-        # (max_row already defined above - removed duplicate definition here)
-
         for col_idx, col in enumerate(all_headers, 1):
             col_letter = get_column_letter(col_idx)
             header = col["header"].replace("*", "")
@@ -190,10 +197,6 @@ class DownloadExcelTemplate(APIView):
         ws_hidden.sheet_state = "hidden"
 
         # ===== APPLY DEPENDENT DROPDOWNS =====
-
-        # CATEGORY already applied above
-
-        # SUB CATEGORY (depends on CATEGORY column C)
         dv_subcat = DataValidation(
             type="list",
             formula1='=INDIRECT(SUBSTITUTE($C2," ","_"))'
@@ -201,7 +204,6 @@ class DownloadExcelTemplate(APIView):
         ws_data.add_data_validation(dv_subcat)
         dv_subcat.add("D2:D500")
 
-        # SUB SUB CATEGORY (depends on SUBCATEGORY column D)
         dv_subsub = DataValidation(
             type="list",
             formula1='=INDIRECT(SUBSTITUTE($D2," ","_"))'
@@ -232,8 +234,11 @@ class DownloadExcelTemplate(APIView):
 
 
 class ImportItemsFromExcel(APIView):
-    permission_classes = [IsAuthenticated]
+    """Import company items from Excel"""
     
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/ExcelImportExport"  # ✅ ADD: Frontend route
 
     def post(self, request):
         used_barcodes = set()
@@ -241,7 +246,14 @@ class ImportItemsFromExcel(APIView):
         if not excel_file:
             return Response({"error": "No file uploaded"}, status=400)
 
-        branch = request.user.branch
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
         branch_type = branch.branch_type.lower()
 
         variant_field_mapping = {
@@ -257,7 +269,6 @@ class ImportItemsFromExcel(APIView):
 
         # ===== HELPERS (FIXED: NaN-safe) =====
         def is_empty(val):
-            """Check if a value is None, NaN, or empty string."""
             if val is None:
                 return True
             if isinstance(val, float) and pd.isna(val):
@@ -267,13 +278,11 @@ class ImportItemsFromExcel(APIView):
             return False
 
         def clean(val):
-            """Convert to string safely - returns '' for None/NaN."""
             if is_empty(val):
                 return ""
             return str(val).strip()
 
         def to_float(val):
-            """Parse float safely - returns None for None/NaN/empty."""
             try:
                 if is_empty(val):
                     return None
@@ -283,7 +292,6 @@ class ImportItemsFromExcel(APIView):
                 return None
 
         def to_int(val):
-            """Parse int safely - returns None for None/NaN/empty."""
             try:
                 if is_empty(val):
                     return None
@@ -293,20 +301,11 @@ class ImportItemsFromExcel(APIView):
                 return None
 
         def normalize_tax(val):
-            """
-            Normalize a raw TAX_SLAB cell value into one of the allowed
-            slab strings: '5%', '12%', '18%', '28%', 'Tax Free'.
-            Returns '' if the value is empty OR doesn't match any known slab
-            (caller is responsible for treating '' as invalid when required).
-            """
             if is_empty(val):
                 return ""
             raw = str(val).strip().upper()
             raw = raw.replace(" ", "")
 
-            # Safely strip a trailing ".0"/".00" etc. WITHOUT corrupting the
-            # string (old version used raw.replace(".0", "") which could
-            # mangle values like "18.00" into "180").
             if "." in raw and "%" not in raw:
                 try:
                     num = float(raw)
@@ -330,7 +329,6 @@ class ImportItemsFromExcel(APIView):
             }
             return mapping.get(raw, "")
 
-# ===== NUMERIC-TEXT CLEANER (removes .0 from numeric-looking codes) =====
         def clean_numeric_text_cell(x):
             if pd.isna(x):
                 return None
@@ -347,7 +345,7 @@ class ImportItemsFromExcel(APIView):
                 converters={
                     'BARCODE': clean_numeric_text_cell,
                     'HSN_CODE': clean_numeric_text_cell,
-                    'HSN_CODE*': clean_numeric_text_cell,   # template star-header safety
+                    'HSN_CODE*': clean_numeric_text_cell,
                 }
             )
         except Exception as e:
@@ -362,22 +360,20 @@ class ImportItemsFromExcel(APIView):
                 "error": f"Invalid Excel format. Found columns: {list(df.columns)}"
             }, status=400)
 
-        # TAX_SLAB is now a required column (was optional before)
         required_cols = ['ITEM_NAME', 'HSN_CODE', 'UNIT_NAME', 'CATEGORY_NAME', 'TAX_SLAB', 'PURCHASE_PRICE', 'SALES_PRICE', 'MRP']
         missing = [c for c in required_cols if c not in df.columns]
         if missing:
             return Response({"error": f"Missing columns: {', '.join(missing)}"}, status=400)
 
-        # ===== LOOKUPS (case-insensitive category match) =====
+        # ===== LOOKUPS =====
         brand_map = {b.brand_name: b.id for b in Brand.objects.all()}
 
-        # FIX: category_map is case-insensitive to handle casing mismatches
-        category_map     = {clean(c.name).lower(): c.id for c in Category.objects.all()}
-        subcat_map       = {clean(s.name).lower(): s.id for s in SubCategory.objects.all()}
-        subsub_map       = {clean(s.name).lower(): s.id for s in SubSubCategory.objects.all()}
-        group_map        = {g.name: g.id for g in ItemGroup.objects.filter(branch=branch)}
-        unit_map         = {u.symbol: u.id for u in ItemUnit.objects.filter(is_active=True)}
-        # NEW: existing barcodes for THIS branch (to validate duplicates during import)
+        category_map = {clean(c.name).lower(): c.id for c in Category.objects.all()}
+        subcat_map = {clean(s.name).lower(): s.id for s in SubCategory.objects.all()}
+        subsub_map = {clean(s.name).lower(): s.id for s in SubSubCategory.objects.all()}
+        group_map = {g.name: g.id for g in ItemGroup.objects.filter(branch=branch)}
+        unit_map = {u.symbol: u.id for u in ItemUnit.objects.filter(is_active=True)}
+        
         existing_barcodes = set(
             itemvariants.objects.filter(item__branch=branch)
             .exclude(barcode__isnull=True)
@@ -388,6 +384,7 @@ class ImportItemsFromExcel(APIView):
             name.strip().lower()
             for name in items.objects.filter(branch=branch).values_list("itemName", flat=True)
         )
+        
         errors = []
         items_data = defaultdict(lambda: {
             "itemName": "",
@@ -405,34 +402,31 @@ class ImportItemsFromExcel(APIView):
             item_name = clean(raw_item_name)
 
             if not item_name and not last_item:
-                continue  # pure empty row skip
+                continue
             elif not item_name:
                 item_name = last_item
             else:
                 last_item = item_name
 
-            # ===== PURE EMPTY ROW SKIP =====
             if all(is_empty(row.get(c)) for c in ['ITEM_NAME', 'PURCHASE_PRICE', 'SALES_PRICE', 'MRP']):
                 continue
 
-            # If this item was already marked as having an error, skip its variant rows too
             if items_data[item_name].get("has_error"):
                 continue
 
-            # ===== ITEM FIELDS (only for first occurrence) =====
+            # ===== ITEM FIELDS =====
             val_category = clean(row.get('CATEGORY_NAME'))
-            val_subcat   = clean(row.get('SUB_CATEGORY_NAME'))
-            val_subsub   = clean(row.get('SUB_SUB_CATEGORY_NAME'))
-            val_brand    = clean(row.get('BRAND_NAME'))
-            val_group    = clean(row.get('GROUP_NAME'))
-            val_unit     = clean(row.get('UNIT_NAME'))
-            val_hsn      = clean(row.get('HSN_CODE'))
-            raw_tax      = row.get('TAX_SLAB')
-            val_tax      = normalize_tax(raw_tax)
-            val_website  = clean(row.get('WEBSITE_DISPLAY')).upper() == "YES"
+            val_subcat = clean(row.get('SUB_CATEGORY_NAME'))
+            val_subsub = clean(row.get('SUB_SUB_CATEGORY_NAME'))
+            val_brand = clean(row.get('BRAND_NAME'))
+            val_group = clean(row.get('GROUP_NAME'))
+            val_unit = clean(row.get('UNIT_NAME'))
+            val_hsn = clean(row.get('HSN_CODE'))
+            raw_tax = row.get('TAX_SLAB')
+            val_tax = normalize_tax(raw_tax)
+            val_website = clean(row.get('WEBSITE_DISPLAY')).upper() == "YES"
 
             if not items_data[item_name]["item_fields"]:
-                # ===== REQUIRED ITEM FIELD VALIDATIONS =====
                 item_has_error = False
 
                 if not item_name:
@@ -440,7 +434,7 @@ class ImportItemsFromExcel(APIView):
                     item_has_error = True
                 elif item_name.strip().lower() in existing_item_names:
                     errors.append(f"Row {row_num}: Item '{item_name}' already exists in this branch")
-                    item_has_error = True    
+                    item_has_error = True
 
                 if not val_category:
                     errors.append(f"Row {row_num}: CATEGORY_NAME is required")
@@ -454,7 +448,6 @@ class ImportItemsFromExcel(APIView):
                     errors.append(f"Row {row_num}: HSN_CODE is required")
                     item_has_error = True
 
-                # NEW: TAX_SLAB required + must be a valid slab value
                 if is_empty(raw_tax):
                     errors.append(f"Row {row_num}: TAX_SLAB is required")
                     item_has_error = True
@@ -465,9 +458,8 @@ class ImportItemsFromExcel(APIView):
                     )
                     item_has_error = True
 
-                # category DB lookup (case-insensitive)
-                category_id       = category_map.get(val_category.lower()) if val_category else None
-                subcategory_id    = subcat_map.get(val_subcat.lower()) if val_subcat else None
+                category_id = category_map.get(val_category.lower()) if val_category else None
+                subcategory_id = subcat_map.get(val_subcat.lower()) if val_subcat else None
                 subsubcategory_id = subsub_map.get(val_subsub.lower()) if val_subsub else None
 
                 if val_category and not category_id:
@@ -478,29 +470,22 @@ class ImportItemsFromExcel(APIView):
                     errors.append(f"Row {row_num}: UNIT_NAME '{val_unit}' not found")
                     item_has_error = True
 
-                # If any required item field is missing/invalid, mark item as invalid
-                # and skip all its variants too
                 if item_has_error:
                     items_data[item_name]["has_error"] = True
                     continue
 
                 items_data[item_name]["item_fields"] = {
-                    "brand":          brand_map.get(val_brand) if val_brand else None,
-                    "category":       category_id,
-                    "subcategory":    subcategory_id,
+                    "brand": brand_map.get(val_brand) if val_brand else None,
+                    "category": category_id,
+                    "subcategory": subcategory_id,
                     "subsubcategory": subsubcategory_id,
-                    "group":          group_map.get(val_group) if val_group else None,
-                    "unit":           unit_map.get(val_unit),
-                    "hsn":            val_hsn,
-                    "tax":            val_tax,
-                    "website":        val_website
+                    "group": group_map.get(val_group) if val_group else None,
+                    "unit": unit_map.get(val_unit),
+                    "hsn": val_hsn,
+                    "tax": val_tax,
+                    "website": val_website
                 }
             else:
-                # FIX: item already seen on an earlier row - backfill any
-                # OTHER optional field (brand/group/subcategory/subsubcategory/
-                # website) if it was left blank on the first row but is present
-                # on this row. TAX_SLAB is required on the first row itself now,
-                # so it never needs backfilling.
                 f = items_data[item_name]["item_fields"]
                 if not f.get("brand") and val_brand:
                     f["brand"] = brand_map.get(val_brand)
@@ -515,10 +500,9 @@ class ImportItemsFromExcel(APIView):
 
             # ===== PRICE =====
             purchase_price = to_float(row.get('PURCHASE_PRICE'))
-            sales_price    = to_float(row.get('SALES_PRICE'))
-            mrp            = to_float(row.get('MRP'))
+            sales_price = to_float(row.get('SALES_PRICE'))
+            mrp = to_float(row.get('MRP'))
 
-            # INVALID ROW (partial filled)
             if purchase_price is None or sales_price is None or mrp is None:
                 errors.append(f"Row {row_num}: Price missing/invalid")
                 continue
@@ -529,7 +513,7 @@ class ImportItemsFromExcel(APIView):
             if sales_price > mrp:
                 errors.append(f"Row {row_num}: SALES_PRICE > MRP")
 
-            # ===== BARCODE (FIXED: NaN -> None) =====
+            # ===== BARCODE =====
             raw_barcode = row.get('BARCODE')
             if is_empty(raw_barcode):
                 barcode = None
@@ -541,22 +525,22 @@ class ImportItemsFromExcel(APIView):
             # ===== STOCK =====
             qty = to_int(row.get('OPENING_STOCK')) or 0
 
-            # ===== TAX (use the item-level tax slab resolved above) =====
-            tax_str  = items_data[item_name]["item_fields"].get("tax", "")
+            # ===== TAX =====
+            tax_str = items_data[item_name]["item_fields"].get("tax", "")
             tax_rate = float(tax_str.replace('%', '').replace('Tax Free', '0') or 0) if tax_str else 0.0
-            basic    = qty * purchase_price
-            tax_amt  = (basic * tax_rate) / 100
-            net      = basic + tax_amt
+            basic = qty * purchase_price
+            tax_amt = (basic * tax_rate) / 100
+            net = basic + tax_amt
 
             variant = {
                 "purchasePrice": purchase_price,
-                "salesPrice":    sales_price,
-                "mrp":           mrp,
-                "barcode":       barcode,
-                "opStock":       qty,
-                "basicAmount":   basic,
-                "taxAmount":     tax_amt,
-                "netValue":      net,
+                "salesPrice": sales_price,
+                "mrp": mrp,
+                "barcode": barcode,
+                "opStock": qty,
+                "basicAmount": basic,
+                "taxAmount": tax_amt,
+                "netValue": net,
             }
 
             # ===== VARIANT EXTRA FIELDS =====
@@ -589,14 +573,13 @@ class ImportItemsFromExcel(APIView):
         if errors:
             return Response({"success": False, "errors": errors[:100]}, status=400)
 
-        # ===== EMPTY FILE CHECK =====
         if not any(item["variants"] for item in items_data.values()):
             return Response({
                 "success": False,
                 "errors": ["Excel file is empty or no valid rows found"]
             }, status=400)
 
-        created_items    = 0
+        created_items = 0
         created_variants = 0
 
         # ===== SAVE =====
@@ -647,14 +630,24 @@ class ImportItemsFromExcel(APIView):
 
 
 class ExportItemsToExcel(APIView):
-    """Export existing items to Excel"""
-    permission_classes = [IsAuthenticated]
+    """Export company items to Excel"""
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/ExcelImportExport"  # ✅ ADD: Frontend route
 
     def get(self, request):
         from openpyxl.utils import get_column_letter
         import pandas as pd
 
-        branch = request.user.branch
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
         branch_type = branch.branch_type.lower()
 
         item_queryset = items.objects.filter(branch=branch, entry_type='company').prefetch_related('variants')
@@ -692,13 +685,11 @@ class ExportItemsToExcel(APIView):
         )
         response['Content-Disposition'] = 'attachment; filename="items_export.xlsx"'
 
-        # Excel writer with formatting
         with pd.ExcelWriter(response, engine='openpyxl') as writer:
             df.to_excel(writer, index=False, sheet_name="Item Data")
 
             worksheet = writer.sheets["Item Data"]
 
-            # Auto column width
             for col_idx, col in enumerate(df.columns, 1):
                 max_length = len(str(col))
 
@@ -709,7 +700,6 @@ class ExportItemsToExcel(APIView):
                     except:
                         pass
 
-                # Smart width control
                 if "BARCODE" in col:
                     width = 25
                 elif "NAME" in col:

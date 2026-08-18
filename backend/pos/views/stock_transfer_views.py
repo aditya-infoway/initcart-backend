@@ -27,17 +27,29 @@ from pos.utils.pagination import StandardResultsSetPagination
 from pos.models.settings import setting as SettingModel
 from pos.utils.gst_calc import calculate_gst_split
 
+# ✅ Permission imports
+from ecommerce.permissions import (
+    IsSuperAdminOrPagePermittedEmployee,
+    IsSuperAdminOrBranchOrPagePermittedEmployee,
+)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ✅ KEEP THIS - Required for stock_transfer_receipt_views.py, 
+# stock_transfer_refund_views.py and stock_transfer_payment_views.py
+# ─────────────────────────────────────────────────────────────────────────────
 class IsSuperAdminRole(IsAuthenticated):
     def has_permission(self, request, view):
         return super().has_permission(request, view) and request.user.role == 'superadmin'
 
 
-# ════════════════════════════════════════════════════════════
-# STOCK TRANSFER VIEWSET
-# ════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
+# STOCK TRANSFER VIEWSET (Superadmin creates/manages transfers)
+# ─────────────────────────────────────────────────────────────────────────────
 class StockTransferViewSet(ModelViewSet):
     authentication_classes = [JWTAuthentication]
-    permission_classes     = [IsSuperAdminRole]
+    permission_classes     = [IsSuperAdminOrPagePermittedEmployee]
+    page_key                = "/stockTransfer"
     http_method_names      = ['get', 'post', 'patch', 'delete']
 
     def get_queryset(self):
@@ -116,12 +128,13 @@ class StockTransferViewSet(ModelViewSet):
         return Response({'success': True, 'message': 'Transfer cancelled.'})
 
 
-# ════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
 # PREVIEW API (No Matching)
-# ════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
 class StockTransferPreviewView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes     = [IsSuperAdminRole]
+    permission_classes     = [IsSuperAdminOrPagePermittedEmployee]
+    page_key                = "/stockTransfer"
 
     def post(self, request):
         to_branch_id = request.data.get('to_branch_id')
@@ -155,13 +168,11 @@ class StockTransferPreviewView(APIView):
             if not sufficient:
                 low_stock_count += 1
 
-            # Check if item exists in destination branch
             dest_item_exists = Items.objects.filter(
                 branch=to_branch,
                 itemName=from_variant.item.itemName,
                 created_by_superadmin=True
             ).exists()
-            
 
             from pos.models.stock_transfer import VariantBranchMapping
             dest_variant_exists = VariantBranchMapping.objects.filter(
@@ -192,12 +203,14 @@ class StockTransferPreviewView(APIView):
         })
 
 
-
-
+# ─────────────────────────────────────────────────────────────────────────────
+# GST PREVIEW — Helper API (No permission gate)
+# ─────────────────────────────────────────────────────────────────────────────
 class StockTransferItemTaxAPIView(APIView):
     """
     GST preview for Stock Transfer (Manual + Order Tracking) — branch_price par
     Purchase jaisa hi toggle-based inclusive/exclusive calculation.
+    Helper/calculation API — koi CRUD nahi, isliye page_key gate nahi kiya.
     """
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
@@ -246,17 +259,19 @@ class StockTransferItemTaxAPIView(APIView):
             "igst": float(result["igst"]),
             "net_amount": float(result["net_amount"]),
         }, status=status.HTTP_200_OK)
-# ════════════════════════════════════════════════════════════
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MY BRANCH ITEMS (Super Admin ke transferrable items)
-# ════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
 class MyBranchItemsView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsSuperAdminRole]
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]
+    page_key = "/stockTransfer"
 
     def get(self, request):
-        try:
-            my_branch = Branch.objects.get(user=request.user)
-        except Branch.DoesNotExist:
+        my_branch = request.user.get_effective_branch()
+        if not my_branch:
             return Response({'success': False, 'message': 'Your branch not found.'}, status=404)
 
         items_qs = Items.objects.filter(
@@ -278,7 +293,6 @@ class MyBranchItemsView(APIView):
                 except (ValueError, TypeError):
                     gst_rate = 0.0
 
-                # ✅ Calculate branch_price
                 branch_price = v.branchPrice or 0
 
                 variants.append({
@@ -290,7 +304,7 @@ class MyBranchItemsView(APIView):
                     'barcode':        v.barcode or "",
                     'current_stock':  (v.current_stock or 0) if (v.current_stock or 0) > 0 else (v.opStock or 0),
                     'purchase_price': v.purchasePrice or 0,
-                    'branch_price':   branch_price,  # ✅ ADD THIS - IMPORTANT!
+                    'branch_price':   branch_price,
                     'sales_price':    v.salesPrice or 0,
                     'opStock':        v.opStock or 0,
                     'hsnCode':        item.hsnCode or "",
@@ -322,12 +336,13 @@ class MyBranchItemsView(APIView):
         })
 
 
-# ════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
 # BRANCH ITEMS WITH VARIANTS (for destination branch info)
-# ════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
 class BranchItemsWithVariantsView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsSuperAdminRole]
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]
+    page_key = "/stockTransfer"
 
     def get(self, request, branch_id):
         try:
@@ -403,60 +418,26 @@ class BranchItemsWithVariantsView(APIView):
         })
 
 
-# ════════════════════════════════════════════════════════════
-# BRANCH ROLE PERMISSION
-# ════════════════════════════════════════════════════════════
-class IsBranchRole(IsAuthenticated):
-    def has_permission(self, request, view):
-        if not super().has_permission(request, view):
-            return False
-        
-        user_role = request.user.role
-        
-        # Superadmin ko allow
-        if user_role == 'superadmin':
-            return True
-        
-        # Sabhi branch-related roles allow karo
-        allowed_roles = [
-            'branch', 
-            'vendor', 
-            'branch_both',      # ✅ ADD THIS
-            'branch_customer',   # ✅ ADD THIS
-            'branch_agent',      # ✅ ADD THIS
-            'branch_single'      # ✅ ADD THIS
-        ]
-        
-        # Agar role 'branch' se start hota hai bhi allow karo
-        if user_role in allowed_roles or user_role.startswith('branch'):
-            return True
-        
-        return False
-
-
-# ════════════════════════════════════════════════════════════
-# PENDING STOCK TRANSFERS (Branch ke liye)
-# ════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
+# PENDING STOCK TRANSFERS (Branch ke liye — Stock Verification page)
+# ─────────────────────────────────────────────────────────────────────────────
 class PendingStockTransferView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsBranchRole]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/stock-verification"
 
     def get(self, request):
-        try:
-            branch = Branch.objects.get(user=request.user)
-        except Branch.DoesNotExist:
+        branch = request.user.get_effective_branch()
+        if not branch:
             return Response({'success': False, 'message': 'Branch not found'}, status=404)
 
-        #  Get transfer_type filter from query params
         transfer_type_filter = request.GET.get('transfer_type', '')
         
-        #  Filter transfers based on type
         transfers = StockTransfer.objects.filter(
             to_branch=branch,
-            status__in=['completed', 'pending'],  # ✅ dono status allow karo
+            status__in=['completed', 'pending'],
         ).distinct().prefetch_related('items')
         
-        # Apply transfer_type filter if specified
         if transfer_type_filter and transfer_type_filter != 'all':
             if transfer_type_filter == 'manual':
                 transfers = transfers.filter(transfer_type='manual')
@@ -488,19 +469,18 @@ class PendingStockTransferView(APIView):
         paginated = paginator.paginate_queryset(data, request)
         return paginator.get_paginated_response({'success': True, 'data': paginated}) 
 
-# ════════════════════════════════════════════════════════════
-# TRANSFER ITEM DETAIL (Branch ke liye)
-# ════════════════════════════════════════════════════════════
-# pos/views/stock_transfer_views.py - Complete fixed TransferItemDetailView
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TRANSFER ITEM DETAIL (Branch ke liye)
+# ─────────────────────────────────────────────────────────────────────────────
 class TransferItemDetailView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsBranchRole]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/stock-verification"
 
     def get(self, request, transfer_id):
-        try:
-            branch = Branch.objects.get(user=request.user)
-        except Branch.DoesNotExist:
+        branch = request.user.get_effective_branch()
+        if not branch:
             return Response({'success': False, 'message': 'Branch not found'}, status=404)
 
         try:
@@ -517,7 +497,6 @@ class TransferItemDetailView(APIView):
             tax_slab = getattr(from_item_obj, 'taxSlab', "0") if from_item_obj else "0"
             hsn_code = getattr(from_item_obj, 'hsnCode', "") if from_item_obj else ""
             
-            # Get all price and variant details
             purchase_price = from_variant_obj.purchasePrice if from_variant_obj else 0
             branch_price = from_variant_obj.branchPrice if from_variant_obj else 0
             sales_price = from_variant_obj.salesPrice if from_variant_obj else 0
@@ -544,7 +523,6 @@ class TransferItemDetailView(APIView):
                 'branch_price': float(branch_price),
                 'sales_price': float(sales_price),
                 'mrp': float(mrp),
-                # ✅ GST breakup — verify page par summary dikhane ke liye
                 'tax_percent': item.tax_percent or "0",
                 'basic_amount': float(item.basic_amount or 0),
                 'tax_amount': float(item.tax_amount or 0),
@@ -580,23 +558,19 @@ class TransferItemDetailView(APIView):
         })
 
 
-# ════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
 # VERIFY SINGLE ITEM
-# ════════════════════════════════════════════════════════════
-
-# pos/views/stock_transfer_views.py - Complete fixed VerifyStockTransferItemView
-
+# ─────────────────────────────────────────────────────────────────────────────
 class VerifyStockTransferItemView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsBranchRole]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/stock-verification"
 
     def post(self, request, transfer_id, item_id):
-        try:
-            branch = Branch.objects.get(user=request.user)
-        except Branch.DoesNotExist:
+        branch = request.user.get_effective_branch()
+        if not branch:
             return Response({'success': False, 'message': 'Branch not found'}, status=404)
         
-                # ✅ NEW — Sundry Creditor(Main) account mandatory before any verification
         if not Account.objects.filter(branch=branch, group='Sundry Creditor(Main)').exists():
             return Response({
                 'success': False,
@@ -628,7 +602,6 @@ class VerifyStockTransferItemView(APIView):
             dest_variant, _created = get_or_create_dest_variant(from_variant, branch, sync_fields=True)
             dest_item = dest_variant.item
             
-            # ✅ STEP 2: Update website display on item if requested
             if website_display:
                 Items.objects.filter(id=dest_item.id).update(
                     website_display=True,
@@ -636,7 +609,6 @@ class VerifyStockTransferItemView(APIView):
                 )
                 dest_item.refresh_from_db()
             
-            # ✅ STEP 3: Check source stock - WITH opStock FALLBACK
             available_stock = from_variant.current_stock or 0
             if available_stock <= 0:
                 available_stock = from_variant.opStock or 0
@@ -644,10 +616,9 @@ class VerifyStockTransferItemView(APIView):
             if available_stock < item.quantity:
                 return Response({
                     'success': False,
-                    'message': f'Insufficient stock. Available: {available_stock} (Current: {from_variant.current_stock or 0}, Opening: {from_variant.opStock or 0}), Required: {item.quantity}'
+                    'message': f'Insufficient stock. Available: {available_stock}, Required: {item.quantity}'
                 }, status=400)
             
-            # ✅ STEP 4: Deduct from source - First from current_stock, then from opStock
             if from_variant.current_stock >= item.quantity:
                 from_variant.current_stock -= item.quantity
             else:
@@ -656,30 +627,23 @@ class VerifyStockTransferItemView(APIView):
                 from_variant.opStock = (from_variant.opStock or 0) - remaining
             from_variant.save()
             
-            # ✅ STEP 5: Add to destination
             old_stock = dest_variant.current_stock or 0
             dest_variant.current_stock = old_stock + item.quantity
             dest_variant.purchasePrice = from_variant.branchPrice
             dest_variant.save(update_fields=['current_stock', 'purchasePrice'])
             
-            # ✅ STEP 6: Mark as verified
-            # ✅ FIX: to_variant ab yahan save ho raha hai — pehle ye field
-            # kabhi save nahi hoti thi, isliye StockReturn create karte
-            # waqt purane records me to_variant NULL milta tha aur
-            # IntegrityError (branch_variant_id cannot be null) aata tha.
             item.is_stock_updated = True
             item.website_display_on_verify = website_display
             item.to_variant = dest_variant
             item.save(update_fields=['is_stock_updated', 'website_display_on_verify', 'to_variant'])
             
-            # ✅ STEP 7: If all items verified, mark transfer as completed
             if not transfer.items.filter(is_stock_updated=False).exists():
                 transfer.status = 'completed'
                 transfer.save(update_fields=['status'])
 
         return Response({
             'success': True,
-            'message': f'Verified: {item.quantity} x {item.from_item_name}. Stock deducted from {"current stock" if from_variant.current_stock >= item.quantity else "opening stock"}. Website display: {"Enabled (pending approval)" if website_display else "No"}',
+            'message': f'Verified: {item.quantity} x {item.from_item_name}. Stock deducted.',
             'data': {
                 'website_display_updated': website_display,
                 'stock_added': item.quantity,
@@ -693,7 +657,6 @@ class VerifyStockTransferItemView(APIView):
         })
 
     def _create_full_item(self, source_item, branch):
-        """Create complete item with all variants from source"""
         dest_item = Items.objects.create(
             entry_type=source_item.entry_type,
             itemName=source_item.itemName,
@@ -736,7 +699,7 @@ class VerifyStockTransferItemView(APIView):
             
             ItemVariants.objects.create(
                 item=dest_item,
-                purchasePrice=branch_price,  # ✅ PURCHASE PRICE = BRANCH PRICE
+                purchasePrice=branch_price,
                 salesPrice=variant.salesPrice,
                 mrp=variant.mrp,
                 barcode=variant.barcode,
@@ -747,24 +710,23 @@ class VerifyStockTransferItemView(APIView):
                 srno=variant.srno,
                 warrantydate=variant.warrantydate,
                 variant_image=variant.variant_image,
-                branchPrice=branch_price,  # ✅ BRANCH PRICE bhi set karo
+                branchPrice=branch_price,
             )
 
         return dest_item
 
-# ════════════════════════════════════════════════════════════
-# VERIFY ALL ITEMS
-# ════════════════════════════════════════════════════════════
-# pos/views/stock_transfer_views.py - Complete fixed VerifyAllStockTransferItemsView
 
+# ─────────────────────────────────────────────────────────────────────────────
+# VERIFY ALL ITEMS
+# ─────────────────────────────────────────────────────────────────────────────
 class VerifyAllStockTransferItemsView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsBranchRole]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/stock-verification"
 
     def post(self, request, transfer_id):
-        try:
-            branch = Branch.objects.get(user=request.user)
-        except Branch.DoesNotExist:
+        branch = request.user.get_effective_branch()
+        if not branch:
             return Response({'success': False, 'message': 'Branch not found'}, status=404)
 
         if not Account.objects.filter(branch=branch, group='Sundry Creditor(Main)').exists():
@@ -796,7 +758,6 @@ class VerifyAllStockTransferItemsView(APIView):
             for item in pending_items:
                 from_variant = item.from_variant
 
-                # Check available stock with opStock fallback
                 available_stock = from_variant.current_stock or 0
                 if available_stock <= 0:
                     available_stock = from_variant.opStock or 0
@@ -805,7 +766,6 @@ class VerifyAllStockTransferItemsView(APIView):
                     errors.append(f"{item.from_item_name}: Insufficient stock (Available: {available_stock}, Required: {item.quantity})")
                     continue
 
-                # ✅ Global mapping se destination variant lao — barcode-based lookup hata diya
                 dest_variant, _created = get_or_create_dest_variant(from_variant, branch, sync_fields=True)
 
                 if website_display:
@@ -814,7 +774,6 @@ class VerifyAllStockTransferItemsView(APIView):
                         website_status='pending'
                     )
 
-                # ✅ Deduct from source - First from current_stock, then from opStock
                 if from_variant.current_stock >= item.quantity:
                     from_variant.current_stock -= item.quantity
                 else:
@@ -846,24 +805,25 @@ class VerifyAllStockTransferItemsView(APIView):
             'success': True,
             'message': f'{verified_count} item(s) verified successfully. Website display: {"Enabled" if website_display else "Not changed"}'
         })
-        
-# ════════════════════════════════════════════════════════════
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MY BRANCH VARIANTS (Branch ke liye)
-# ════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
 class MyBranchVariantsView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsBranchRole]
- 
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/stock-verification"
+
     def get(self, request):
-        try:
-            branch = Branch.objects.get(user=request.user)
-        except Branch.DoesNotExist:
+        branch = request.user.get_effective_branch()
+        if not branch:
             return Response({'success': False, 'message': 'Branch not found'}, status=404)
- 
+
         variants = ItemVariants.objects.filter(
             item__branch=branch
         ).select_related('item').order_by('item__itemName')
- 
+
         data = []
         for v in variants:
             parts = [p for p in [v.color, v.size] if p]
@@ -881,14 +841,10 @@ class MyBranchVariantsView(APIView):
                 'purchase_price': v.purchasePrice or 0,
                 'sales_price':    v.salesPrice or 0,
             })
- 
+
         return Response({
             'success':       True,
             'branch_name':   branch.branch_name,
             'variant_count': len(data),
             'data':          data,
         })
-        
-        
-        
-           

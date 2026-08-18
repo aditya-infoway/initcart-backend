@@ -1,5 +1,6 @@
 # pos/serializers/salesentry_serializers.py
 from rest_framework import serializers
+from pos.serializers.mixins_serializers import CreatedByReadMixin
 
 from pos.models.items import items,itemvariants
 from pos.models.account import Account
@@ -63,7 +64,7 @@ class SalesItemSerializer(serializers.ModelSerializer):
         if first_variant:
             return float(first_variant.purchasePrice or 0)
         return 0.0    
-class SalesMasterSerializer(serializers.ModelSerializer):
+class SalesMasterSerializer(CreatedByReadMixin, serializers.ModelSerializer):
     items = SalesItemSerializer(many=True)
     customer_name = serializers.SerializerMethodField(read_only=True)
     bank_account = serializers.PrimaryKeyRelatedField(
@@ -109,6 +110,8 @@ class SalesMasterSerializer(serializers.ModelSerializer):
             "frightcharge",
             "otherexpnse",
             "roundamount",
+            "created_by",        
+            "created_by_name", 
             ]
     def get_customer_name(self, obj):
         if obj.customer:

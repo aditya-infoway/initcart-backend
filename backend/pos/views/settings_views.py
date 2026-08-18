@@ -1,4 +1,5 @@
-#pos/views/settings_views.py
+# pos/views/settings_views.py
+
 from pos.models.purchasereturn import PurchaseReturnMaster
 from pos.models.salesreturn import SalesReturnMaster
 from rest_framework.views import APIView
@@ -7,7 +8,8 @@ from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from django.db import transaction
 from django.core.exceptions import ValidationError
-from datetime import datetime  # correct
+from datetime import datetime
+
 from pos.models.sales_bill_display_setting import SalesBillDisplaySetting
 from pos.serializers.sales_bill_display_serializers import SalesBillDisplaySettingSerializer
 
@@ -21,6 +23,10 @@ from pos.models.salesentry import SalesMaster
 from pos.models.contra import Contra
 from pos.models.journalentries import JournalMaster
 from pos.serializers.settings_serializers import SettingSerializers
+
+# ✅ ADD: Permission imports
+from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
+
 
 def ensure_branch_setting(branch):
     """Ensure that a branch has settings, create if not exists"""
@@ -40,17 +46,29 @@ def ensure_branch_setting(branch):
             contra="CT",
         )
     return obj
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SETTING VIEWS (with permission check)
+# ─────────────────────────────────────────────────────────────────────────────
+
 class SettingUpdateView(APIView):
-    permission_classes = [IsAuthenticated]
+    """Update branch settings"""
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/Setting"  # ✅ ADD: Frontend route
 
     def get_branch(self, user):
-        return getattr(user, "branch", None)
+        # ✅ CHANGE: getattr(user, "branch", None) → get_effective_branch()
+        return user.get_effective_branch()
 
     def get_user_setting(self, user):
-        return ensure_branch_setting(user.branch)
+        branch = self.get_branch(user)
+        if not branch:
+            return None
+        return ensure_branch_setting(branch)
 
-
-    # GET: fetch current setting
     def get(self, request):
         user_setting = self.get_user_setting(request.user)
         if not user_setting:
@@ -61,14 +79,14 @@ class SettingUpdateView(APIView):
         serializer = SettingSerializers(user_setting)
         return Response(serializer.data)
 
-    # PATCH: update only entered fields
     def patch(self, request):
-        branch = self.get_branch(request.user)
+        # ✅ CHANGE: get_branch() → get_effective_branch()
+        branch = request.user.get_effective_branch()
         if not branch:
-            return Response(
-                {"detail": "User does not have a branch assigned."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
 
         user_setting = self.get_user_setting(request.user)
         if not user_setting:
@@ -80,7 +98,7 @@ class SettingUpdateView(APIView):
         serializer = SettingSerializers(
             user_setting,
             data=request.data,
-            partial=True,  # only update provided fields
+            partial=True,
             context={"branch": branch},
         )
 
@@ -89,22 +107,40 @@ class SettingUpdateView(APIView):
             return Response(serializer.data, status=status.HTTP_200_OK)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
+
+
 class TaxApplyUpdateView(APIView):
-    permission_classes = [IsAuthenticated]
+    """Update GST toggle for purchase"""
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/Setting"  # ✅ ADD: Frontend route
     
     def get(self, request):
-        obj = setting.objects.filter(branch=request.user.branch).first()
-
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
+        obj = setting.objects.filter(branch=branch).first()
         return Response({
             "gst_toggle": int(obj.gst_toggle) if obj else 0
         })
 
     def patch(self, request):
-        # get or create setting for branch
-        obj = ensure_branch_setting(request.user.branch)
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
+        obj = ensure_branch_setting(branch)
 
-        # 🔥 direct store (1 / 0 / true / false)
         gst_toggle = request.data.get("gst_toggle")
         
         if isinstance(gst_toggle, str):
@@ -117,35 +153,65 @@ class TaxApplyUpdateView(APIView):
             "gst_toggle": obj.gst_toggle
         })
 
+
 class SalesTaxApplyUpdateView(APIView):
-    permission_classes = [IsAuthenticated]
+    """Update GST toggle for sales"""
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/Setting"  # ✅ ADD: Frontend route
 
     def get(self, request):
-        obj = setting.objects.filter(branch=request.user.branch).first()
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
+        obj = setting.objects.filter(branch=branch).first()
         return Response({
             "sales_gst_toggle": int(obj.sales_gst_toggle) if obj else 1
         })
 
     def patch(self, request):
-        obj = ensure_branch_setting(request.user.branch)
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
+        obj = ensure_branch_setting(branch)
         sales_gst_toggle = request.data.get("sales_gst_toggle")
+        
         if isinstance(sales_gst_toggle, str):
             sales_gst_toggle = sales_gst_toggle.lower() in ["true", "1", "yes", "on"]
         if sales_gst_toggle is not None:
             obj.sales_gst_toggle = bool(sales_gst_toggle)
             obj.save()
+            
         return Response({"sales_gst_toggle": obj.sales_gst_toggle})
-    
+
+
 class SettingCreateView(APIView):
-    permission_classes = [IsAuthenticated]
+    """Create branch settings"""
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/Setting"  # ✅ ADD: Frontend route
 
     def get_branch(self, user):
-        """Return branch assigned to the user"""
-        return getattr(user, "branch", None)
+        # ✅ CHANGE: getattr(user, "branch", None) → get_effective_branch()
+        return user.get_effective_branch()
 
     def get_user_setting(self, user):
-        return ensure_branch_setting(user.branch)
-
+        branch = self.get_branch(user)
+        if not branch:
+            return None
+        return ensure_branch_setting(branch)
 
     def get(self, request):
         user_setting = self.get_user_setting(request.user)
@@ -159,13 +225,13 @@ class SettingCreateView(APIView):
         return Response(serializer.data)
 
     def post(self, request):
-        branch = self.get_branch(request.user)
-
+        # ✅ CHANGE: get_branch() → get_effective_branch()
+        branch = request.user.get_effective_branch()
         if not branch:
-            return Response(
-                {"detail": "User does not have a branch assigned."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
 
         serializer = SettingSerializers(
             data=request.data,
@@ -178,12 +244,20 @@ class SettingCreateView(APIView):
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VOUCHER GENERATOR — Helper API (No page_key, only IsAuthenticated)
+# ─────────────────────────────────────────────────────────────────────────────
+
 class GenerateVoucherView(APIView):
+    """Generate voucher number for any module"""
+    
+    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
     permission_classes = [IsAuthenticated]
 
     @transaction.atomic
     def get(self, request):
-        voucher_type = request.GET.get("type")  # BP, CP, etc.
+        voucher_type = request.GET.get("type")
         
         if not voucher_type:
             return Response(
@@ -191,16 +265,24 @@ class GenerateVoucherView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
         # Map voucher types to their models and field names
         voucher_mapping = {
-            'BP': (BankPayment, 'BP', 'voucher_no'),  # (model, prefix_field, voucher_field)
+            'BP': (BankPayment, 'BP', 'voucher_no'),
             'CP': (CashPayment, 'CP', 'voucher_no'),
             'BR': (BankReceipt, 'BR', 'voucher_no'),
             'CR': (CashReceipt, 'CR', 'voucher_no'),
-            'PI': (PurchaseMaster, 'PI', 'billNo'),  # Purchase uses billNo
-            'SI': (SalesMaster, 'SI', 'bill_no'),    # Sales uses bill_no
-            'PR': (PurchaseReturnMaster, 'PR', 'return_no'),  # Purchase Return
-            'SR': (SalesReturnMaster, 'SR', 'return_no'),     # Sales Return
+            'PI': (PurchaseMaster, 'PI', 'billNo'),
+            'SI': (SalesMaster, 'SI', 'bill_no'),
+            'PR': (PurchaseReturnMaster, 'PR', 'return_no'),
+            'SR': (SalesReturnMaster, 'SR', 'return_no'),
             'CT': (Contra, 'contra', 'voucher_no'),
             'JE': (JournalMaster, 'JE', 'voucher_no'),
         }
@@ -214,7 +296,7 @@ class GenerateVoucherView(APIView):
         model_class, prefix_field, voucher_field = voucher_mapping[voucher_type]
         
         # Fetch prefix from settings
-        settings_obj = setting.objects.filter(branch=request.user.branch).first()
+        settings_obj = setting.objects.filter(branch=branch).first()
         if not settings_obj:
             return Response(
                 {"error": "Settings not found for this branch."},
@@ -240,7 +322,7 @@ class GenerateVoucherView(APIView):
         
         # Build the filter based on the model's voucher field name
         filter_kwargs = {
-            'branch': request.user.branch,
+            'branch': branch,
             f'{voucher_field}__startswith': pattern
         }
         
@@ -272,36 +354,66 @@ class GenerateVoucherView(APIView):
             "next_number": last_no + 1,
             "voucher_type": voucher_type
         })
-        
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# STOCK TRANSFER GST TOGGLE
+# ─────────────────────────────────────────────────────────────────────────────
 
 class StockTransferTaxApplyUpdateView(APIView):
-    """Stock Transfer / Order Tracking GST toggle — Purchase/Sales toggle jaisa hi."""
-    permission_classes = [IsAuthenticated]
+    """Stock Transfer / Order Tracking GST toggle"""
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/Setting"  # ✅ ADD: Frontend route
 
     def get(self, request):
-        obj = setting.objects.filter(branch=request.user.branch).first()
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
+        obj = setting.objects.filter(branch=branch).first()
         return Response({
             "stock_transfer_gst_toggle": int(obj.stock_transfer_gst_toggle) if obj else 0
         })
 
     def patch(self, request):
-        obj = ensure_branch_setting(request.user.branch)
+        # ✅ CHANGE: request.user.branch → get_effective_branch()
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
+        obj = ensure_branch_setting(branch)
         value = request.data.get("stock_transfer_gst_toggle")
+        
         if isinstance(value, str):
             value = value.lower() in ["true", "1", "yes", "on"]
         if value is not None:
             obj.stock_transfer_gst_toggle = bool(value)
             obj.save()
-        return Response({"stock_transfer_gst_toggle": obj.stock_transfer_gst_toggle})        
-        
+            
+        return Response({"stock_transfer_gst_toggle": obj.stock_transfer_gst_toggle})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SALES BILL DISPLAY SETTING
+# ─────────────────────────────────────────────────────────────────────────────
 
 class SalesBillDisplaySettingView(APIView):
     """
-    GET  -> sabhi authenticated users dekh sakte (read-only info ke liye, harmless)
+    GET  -> sabhi authenticated users dekh sakte (read-only)
     PATCH -> sirf superadmin update kar sakta hai
     """
+    
+    # ✅ KEEP: IsAuthenticated (no page_key needed for this global setting)
+    # PATCH permission manually checked below
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -321,5 +433,4 @@ class SalesBillDisplaySettingView(APIView):
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data, status=status.HTTP_200_OK)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)        
-        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

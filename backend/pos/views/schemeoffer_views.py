@@ -1,4 +1,5 @@
 # pos/views/schemeoffer_views.py
+
 from collections import defaultdict
 from decimal import Decimal
 
@@ -15,34 +16,65 @@ from pos.models.salesentry import SalesMaster
 from pos.models.schemeoffer import SchemeOffer
 from pos.serializers.schemeoffer_serializers import SchemeOfferSerializer
 
+# ✅ Permission imports (already available)
+from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee, IsSuperAdminOrPagePermittedEmployee
 
-def _is_main_branch_user(user):
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helper functions
+# ─────────────────────────────────────────────────────────────────────────────
+
+def is_main_branch_accessible(user):
     """
-    Main branch = the superadmin branch. Adjust this if your project
-    marks the main branch with a dedicated flag (e.g. Branch.is_main)
-    instead of a user role.
+    Check if user belongs to main/superadmin branch.
+    - Superadmin: Always True
+    - Employee: True if his branch is superadmin branch
+    - Others: False
     """
-    return getattr(user, "role", "") == "superadmin"
+    role = getattr(user, "role", None)
+    
+    # Superadmin hamesha allow
+    if role == "superadmin":
+        return True
+    
+    # Employee check - uski branch superadmin branch hai?
+    if role == "employee":
+        branch = user.get_effective_branch()
+        if branch and branch.user and branch.user.role == 'superadmin':
+            return True
+    
+    return False
 
 
 def _get_user_branch(user):
-    try:
-        return Branch.objects.get(user=user)
-    except Branch.DoesNotExist:
-        return None
+    # ✅ CHANGE: Branch.objects.get(user=user) → get_effective_branch()
+    return user.get_effective_branch()
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN CRUD VIEWS (with permission check)
+# ─────────────────────────────────────────────────────────────────────────────
 
 class SchemeOfferListCreateAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    """List schemes (branch user sees applicable, superadmin sees all) and create new scheme"""
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/SchemeOffer"  # ✅ ADD: Frontend route
 
     def get(self, request):
         user = request.user
-        if _is_main_branch_user(user):
+        
+        if is_main_branch_accessible(user):
             schemes = SchemeOffer.objects.all()
         else:
-            branch = _get_user_branch(user)
+            # ✅ CHANGE: _get_user_branch() → get_effective_branch()
+            branch = user.get_effective_branch()
             if not branch:
-                return Response({"error": "Branch not found"}, status=400)
+                return Response({
+                    "success": False,
+                    "error": "No branch linked to this user"
+                }, status=400)
             schemes = SchemeOffer.objects.filter(
                 Q(availability="all") | Q(branches=branch)
             ).distinct()
@@ -51,21 +83,29 @@ class SchemeOfferListCreateAPIView(APIView):
 
     def post(self, request):
         user = request.user
-        if not _is_main_branch_user(user):
+        
+        # ✅ FIX: Superadmin OR Employee (with superadmin branch) can create
+        if not is_main_branch_accessible(user):
             return Response(
-                {"error": "Only the main branch (superadmin) can create schemes"},
+                {"error": "Only main branch users (superadmin/employee) can create schemes"},
                 status=status.HTTP_403_FORBIDDEN,
             )
-
-        serializer = SchemeOfferSerializer(data=request.data)
+        serializer = SchemeOfferSerializer(
+            data=request.data,
+            context={"request": request}  
+        )
         serializer.is_valid(raise_exception=True)
-        branch = _get_user_branch(user)
+        branch = user.get_effective_branch()
         serializer.save(created_by_branch=branch)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 class SchemeOfferDetailAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    """Get, update, or delete a specific scheme offer"""
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/SchemeOffer"  # ✅ ADD: Frontend route
 
     def get_object(self, pk):
         return get_object_or_404(SchemeOffer, pk=pk)
@@ -73,17 +113,24 @@ class SchemeOfferDetailAPIView(APIView):
     def get(self, request, pk):
         scheme = self.get_object(pk)
         user = request.user
-        if not _is_main_branch_user(user):
-            branch = _get_user_branch(user)
+        
+        if not is_main_branch_accessible(user):
+            branch = user.get_effective_branch()
+            if not branch:
+                return Response({
+                    "success": False,
+                    "error": "No branch linked to this user"
+                }, status=400)
             applicable = scheme.get_applicable_branches()
-            if not branch or not applicable.filter(id=branch.id).exists():
+            if not applicable.filter(id=branch.id).exists():
                 return Response({"error": "Not permitted"}, status=403)
         return Response(SchemeOfferSerializer(scheme).data)
 
     def put(self, request, pk):
-        if not _is_main_branch_user(request.user):
+        # ✅ FIX: Superadmin OR Employee (with superadmin branch) can edit
+        if not is_main_branch_accessible(request.user):
             return Response(
-                {"error": "Only the main branch (superadmin) can edit schemes"},
+                {"error": "Only main branch users (superadmin/employee) can edit schemes"},
                 status=403,
             )
         scheme = self.get_object(pk)
@@ -93,9 +140,10 @@ class SchemeOfferDetailAPIView(APIView):
         return Response(serializer.data)
 
     def delete(self, request, pk):
-        if not _is_main_branch_user(request.user):
+        # ✅ FIX: Superadmin OR Employee (with superadmin branch) can delete
+        if not is_main_branch_accessible(request.user):
             return Response(
-                {"error": "Only the main branch (superadmin) can delete schemes"},
+                {"error": "Only main branch users (superadmin/employee) can delete schemes"},
                 status=403,
             )
         scheme = self.get_object(pk)
@@ -103,29 +151,22 @@ class SchemeOfferDetailAPIView(APIView):
         return Response({"message": "Scheme deleted"}, status=204)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# SCHEME REPORT VIEW (with permission check)
+# ─────────────────────────────────────────────────────────────────────────────
+
 class SchemeOfferReportAPIView(APIView):
     """
-    Month-wise -> branch-wise -> customer report for one scheme.
+    Month-wise → branch-wise → customer report for one scheme.
 
     ALL-MONTHS-CONSISTENCY rule: a customer qualifies for a scheme only if
     their monthly sales total clears that scheme's amount threshold in
     EVERY single month of the scheme's date range — not just some months.
-    A month with no sales at all counts as ₹0 and fails the threshold.
-
-    Among every active, overlapping scheme (same branch, same date range)
-    that a customer fully clears this way, they are placed under the
-    HIGHEST one only — never more than one scheme, and never a scheme
-    they only partially qualify for.
-
-    Example: Scheme A = ₹1000/month, Scheme B = ₹500/month, both Jul-Sep.
-    Customer sells ₹1000 in July, ₹700 in August, ₹1000 in September.
-    August breaks the ₹1000 streak, so the customer does NOT qualify for
-    Scheme A at all (even though July & Sept individually hit ₹1000) —
-    but they clear ₹500 in all three months, so they qualify for Scheme B
-    and show under Scheme B in July, August, AND September.
     """
-
-    permission_classes = [IsAuthenticated]
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/SchemeOffer"  # ✅ ADD: Frontend route
 
     def get(self, request, pk):
         scheme = get_object_or_404(SchemeOffer, pk=pk)
@@ -133,10 +174,14 @@ class SchemeOfferReportAPIView(APIView):
 
         applicable_branches = scheme.get_applicable_branches()
 
-        if not _is_main_branch_user(user):
-            user_branch = _get_user_branch(user)
+        if not is_main_branch_accessible(user):
+            # ✅ CHANGE: _get_user_branch() → get_effective_branch()
+            user_branch = user.get_effective_branch()
             if not user_branch:
-                return Response({"error": "Branch not found"}, status=400)
+                return Response({
+                    "success": False,
+                    "error": "No branch linked to this user"
+                }, status=400)
             if not applicable_branches.filter(id=user_branch.id).exists():
                 return Response(
                     {"error": "This scheme is not applicable to your branch"},
@@ -180,7 +225,6 @@ class SchemeOfferReportAPIView(APIView):
                 if key in period_keys:
                     monthly_totals[cid][key] += row["grand_total"] or Decimal("0")
 
-            # NEW: bulk fetch phone numbers in ONE query for all customers in this branch
             customer_ids = list(monthly_totals.keys())
             phone_lookup = dict(
                 Account.objects.filter(id__in=customer_ids).values_list("id", "mobile")
@@ -245,17 +289,22 @@ class SchemeOfferReportAPIView(APIView):
 
 class BranchSchemeListAPIView(APIView):
     """Schemes applicable to the logged-in branch user, for their own view."""
-
-    permission_classes = [IsAuthenticated]
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/SchemeOffer"  # ✅ ADD: Frontend route
 
     def get(self, request):
-        branch = _get_user_branch(request.user)
+        # ✅ CHANGE: _get_user_branch() → get_effective_branch()
+        branch = request.user.get_effective_branch()
         if not branch:
-            return Response({"error": "Branch not found"}, status=400)
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=400)
 
         schemes = SchemeOffer.objects.filter(
             Q(availability="all") | Q(branches=branch)
         ).distinct()
 
         return Response(SchemeOfferSerializer(schemes, many=True).data)
-

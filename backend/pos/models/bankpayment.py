@@ -5,9 +5,10 @@ from django.db import models, transaction
 from django.core.exceptions import ValidationError
 from pos.models.branch import Branch
 from pos.models.account import Account
+from pos.models.mixins import CreatedByMixin
 
 
-class BankPayment(models.Model):
+class BankPayment(CreatedByMixin, models.Model):
     date = models.DateField()
     voucher_no = models.CharField(max_length=50)
 

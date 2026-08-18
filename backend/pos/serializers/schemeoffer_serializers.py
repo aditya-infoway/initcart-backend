@@ -3,9 +3,10 @@ from rest_framework import serializers
 
 from pos.models.branch import Branch
 from pos.models.schemeoffer import SchemeOffer
+from pos.serializers.mixins_serializers import CreatedByReadMixin       
 
 
-class SchemeOfferSerializer(serializers.ModelSerializer):
+class SchemeOfferSerializer(CreatedByReadMixin, serializers.ModelSerializer):
     branches = serializers.PrimaryKeyRelatedField(
         queryset=Branch.objects.all(), many=True, required=False
     )
@@ -30,6 +31,8 @@ class SchemeOfferSerializer(serializers.ModelSerializer):
             "created_by_branch",
             "created_by_branch_name",
             "created_at",
+            "created_by", 
+            "created_by_name",
         ]
         read_only_fields = ["created_by_branch", "created_at"]
 
@@ -64,6 +67,10 @@ class SchemeOfferSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         branches = validated_data.pop("branches", [])
+        request = self.context.get("request")
+        if request and request.user and request.user.is_authenticated:
+            validated_data["created_by"] = request.user
+        
         scheme = SchemeOffer.objects.create(**validated_data)
         if scheme.availability == "selected":
             scheme.branches.set(branches)

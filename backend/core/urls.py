@@ -84,6 +84,7 @@ urlpatterns = [
     path('api/pos/', include('pos.urls.schemeoffer_urls')),
     path('api/pos/', include("pos.urls.b2b_stock_return_urls")),
     path('api/pos/', include("pos.urls.b2b_sales_urls")),
+    path('api/pos/', include("pos.urls.employee_urls")),
     # Super Admin Order Management  
     path('api/ecommerce/', include('ecommerce.urls.superadmin_order_urls')),
     

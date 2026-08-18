@@ -3,6 +3,7 @@ from rest_framework import serializers
 from pos.models.items import items, itemvariants
 from pos.models.account import Account
 from pos.models.purchaseentry import PurchaseMaster, PurchaseItem
+from pos.serializers.mixins_serializers import CreatedByReadMixin
 
 
 # -----------------------
@@ -67,7 +68,7 @@ class PurchaseItemSerializer(serializers.ModelSerializer):
 # -----------------------
 # Purchase Master Serializer (with nested items)
 # -----------------------
-class PurchaseSerializer(serializers.ModelSerializer):
+class PurchaseSerializer(CreatedByReadMixin, serializers.ModelSerializer):
     items = PurchaseItemSerializer(many=True)
     party_name = serializers.PrimaryKeyRelatedField(queryset=Account.objects.all(), source="partyName")
     party_name_name = serializers.SerializerMethodField(read_only=True)
@@ -111,6 +112,8 @@ class PurchaseSerializer(serializers.ModelSerializer):
             "frightcharge",
             "otherexpnse",
             "roundamount",
+            "created_by",
+            "created_by_name",
         ]
         read_only_fields = ["branch"]
     
@@ -123,17 +126,20 @@ class PurchaseSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         request = self.context.get("request")
 
-        # 👇 user ni branch
-        branch = request.user.branch  
-        
+        # ✅ Add created_by
+        if request and request.user and request.user.is_authenticated:
+            validated_data["created_by"] = request.user
+
+        #  user ni branch - FIX: Use get_effective_branch()
+        branch = request.user.get_effective_branch()  # ✅ CHANGE from request.user.branch
+        if not branch:
+            raise serializers.ValidationError({"branch": "No branch linked to this user"})
 
         items_data = validated_data.pop("items", [])
-        
 
         purchase = PurchaseMaster.objects.create(
-            branch=branch,   #  IMPORTANT
+            branch=branch,
             **validated_data
-            
         )
 
         total_basic = 0
@@ -233,10 +239,10 @@ class PurchaseItemTaxSerializer(serializers.Serializer):
         cgst = sgst = igst = tax = Decimal("0.00")
         if gst_toggle:
             tax_rate = Decimal(item.taxSlab or 0)
-            branch_state = self.context.get("branch_state", "")
-            party_state = self.context.get("party_state", "")
+            branch_state = (self.context.get("branch_state", "") or "").strip().lower()
+            party_state = (self.context.get("party_state", "") or "").strip().lower()
             if tax_rate > 0:
-                if branch_state == party_state:
+                if branch_state and party_state and branch_state == party_state:
                     cgst = sgst = taxable * tax_rate / 100 / 2
                 else:
                     igst = taxable * tax_rate / 100

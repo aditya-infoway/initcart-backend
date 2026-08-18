@@ -1,9 +1,10 @@
 # pos/models/group_unit.py
 from django.db import models
 from pos.models.branch import Branch
+from pos.models.mixins import CreatedByMixin  
 
 
-class ItemGroup(models.Model):
+class ItemGroup(CreatedByMixin, models.Model):
     """Group model that belongs to a specific branch"""
     name = models.CharField(max_length=100)
     branch = models.ForeignKey(Branch, on_delete=models.CASCADE, related_name='item_groups')

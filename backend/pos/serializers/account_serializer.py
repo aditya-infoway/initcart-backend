@@ -1,6 +1,7 @@
 # pos/serializers/account_serializer.py
 from rest_framework import serializers
 from pos.models.account import Account
+from pos.serializers.mixins_serializers import CreatedByReadMixin
 import re
 
 class AccountSerializer(serializers.ModelSerializer):
@@ -43,6 +44,11 @@ class AccountSerializer(serializers.ModelSerializer):
         return value
     
     def create(self, validated_data):
+        # set created_by                          # ADD these 4 lines
+        request = self.context.get("request")      # ADD
+        if request and request.user and request.user.is_authenticated:  # ADD
+            validated_data["created_by"] = request.user  # ADD
+        
         validated_data["current_balance"] = validated_data.get(
             "opening_balance", 0
         )
@@ -55,7 +61,7 @@ class SupplierSerializer(serializers.ModelSerializer):
         fields = ["id", "account_name", "group", "current_balance"]
 
 
-class AccountviewSerializer(serializers.ModelSerializer):
+class AccountviewSerializer(CreatedByReadMixin, serializers.ModelSerializer):
     branch_name = serializers.CharField(source="branch.name", read_only=True)
 
     class Meta:
@@ -79,6 +85,8 @@ class AccountviewSerializer(serializers.ModelSerializer):
             "pan_card",
             "current_balance",
             "current_drcr",
+            "created_by",
+            "created_by_name",
         ]
 
 

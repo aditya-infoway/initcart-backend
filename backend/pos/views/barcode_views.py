@@ -1,5 +1,3 @@
-# pos/views/barcode_views.py
-
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
@@ -11,6 +9,9 @@ from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 
 from pos.models.items import items, itemvariants
 from pos.utils.barcode_generator import generate_unique_barcode
+
+# ✅ ADD: Permission imports
+from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -27,14 +28,18 @@ class PendingBarcodesListView(APIView):
     - page_size: Items per page (default: 15, max: 100)
     - search: Search by item name, size, or color
     """
-    permission_classes = [IsAuthenticated]
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/PendingBarcodes"  # ✅ ADD: Frontend route
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def get(self, request):
-        branch = getattr(request.user, "branch", None)
+        # ✅ CHANGE: getattr(request.user, "branch", None) → get_effective_branch()
+        branch = request.user.get_effective_branch()
         if not branch:
             return Response(
-                {"success": False, "message": "No branch associated with this user"},
+                {"success": False, "message": "No branch linked to this user"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -111,14 +116,18 @@ class GenerateSingleBarcodeView(APIView):
     POST /api/pos/barcodes/generate/<variant_id>/
     Body (optional): { "barcode": "MANUAL123" }
     """
-    permission_classes = [IsAuthenticated]
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/PendingBarcodes"  # ✅ ADD: Frontend route
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def post(self, request, variant_id):
-        branch = getattr(request.user, "branch", None)
+        # ✅ CHANGE: getattr(request.user, "branch", None) → get_effective_branch()
+        branch = request.user.get_effective_branch()
         if not branch:
             return Response(
-                {"success": False, "message": "No branch associated"},
+                {"success": False, "message": "No branch linked to this user"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -180,14 +189,18 @@ class BulkGenerateBarcodeView(APIView):
     POST /api/pos/barcodes/bulk-generate/
     Body: { "variant_ids": [1, 2, 3] }
     """
-    permission_classes = [IsAuthenticated]
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/PendingBarcodes"  # ✅ ADD: Frontend route
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def post(self, request):
-        branch = getattr(request.user, "branch", None)
+        # ✅ CHANGE: getattr(request.user, "branch", None) → get_effective_branch()
+        branch = request.user.get_effective_branch()
         if not branch:
             return Response(
-                {"success": False, "message": "No branch associated"},
+                {"success": False, "message": "No branch linked to this user"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -199,7 +212,7 @@ class BulkGenerateBarcodeView(APIView):
             )
 
         results = []
-        errors  = []
+        errors = []
 
         for vid in variant_ids:
             try:
@@ -264,14 +277,18 @@ class UpdateVariantStockView(APIView):
     PUT /api/pos/barcodes/update-stock/<variant_id>/
     Body: { "stock": 10 }
     """
-    permission_classes = [IsAuthenticated]
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/PendingBarcodes"  # ✅ ADD: Frontend route
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def put(self, request, variant_id):
-        branch = getattr(request.user, "branch", None)
+        # ✅ CHANGE: getattr(request.user, "branch", None) → get_effective_branch()
+        branch = request.user.get_effective_branch()
         if not branch:
             return Response(
-                {"success": False, "message": "No branch associated"},
+                {"success": False, "message": "No branch linked to this user"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -328,6 +345,8 @@ class CheckBarcodeAvailabilityView(APIView):
     """
     GET /api/pos/barcodes/check/?barcode=XXXX&exclude_variant=<id>
     """
+    
+    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
     permission_classes = [IsAuthenticated]
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
@@ -351,31 +370,32 @@ class CheckBarcodeAvailabilityView(APIView):
             "barcode": barcode,
             "message": "Barcode already in use" if exists else "Barcode is available",
         })
-        
-        
+
+
+# ─────────────────────────────────────────────────────────────────
+# 6. LIST – variants with barcode (generated list)
+# ─────────────────────────────────────────────────────────────────
 class GeneratedBarcodesListView(APIView):
     """
     GET /api/pos/barcodes/generated/
     Returns all item-variants of the logged-in user's branch
     that already HAVE a barcode — with item_name included directly.
-    Fixes the 'Item #undefined' bug caused by two-call ID mismatch.
-    
-    Query params:
-    - page: Page number (default: 1)
-    - page_size: Items per page (default: 15, max: 100)
-    - search: Search by item name, barcode, size, or color
     """
-    permission_classes = [IsAuthenticated]
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/PendingBarcodes"  # ✅ ADD: Frontend route
     authentication_classes = [JWTAuthentication, SessionAuthentication]
- 
+
     def get(self, request):
-        branch = getattr(request.user, "branch", None)
+        # ✅ CHANGE: getattr(request.user, "branch", None) → get_effective_branch()
+        branch = request.user.get_effective_branch()
         if not branch:
             return Response(
-                {"success": False, "message": "No branch associated"},
+                {"success": False, "message": "No branch linked to this user"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
- 
+
         variants = (
             itemvariants.objects.filter(item__branch=branch)
             .exclude(barcode__isnull=True)
@@ -406,7 +426,7 @@ class GeneratedBarcodesListView(APIView):
             page_obj = paginator.page(1)
         except EmptyPage:
             page_obj = paginator.page(paginator.num_pages)
- 
+
         data = [
             {
                 "variant_id":    v.id,
@@ -426,7 +446,7 @@ class GeneratedBarcodesListView(APIView):
             }
             for v in page_obj
         ]
- 
+
         return Response(
             {
                 "success": True,
@@ -440,10 +460,11 @@ class GeneratedBarcodesListView(APIView):
             },
             status=status.HTTP_200_OK,
         )
-        
-        
-# pos/views/barcode_views.py - Add this new view
 
+
+# ─────────────────────────────────────────────────────────────────
+# 7. UPDATE EXISTING BARCODE (single)
+# ─────────────────────────────────────────────────────────────────
 class UpdateExistingBarcodeView(APIView):
     """
     PUT /api/pos/barcodes/update/<variant_id>/
@@ -452,24 +473,21 @@ class UpdateExistingBarcodeView(APIView):
     Permission Rules:
     - Superadmin: Can update ANY item (company or manual) in their branch
     - Normal Branch: Can ONLY update manual items (entry_type='manual')
-    - Only ADD/UPDATE operation - no deletion of existing barcode
-    
-    Returns:
-    - 200: Success with updated barcode
-    - 400: Validation errors
-    - 403: Permission denied
-    - 404: Variant not found
     """
-    permission_classes = [IsAuthenticated]
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/PendingBarcodes"  # ✅ ADD: Frontend route
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def put(self, request, variant_id):
         user = request.user
-        branch = getattr(user, "branch", None)
         
+        # ✅ CHANGE: getattr(request.user, "branch", None) → get_effective_branch()
+        branch = request.user.get_effective_branch()
         if not branch:
             return Response(
-                {"success": False, "message": "No branch associated with this user"},
+                {"success": False, "message": "No branch linked to this user"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -543,7 +561,6 @@ class UpdateExistingBarcodeView(APIView):
             )
 
         # ─── UPDATE BARCODE ──────────────────────────────────────
-        # Store old barcode for response (optional)
         old_barcode = variant.barcode
 
         # IMPORTANT: Only update if new barcode is different
@@ -576,10 +593,11 @@ class UpdateExistingBarcodeView(APIView):
             },
             status=status.HTTP_200_OK,
         )
-        
-        
-# pos/views/barcode_views.py - Add this for bulk updates
 
+
+# ─────────────────────────────────────────────────────────────────
+# 8. BULK UPDATE BARCODES
+# ─────────────────────────────────────────────────────────────────
 class BulkUpdateBarcodesView(APIView):
     """
     POST /api/pos/barcodes/bulk-update/
@@ -589,20 +607,21 @@ class BulkUpdateBarcodesView(APIView):
             {"variant_id": 2, "barcode": "NEW002"}
         ]
     }
-    
-    Updates multiple barcodes in one request.
-    Respects same permission rules as single update.
     """
-    permission_classes = [IsAuthenticated]
+    
+    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    page_key = "/PendingBarcodes"  # ✅ ADD: Frontend route
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def post(self, request):
         user = request.user
-        branch = getattr(user, "branch", None)
         
+        # ✅ CHANGE: getattr(request.user, "branch", None) → get_effective_branch()
+        branch = request.user.get_effective_branch()
         if not branch:
             return Response(
-                {"success": False, "message": "No branch associated"},
+                {"success": False, "message": "No branch linked to this user"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -696,4 +715,6 @@ class BulkUpdateBarcodesView(APIView):
                 "updated_count": len([r for r in results if r.get("updated")]),
             },
             status=status.HTTP_200_OK,
-        )                
+        )
+        
+        
