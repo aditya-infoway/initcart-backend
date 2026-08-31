@@ -34,7 +34,7 @@ class PurchaseMaster(CreatedByMixin, models.Model):
         on_delete=models.SET_NULL, 
         null=True, 
         blank=True,
-        related_name='purchase_entry'
+        related_name='purchase_entry'                                                             
     )
     
     def __str__(self):

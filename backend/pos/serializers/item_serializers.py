@@ -12,6 +12,16 @@ import string
 from django.db.models.deletion import ProtectedError
 from pos.serializers.mixins_serializers import CreatedByReadMixin
 
+def parse_tax_rate(tax_slab):
+    """Safely parse taxSlab string like '5%', '12%', 'Tax Free', None, '' into a float tax rate."""
+    if not tax_slab:
+        return 0
+    cleaned = str(tax_slab).replace('%', '').strip()
+    try:
+        return float(cleaned)
+    except (ValueError, TypeError):
+        return 0
+
 class VariantSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
     variant_image = serializers.ImageField(required=False, allow_null=True)
@@ -548,7 +558,7 @@ class AdminWebsiteItemListSerializer(CreatedByReadMixin, serializers.ModelSerial
         if not first_variant:
             return 0
         selling_price = float(first_variant.salesPrice)
-        tax_rate = float(obj.taxSlab.replace('%', '')) if obj.taxSlab else 0
+        tax_rate = parse_tax_rate(obj.taxSlab)
         if tax_rate > 0:
             tax_amount = (selling_price * tax_rate) / 100
             return round(selling_price + tax_amount, 2)
@@ -616,7 +626,7 @@ class WebsiteItemListSerializer(CreatedByReadMixin, serializers.ModelSerializer)
         if not first_variant:
             return 0
         selling_price = float(first_variant.salesPrice)
-        tax_rate = float(obj.taxSlab.replace('%', '')) if obj.taxSlab else 0
+        tax_rate = parse_tax_rate(obj.taxSlab)
         if tax_rate > 0:
             tax_amount = (selling_price * tax_rate) / 100
             return round(selling_price + tax_amount, 2)
@@ -777,7 +787,7 @@ class ApproveItemToProductSerializer(serializers.ModelSerializer):
                     print(f"    Product created: ID {product.id}")
                     
                     # Create stock entries for each variant
-                    tax_rate = float(instance.taxSlab.replace('%', '')) if instance.taxSlab else 0
+                    tax_rate = parse_tax_rate(instance.taxSlab)
                     platform_charge = category.platform_charge if category else 0
                     
                     for variant in instance.variants.all():
@@ -866,7 +876,7 @@ class ApproveItemToProductSerializer(serializers.ModelSerializer):
                 # Update stocks - delete old and create new
                 product.stocks.all().delete()
                 
-                tax_rate = float(instance.taxSlab.replace('%', '')) if instance.taxSlab else 0
+                tax_rate = parse_tax_rate(instance.taxSlab)
                 platform_charge = instance.c_category.platform_charge if instance.c_category else 0
                 
                 for variant in instance.variants.all():

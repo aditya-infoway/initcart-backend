@@ -78,7 +78,8 @@ class PurchaseCreateView(APIView):
     
     # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
     permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
-    page_key = "/Addpurchaseitem"  # ✅ ADD: Frontend route
+    page_key = "/Addpurchaseitem"
+   
 
     def generate_bank_payment_voucher(self, branch):
         """Generate voucher number for Bank Payments (BP and PBP share same sequence)"""
@@ -169,9 +170,9 @@ class PurchaseCreateView(APIView):
                 if purchase.partyName:
                     purchase.update_balance(purchase.partyName, purchase.grand_total, "Cr")
                 else:
-                    print(f"   ⚠️ No party assigned to this purchase")
+                    print(f"   No party assigned to this purchase")
 
-            # 💵 CASH PURCHASE - PCP बनाएं (Supplier balance नहीं बदलेगा)
+            #  CASH PURCHASE - PCP बनाएं (Supplier balance नहीं बदलेगा)
             elif terms == "cash":
                 print("💵 CASH PURCHASE - Creating PCP (Supplier balance unchanged)")
 

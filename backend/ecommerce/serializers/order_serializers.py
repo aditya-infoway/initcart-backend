@@ -190,6 +190,7 @@ class OrderSerializer(serializers.ModelSerializer):
             'payment_method', 'payment_status', 'razorpay_order_id',
             'razorpay_payment_id', 'razorpay_signature', 'order_status',
             'notes', 'items', 'payment_details', 'created_at', 'updated_at',
+            'delivered_at',  
             'referral_agent_info',       # ← NEW
             'mlm_commission_processed',  # ← NEW
         ]
@@ -197,7 +198,7 @@ class OrderSerializer(serializers.ModelSerializer):
             'order_number', 'customer', 'total_amount', 'shipping_charge',
             'tax_amount', 'discount_amount', 'final_amount', 'payment_status',
             'razorpay_order_id', 'razorpay_payment_id', 'razorpay_signature',
-            'order_status', 'created_at', 'updated_at',
+            'order_status', 'created_at', 'updated_at','delivered_at', 
             'referral_agent_info', 'mlm_commission_processed',  # ← NEW
         ]
  

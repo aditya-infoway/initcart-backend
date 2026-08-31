@@ -11,7 +11,7 @@ from pos.models.items import items, itemvariants
 from pos.utils.barcode_generator import generate_unique_barcode
 
 # ✅ ADD: Permission imports
-from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
+from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee, IsSuperAdminOrBranchOrBarcodeCapableEmployee
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -118,7 +118,7 @@ class GenerateSingleBarcodeView(APIView):
     """
     
     # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
-    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
+    permission_classes = [IsSuperAdminOrBranchOrBarcodeCapableEmployee]
     page_key = "/PendingBarcodes"  # ✅ ADD: Frontend route
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
@@ -472,18 +472,21 @@ class UpdateExistingBarcodeView(APIView):
     
     Permission Rules:
     - Superadmin: Can update ANY item (company or manual) in their branch
-    - Normal Branch: Can ONLY update manual items (entry_type='manual')
+    - Employee (via purchase-add permission OR PendingBarcodes permission):
+        - Can freely ASSIGN a barcode to a variant that has none, OR
+          re-submit the SAME barcode value (e.g. after auto-generate
+          already persisted it) — this is a no-op, not an overwrite.
+        - Can only OVERWRITE an EXISTING barcode with a DIFFERENT value
+          if the item is 'manual' entry_type AND was not created by superadmin.
     """
     
-    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
-    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
-    page_key = "/PendingBarcodes"  # ✅ ADD: Frontend route
+    permission_classes = [IsSuperAdminOrBranchOrBarcodeCapableEmployee]
+    page_key = "/PendingBarcodes"
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def put(self, request, variant_id):
         user = request.user
         
-        # ✅ CHANGE: getattr(request.user, "branch", None) → get_effective_branch()
         branch = request.user.get_effective_branch()
         if not branch:
             return Response(
@@ -500,15 +503,49 @@ class UpdateExistingBarcodeView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # ─── PERMISSION CHECK ──────────────────────────────────────
-        is_superadmin = user.role == 'superadmin'
+        # ─── GET & VALIDATE NEW BARCODE FIRST ──────────────────────
+        new_barcode = request.data.get("barcode", "").strip()
+        
+        if not new_barcode:
+            return Response(
+                {"success": False, "message": "barcode field is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not new_barcode.isalnum():
+            return Response(
+                {"success": False, "message": "Barcode must be alphanumeric only"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        old_barcode = variant.barcode
         item = variant.item
 
+        # ─── ✅ SAME-VALUE SHORT-CIRCUIT (before permission restriction) ──
+        # Ye case tab hota hai jab auto-generate step ne already DB me
+        # barcode save kar diya tha, aur "Save Barcode" click sirf usi
+        # value ko confirm kar raha hai — ye overwrite nahi hai, isliye
+        # entry_type/created_by_superadmin restriction yahan apply nahi honi chahiye.
+        if old_barcode == new_barcode:
+            return Response(
+                {
+                    "success": True,
+                    "variant_id": variant.id,
+                    "barcode": new_barcode,
+                    "message": "Barcode unchanged (same value)",
+                    "updated": False,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        # ─── PERMISSION CHECK (sirf genuine overwrite ke liye) ─────
+        is_superadmin = user.role == 'superadmin'
+
         if is_superadmin:
-            # Superadmin can update ANY item in their branch
             pass  # Allowed
-        else:
-            # Normal branch: ONLY manual items
+        elif old_barcode:
+            # ✅ Sirf EXISTING (aur DIFFERENT value se overwrite hone wala) barcode
+            #    ke case me hi ye extra restriction lagao
             if item.entry_type != 'manual':
                 return Response(
                     {
@@ -520,34 +557,15 @@ class UpdateExistingBarcodeView(APIView):
                     },
                     status=status.HTTP_403_FORBIDDEN,
                 )
-            
-            # Also check that this branch actually created this item
             if item.created_by_superadmin:
                 return Response(
-                    {
-                        "success": False,
-                        "message": "Permission denied: This is a superadmin-created item."
-                    },
+                    {"success": False, "message": "Permission denied: This is a superadmin-created item."},
                     status=status.HTTP_403_FORBIDDEN,
                 )
+        # else: old_barcode khali tha → naya barcode assign karna hai →
+        #       koi extra restriction nahi
 
-        # ─── GET NEW BARCODE ──────────────────────────────────────
-        new_barcode = request.data.get("barcode", "").strip()
-        
-        if not new_barcode:
-            return Response(
-                {"success": False, "message": "barcode field is required"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Validate barcode format
-        if not new_barcode.isalnum():
-            return Response(
-                {"success": False, "message": "Barcode must be alphanumeric only"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Check if barcode already exists in this branch (excluding current variant)
+        # ─── CHECK UNIQUENESS ───────────────────────────────────────
         if itemvariants.objects.filter(
             barcode=new_barcode, 
             item__branch=branch
@@ -561,22 +579,6 @@ class UpdateExistingBarcodeView(APIView):
             )
 
         # ─── UPDATE BARCODE ──────────────────────────────────────
-        old_barcode = variant.barcode
-
-        # IMPORTANT: Only update if new barcode is different
-        if old_barcode == new_barcode:
-            return Response(
-                {
-                    "success": True,
-                    "variant_id": variant.id,
-                    "barcode": new_barcode,
-                    "message": "Barcode unchanged (same value)",
-                    "updated": False,
-                },
-                status=status.HTTP_200_OK,
-            )
-
-        # Save new barcode
         variant.barcode = new_barcode
         variant.save(update_fields=["barcode"])
 
@@ -593,7 +595,6 @@ class UpdateExistingBarcodeView(APIView):
             },
             status=status.HTTP_200_OK,
         )
-
 
 # ─────────────────────────────────────────────────────────────────
 # 8. BULK UPDATE BARCODES

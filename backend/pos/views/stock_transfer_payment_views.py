@@ -1,17 +1,5 @@
 # pos/views/stock_transfer_payment_views.py
-# ✅ NEW FILE — "Stock Received" bill listing + Cash/Bank payment
-#
-# This is the RECEIVE side (normal branches paying superadmin for stock
-# they received) — the mirror of stock_transfer_receipt_views.py (which
-# is the SEND side, superadmin receiving payment from branches).
-#
-# Key rule: party account is ALWAYS the paying branch's own single
-# "Sundry Creditor(Main)" account — there is exactly one per branch,
-# no branch-to-branch linking involved (unlike the SEND side).
-#
-# Only transfers that are FULLY VERIFIED (all items is_stock_updated=True)
-# count as a payable bill — matches the ledger rule in
-# LedgerReport_serializers.py (group == "Sundry Creditor(Main)").
+# ✅ COMPLETE WORKING CODE — Employee ko bhi allow
 
 from datetime import datetime
 from decimal import Decimal
@@ -20,7 +8,6 @@ from django.db import transaction
 from django.db.models import Sum, Q
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from pos.models.branch import Branch
@@ -28,14 +15,38 @@ from pos.models.account import Account
 from pos.models.stock_transfer import StockTransfer
 from pos.models.cashpayment import CashPayment
 from pos.models.bankpayment import BankPayment
-from pos.views.stock_transfer_receipt_views import get_transfer_total  # ✅ reuse
+from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
 
 
 # ════════════════════════════════════════════════════════════
 # HELPERS
 # ════════════════════════════════════════════════════════════
+
+def get_transfer_total(transfer):
+    total = Decimal("0")
+    items = transfer.items.select_related('from_variant').all()
+    for item in items:
+        qty = Decimal(str(item.quantity or 0))
+        net = Decimal(str(item.net_amount or 0))
+        if net and net > 0:
+            total += net
+            continue
+        rate = Decimal(str(item.rate or 0))
+        if rate and rate > 0:
+            total += rate * qty
+            continue
+        variant = item.from_variant
+        if variant:
+            branch_price = Decimal(str(getattr(variant, 'branchPrice', None) or 0))
+            if branch_price and branch_price > 0:
+                total += branch_price * qty
+                continue
+            purchase_price = Decimal(str(getattr(variant, 'purchasePrice', None) or 0))
+            total += purchase_price * qty
+    return total
+
+
 def get_transfer_paid_by_receiver(transfer):
-    """Total already paid (cash + bank) by the receiving branch against this transfer."""
     cash_paid = CashPayment.objects.filter(stock_transfer=transfer).aggregate(
         total=Sum('amount'))['total'] or Decimal('0')
     bank_paid = BankPayment.objects.filter(stock_transfer=transfer).aggregate(
@@ -44,12 +55,6 @@ def get_transfer_paid_by_receiver(transfer):
 
 
 def get_main_sundry_creditor_account(branch):
-    """
-    Every receiving branch has exactly ONE "Sundry Creditor(Main)" account
-    (enforced by AccountSerializer.validate — only one per branch allowed).
-    No auto-create here — branch must create it first (same rule already
-    enforced in VerifyStockTransferItemView before stock can be verified).
-    """
     return Account.objects.filter(branch=branch, group='Sundry Creditor(Main)').first()
 
 
@@ -61,23 +66,22 @@ def is_fully_verified(transfer):
 # ════════════════════════════════════════════════════════════
 # LIST — Stock Received bills with pending amount > 0
 # ════════════════════════════════════════════════════════════
+
 class StockReceivedBillsView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]   # ✅ FIXED
+    page_key = "/stockTransfer"   # ✅ ADDED
 
     def get(self, request):
-        try:
-            my_branch = Branch.objects.get(user=request.user)
-        except Branch.DoesNotExist:
+        my_branch = request.user.get_effective_branch()   # ✅ FIXED
+        if not my_branch:
             return Response({'success': False, 'message': 'Branch not found'}, status=404)
 
-        # Superadmin never "receives" stock (it's always from_branch for them)
-        # — query naturally returns empty, but guard explicitly for clarity.
+        # Superadmin never "receives" stock
         if request.user.role == 'superadmin':
             return Response({'success': True, 'bills': []})
 
         query = request.GET.get('query', '').strip()
-
         main_account = get_main_sundry_creditor_account(my_branch)
 
         transfers = StockTransfer.objects.filter(
@@ -91,7 +95,7 @@ class StockReceivedBillsView(APIView):
         bills = []
         for t in transfers:
             if not is_fully_verified(t):
-                continue  # matches ledger rule — only counted once fully verified
+                continue
 
             total_amount = get_transfer_total(t)
             paid_amount = get_transfer_paid_by_receiver(t)
@@ -120,9 +124,11 @@ class StockReceivedBillsView(APIView):
 # ════════════════════════════════════════════════════════════
 # PAY — Cash against a Stock Received bill
 # ════════════════════════════════════════════════════════════
+
 class PayStockReceivedBillCashView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]   # ✅ FIXED
+    page_key = "/stockTransfer"   # ✅ ADDED
 
     def post(self, request):
         transfer_id = request.data.get('stock_transfer_bill_id')
@@ -133,9 +139,8 @@ class PayStockReceivedBillCashView(APIView):
         if not transfer_id or not cash_account_id or not amount or not date:
             return Response({'detail': 'stock_transfer_bill_id, cash_account, amount and date are required.'}, status=400)
 
-        try:
-            my_branch = Branch.objects.get(user=request.user)
-        except Branch.DoesNotExist:
+        my_branch = request.user.get_effective_branch()   # ✅ FIXED
+        if not my_branch:
             return Response({'detail': 'Branch not found.'}, status=404)
 
         try:
@@ -214,9 +219,11 @@ class PayStockReceivedBillCashView(APIView):
 # ════════════════════════════════════════════════════════════
 # PAY — Bank against a Stock Received bill
 # ════════════════════════════════════════════════════════════
+
 class PayStockReceivedBillBankView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]   # ✅ FIXED
+    page_key = "/stockTransfer"   # ✅ ADDED
 
     def post(self, request):
         transfer_id = request.data.get('stock_transfer_bill_id')
@@ -231,9 +238,8 @@ class PayStockReceivedBillBankView(APIView):
         if not transfer_id or not bank_account_id or not amount or not date:
             return Response({'detail': 'stock_transfer_bill_id, bank_account, amount and date are required.'}, status=400)
 
-        try:
-            my_branch = Branch.objects.get(user=request.user)
-        except Branch.DoesNotExist:
+        my_branch = request.user.get_effective_branch()   # ✅ FIXED
+        if not my_branch:
             return Response({'detail': 'Branch not found.'}, status=404)
 
         try:
@@ -314,6 +320,3 @@ class PayStockReceivedBillBankView(APIView):
             'voucher_no': payment.voucher_no,
             'remaining_pending': float(remaining),
         }, status=201)
-        
-        
-        

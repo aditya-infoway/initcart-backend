@@ -8,9 +8,9 @@ from django.db.models import Q
 from django.conf import settings
 import logging
 import traceback
-
+from django.utils import timezone
 from ecommerce.models.order import Order, OrderItem, VendorDeliveryInfo
-from ecommerce.models.vendor import Vendor  # ✅ Direct Vendor model import
+from ecommerce.models.vendor import Vendor                            
 from ecommerce.serializers.order_serializers import (
     VendorOrderSerializer, VendorOrderListSerializer,
     VendorOrderStatusUpdateSerializer, VendorDeliveryInfoSerializer
@@ -393,6 +393,9 @@ def update_order_status(order):
 
     if new_status == 'delivered' and order.payment_method == 'cod':
         order.payment_status = 'completed'
+        
+    if new_status == 'delivered' and not order.delivered_at:
+        order.delivered_at = timezone.now()    
 
     order.save()  # ← signal fires here, handles commission cleanly
 

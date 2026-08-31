@@ -90,7 +90,7 @@ def get_branch_linked_account(to_branch):
 class StockTransferCreditBillsView(APIView):
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsSuperAdminOrPagePermittedEmployee]  # ✅ FIXED
-    page_key = "/stockTransfer"  # ✅ FIXED — employee ko yahi page permission chahiye hogi
+    page_key = "/Bank-receipt"  # ✅ FIXED — employee ko yahi page permission chahiye hogi
 
     def get(self, request):
         try:
@@ -149,7 +149,7 @@ class StockTransferCreditBillsView(APIView):
 class ReceiveStockTransferBillCashView(APIView):
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsSuperAdminOrPagePermittedEmployee]  # ✅ FIXED
-    page_key = "/stockTransfer"  # ✅ FIXED
+    page_key = "/Bank-receipt"  # ✅ FIXED
 
     def post(self, request):
         transfer_id = request.data.get('stock_transfer_bill_id')
@@ -228,6 +228,7 @@ class ReceiveStockTransferBillCashView(APIView):
                 narration=f"Stock Transfer {transfer.transfer_no} payment received",
                 type='STCR',
                 stock_transfer=transfer,
+                created_by=request.user,
             )
 
         remaining = float(pending_amount) - amount
@@ -245,7 +246,7 @@ class ReceiveStockTransferBillCashView(APIView):
 class ReceiveStockTransferBillBankView(APIView):
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsSuperAdminOrPagePermittedEmployee]  # ✅ FIXED
-    page_key = "/stockTransfer"  # ✅ FIXED
+    page_key = "/Bank-receipt"  # ✅ FIXED
 
     def post(self, request):
         transfer_id = request.data.get('stock_transfer_bill_id')
@@ -334,6 +335,7 @@ class ReceiveStockTransferBillBankView(APIView):
                 narration=f"Stock Transfer {transfer.transfer_no} payment received",
                 type='STBR',
                 stock_transfer=transfer,
+                created_by=request.user,
             )
 
         remaining = float(pending_amount) - amount

@@ -23,6 +23,10 @@ class BranchCreateSerializer(CreatedByWriteMixin,serializers.ModelSerializer):
         queryset=Account.objects.filter(group__in=CREDITOR_GROUPS),
         required=False, allow_null=True
     )
+    # ✅ NEW — required sirf 'franchise' ke liye; validate() me enforce hota hai
+    gst_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    pan_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    pan_card = serializers.FileField(required=False, allow_null=True)
 
     class Meta:
         model = Branch
@@ -33,23 +37,34 @@ class BranchCreateSerializer(CreatedByWriteMixin,serializers.ModelSerializer):
             "bank_name", "account_number", "ifsc_code", "upi_id",
             "licence_file", "gst_certificate", "branch_logo", "id_proof",
             "status", "sundry_debitor_account", "sundry_creditor_account",
-            "ownership_type",
+            "ownership_type", "gst_number", "pan_number", "pan_card",
         ]
         extra_kwargs = {"password": {"write_only": True}}
 
     def validate(self, attrs):
-            if Branch.objects.filter(email=attrs["email"]).exists():
-                raise serializers.ValidationError({"email": "Branch with this email already exists."})
+        if Branch.objects.filter(email=attrs["email"]).exists():
+            raise serializers.ValidationError({"email": "Branch with this email already exists."})
 
-            debitor = attrs.get("sundry_debitor_account")
-            creditor = attrs.get("sundry_creditor_account")
-            if debitor and creditor:
-                raise serializers.ValidationError({
-                    "sundry_creditor_account": "only one linked account allowed —  Debitor or Creditor, not both ."
-                })
-            return attrs
+        debitor = attrs.get("sundry_debitor_account")
+        creditor = attrs.get("sundry_creditor_account")
+        if debitor and creditor:
+            raise serializers.ValidationError({
+                "sundry_creditor_account": "only one linked account allowed — Debitor or Creditor, not both."
+            })
+
+        ownership_type = attrs.get("ownership_type", "branch")
+        if ownership_type == "franchise":
+            if not attrs.get("gst_number"):
+                raise serializers.ValidationError({"gst_number": "GST Number is required for Franchise."})
+            if not attrs.get("pan_number"):
+                raise serializers.ValidationError({"pan_number": "PAN Number is required for Franchise."})
+            
+        return attrs
+
+
     def create(self, validated_data):
         raw_password = validated_data.pop("password")
+        ownership_type = validated_data.get("ownership_type", "branch")
 
         user = User.objects.create_user(
             username=validated_data["email"],
@@ -62,12 +77,27 @@ class BranchCreateSerializer(CreatedByWriteMixin,serializers.ModelSerializer):
 
         validated_data["password"] = make_password(raw_password)
 
-        # ✅ Yahan manually created_by set karo
         request = self.context.get("request")
         if request and request.user and request.user.is_authenticated:
             validated_data["created_by"] = request.user
 
+        # 'branch' type ke liye GST/PAN/PAN-card hata do
+        if ownership_type != "franchise":
+            validated_data.pop("gst_number", None)
+            validated_data.pop("pan_number", None)
+            validated_data.pop("pan_card", None)
+            # ✅ Branch ke liye gst_certificate bhi hata do (kyunki nahi chahiye)
+            validated_data.pop("gst_certificate", None)
+        else:
+            # Franchise ke liye pan_card hata do (file upload nahi chahte)
+            validated_data.pop("pan_card", None)
+            # ✅ Franchise ke liye gst_certificate rakho (agar aaya toh)
+
         branch = Branch.objects.create(user=user, **validated_data)
+
+        if ownership_type != "franchise":
+            branch.copy_tax_details_from_superadmin()
+
         return branch
 
 #  BRANCH LIST SERIALIZER
@@ -89,7 +119,8 @@ class BranchListSerializer(CreatedByReadMixin, serializers.ModelSerializer):
             "email", "phone", "status", "city", "state",
             "branch_logo", "branch_logo_url", "created_at", "updated_at",
             "sundry_debitor_account_name","sundry_creditor_account_name",
-            "ownership_type","created_by", "created_by_name"
+            "ownership_type","created_by", "created_by_name",
+            "gst_number", "pan_number",
         ]
 
     def get_branch_logo_url(self, obj):
@@ -109,6 +140,7 @@ class BranchDetailSerializer(serializers.ModelSerializer):
         source="sundry_creditor_account.account_name", read_only=True, default=None
     )
     id_proof_url = serializers.SerializerMethodField()
+    pan_card_url = serializers.SerializerMethodField()
     created_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
     updated_at = serializers.DateTimeField(format="%Y-%m-%d %H:%M:%S")
 
@@ -137,6 +169,11 @@ class BranchDetailSerializer(serializers.ModelSerializer):
             return obj.id_proof.url
         return None
 
+    def get_pan_card_url(self, obj):
+        if obj.pan_card:
+            return obj.pan_card.url
+        return None
+
 #  BRANCH UPDATE SERIALIZEr
 
 class BranchUpdateSerializer(serializers.ModelSerializer):
@@ -151,6 +188,10 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
         queryset=Account.objects.filter(group__in=CREDITOR_GROUPS),
         required=False, allow_null=True
     )
+    # ✅ NEW — franchise ka apna GST/PAN edit karne ke liye (optional on update)
+    gst_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    pan_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    pan_card = serializers.FileField(required=False, allow_null=True)
 
     class Meta:
         model = Branch
@@ -161,7 +202,7 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
             "licence_file", "gst_certificate", "branch_logo", "id_proof",
             "status", "password", "branch_code",
             "sundry_debitor_account", "sundry_creditor_account",
-            "ownership_type",
+            "ownership_type", "gst_number", "pan_number", "pan_card",
         ]
 
     def validate_email(self, value):
@@ -212,6 +253,3 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
 
         instance.save()
         return instance
-    
-    
-    

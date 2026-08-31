@@ -7,6 +7,8 @@ from pos.models.branch import Branch
 from datetime import datetime
 from pos.models.branch_order import BranchOrder
 
+
+
 User = get_user_model()
 
 

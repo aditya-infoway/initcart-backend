@@ -11,7 +11,7 @@ from pos.models.account import Account
 from pos.models.branch import Branch
 from pos.serializers.account_serializer import AccountSerializer, SupplierSerializer, AccountviewSerializer, AccountTermsSerializers
 from pos.utils.pagination import StandardResultsSetPagination
-from ecommerce.permissions import IsSuperAdmin, IsSuperAdminOrBranchOrPagePermittedEmployee
+from ecommerce.permissions import IsSuperAdmin, IsSuperAdminOrBranchOrPagePermittedEmployee, IsFranchiseOrPagePermittedEmployee
 
 
 class AccountCreateView(APIView):
@@ -187,9 +187,12 @@ class CustomerCreateView(APIView):
 class BranchLinkableAccountsAPIView(APIView):
     """
     GET /api/branch-linkable-accounts/?branch_id=<id optional>
-    Sirf superadmin. Already kisi branch se linked accounts exclude ho jayenge.
+    Superadmin (branchMaster ke liye) YA Franchise/permitted-employee
+    (myBranches ke liye) — dono access kar sakte hain.
+    Already kisi branch se linked accounts exclude ho jayenge.
     """
-    permission_classes = [IsSuperAdmin]  # Sirf superadmin, employee ko access nahi
+    permission_classes = [IsSuperAdmin | IsFranchiseOrPagePermittedEmployee]
+    page_key = "/myBranches"  # Sirf superadmin, employee ko access nahi
 
     def get(self, request):
         branch_id = request.query_params.get('branch_id', '').strip()

@@ -250,3 +250,102 @@ class IsSuperAdminOrBranchOrPagePermittedEmployee(BasePermission):
             return HasEmployeePagePermission().has_permission(request, view)
 
         return False    
+    
+    
+class IsSuperAdminOrBranchOrBarcodeCapableEmployee(BasePermission):
+    """
+    Barcode generate/update views (jo PurchaseEntryForm aur PendingBarcodes
+    dono se hit hote hain) ke liye specific permission:
+    - Superadmin => full access
+    - Branch/Vendor roles => full access
+    - Employee => allow agar EITHER:
+        (a) '/PendingBarcodes' page ka proper can_view+method-field permission ho
+            (Barcode Manager screen se aane wale calls ke liye)
+        OR
+        (b) '/Addpurchaseitem' page ka can_add=True ho
+            (Purchase Entry se naya item + naya barcode add karne ke liye —
+             ye method (POST/PUT) ki parwah kiye bina check hota hai, kyunki
+             purchase-flow me barcode-assign khud "add purchase" action ka
+             hissa hai, alag se 'edit' permission ki zaroorat nahi)
+    """
+    BRANCH_ROLES = ("branch", "branch_customer", "branch_agent", "branch_both", "vendor")
+    PURCHASE_PAGE_KEY = "/Addpurchaseitem"
+
+    def has_permission(self, request, view):
+        user = request.user
+        if not (user and user.is_authenticated):
+            return False
+
+        role = getattr(user, "role", None)
+        if role == "superadmin":
+            return True
+        if role in self.BRANCH_ROLES:
+            return True
+        if role != "employee":
+            return False
+
+        employee = getattr(user, "employee_profile", None)
+        if not employee:
+            return False
+
+        # (a) PendingBarcodes page se aaya normal call
+        page_key = getattr(view, "page_key", None)
+        if page_key:
+            perm = employee.permissions.filter(page_key=page_key).first()
+            if perm and perm.can_view:
+                field = resolve_perm_field(view, request)
+                if getattr(perm, field, False):
+                    return True
+
+        # (b) Purchase Entry se aaya call — can_add hi kaafi hai
+        purchase_perm = employee.permissions.filter(
+            page_key=self.PURCHASE_PAGE_KEY
+        ).first()
+        if purchase_perm and purchase_perm.can_view and purchase_perm.can_add:
+            return True
+
+        return False    
+    
+    
+class IsFranchiseOrPagePermittedEmployee(BasePermission):
+    """
+    Allows access only to:
+      1. The Branch-role user (any branch-type role) who OWNS a branch
+         with ownership_type == 'franchise', OR
+      2. An 'employee' user whose branch is a franchise AND who has the
+         relevant can_view/can_add/can_edit/can_delete permission for
+         this viewset's page_key.
+    """
+    message = "Only a Franchise owner or a permitted Franchise employee can access this."
+
+    BRANCH_ROLES = ("branch", "branch_customer", "branch_agent", "branch_both", "vendor")
+
+    def has_permission(self, request, view):
+        user = request.user
+        if not user or not user.is_authenticated:
+            return False
+
+        get_branch = getattr(user, "get_effective_branch", None)
+        effective_branch = get_branch() if get_branch else None
+        if not effective_branch or effective_branch.ownership_type != "franchise":
+            return False
+
+        if getattr(user, "role", None) == "employee":
+            page_key = getattr(view, "page_key", None)
+            employee = getattr(user, "employee_profile", None)
+            if not employee or not page_key:
+                return False
+            perm = employee.permissions.filter(page_key=page_key).first()
+            if not perm:
+                return False
+            if request.method == "GET":
+                return perm.can_view
+            if request.method == "POST":
+                return perm.can_add
+            if request.method in ("PUT", "PATCH"):
+                return perm.can_edit
+            if request.method == "DELETE":
+                return perm.can_delete
+            return perm.can_view
+
+        return getattr(user, "role", None) in self.BRANCH_ROLES   # ✅ FIX

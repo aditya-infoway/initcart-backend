@@ -1,6 +1,7 @@
 # pos/views/b2b_sales_receipt_views.py
-# B2B Sale credit bill listing + Cash/Bank receipt receiving
-# EXACT SAME PATTERN as stock_transfer_receipt_views.py
+# ✅ B2B Sale credit bill listing + Cash/Bank receipt receiving
+# ✅ Employee ko bhi allow (page_key = "/Bank-receipt")
+# ✅ created_by set karna
 
 from datetime import datetime
 from decimal import Decimal
@@ -16,23 +17,17 @@ from pos.models.account import Account
 from pos.models.b2b_sales import B2BSale
 from pos.models.cashreceipt import CashReceipt
 from pos.models.bankreceipt import BankReceipt
-from pos.views.stock_transfer_views import IsSuperAdminRole
-# ✅ Reuse the SAME helper that finds a branch's linked Sundry Debitor/Creditor account
+# ✅ CHANGE: IsSuperAdminRole → IsSuperAdminOrPagePermittedEmployee
+from ecommerce.permissions import IsSuperAdminOrPagePermittedEmployee
+# Reuse helper
 from pos.views.stock_transfer_receipt_views import get_branch_linked_account
 
 
 # ════════════════════════════════════════════════════════════
 # HELPERS
 # ════════════════════════════════════════════════════════════
+
 def get_b2b_sale_total(sale):
-    """
-    Total bill amount for a B2B Sale.
-    Fallback chain same as get_transfer_total() in stock_transfer_receipt_views.py:
-      1. item.net_amount (GST-inclusive, set at creation)
-      2. item.rate * item.quantity
-      3. from_variant.branchPrice (live) * quantity
-      4. from_variant.purchasePrice (live) * quantity — last resort
-    """
     total = Decimal("0")
     items = sale.items.select_related('from_variant').all()
     for item in items:
@@ -41,12 +36,10 @@ def get_b2b_sale_total(sale):
         if net and net > 0:
             total += net
             continue
-
         rate = Decimal(str(item.rate or 0))
         if rate and rate > 0:
             total += rate * qty
             continue
-
         variant = item.from_variant
         if variant:
             branch_price = Decimal(str(getattr(variant, 'branchPrice', None) or 0))
@@ -55,12 +48,10 @@ def get_b2b_sale_total(sale):
                 continue
             purchase_price = Decimal(str(getattr(variant, 'purchasePrice', None) or 0))
             total += purchase_price * qty
-
     return total
 
 
 def get_b2b_sale_paid(sale):
-    """Total already received (cash + bank) against this B2B Sale."""
     cash_paid = CashReceipt.objects.filter(b2b_sale=sale).aggregate(
         total=Sum('amount'))['total'] or 0
     bank_paid = BankReceipt.objects.filter(b2b_sale=sale).aggregate(
@@ -71,21 +62,23 @@ def get_b2b_sale_paid(sale):
 # ════════════════════════════════════════════════════════════
 # LIST — B2B Sale bills with pending amount > 0
 # ════════════════════════════════════════════════════════════
+
 class B2BSaleCreditBillsView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsSuperAdminRole]
+    # ✅ CHANGE
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]
+    page_key = "/Bank-receipt"   # ✅ ADD
 
     def get(self, request):
-        try:
-            my_branch = Branch.objects.get(user=request.user)
-        except Branch.DoesNotExist:
+        my_branch = request.user.get_effective_branch()   # ✅ FIXED
+        if not my_branch:
             return Response({'success': False, 'message': 'Branch not found'}, status=404)
 
         query = request.GET.get('query', '').strip()
 
         sales = B2BSale.objects.filter(
             from_branch=my_branch,
-            status__in=['pending', 'completed'],   # cancelled excluded
+            status__in=['pending', 'completed'],
         ).select_related('to_branch').prefetch_related('items')
 
         if query:
@@ -127,9 +120,12 @@ class B2BSaleCreditBillsView(APIView):
 # ════════════════════════════════════════════════════════════
 # RECEIVE — Cash against a B2B Sale bill
 # ════════════════════════════════════════════════════════════
+
 class ReceiveB2BSaleBillCashView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsSuperAdminRole]
+    # ✅ CHANGE
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]
+    page_key = "/Bank-receipt"   # ✅ ADD
 
     def post(self, request):
         sale_id = request.data.get('b2b_sale_bill_id')
@@ -140,9 +136,8 @@ class ReceiveB2BSaleBillCashView(APIView):
         if not sale_id or not cash_account_id or not amount or not date:
             return Response({'detail': 'b2b_sale_bill_id, cash_account, amount and date are required.'}, status=400)
 
-        try:
-            my_branch = Branch.objects.get(user=request.user)
-        except Branch.DoesNotExist:
+        my_branch = request.user.get_effective_branch()   # ✅ FIXED
+        if not my_branch:
             return Response({'detail': 'Branch not found.'}, status=404)
 
         try:
@@ -176,7 +171,7 @@ class ReceiveB2BSaleBillCashView(APIView):
                 'detail': f'{sale.to_branch.branch_name} — No Sundry Debitor/Creditor account linked in "Branch Master". Link it first.'
             }, status=400)
 
-        # Voucher number — B2BCR prefix, same FY-based sequence pattern
+        # Voucher number — B2BCR prefix
         now = datetime.now()
         fy_start = now.year if now.month >= 4 else now.year - 1
         fy = f"{str(fy_start)[2:]}-{str(fy_start + 1)[2:]}"
@@ -204,6 +199,7 @@ class ReceiveB2BSaleBillCashView(APIView):
                 narration=f"B2B Sale {sale.sale_no} payment received",
                 type='B2BCR',
                 b2b_sale=sale,
+                created_by=request.user,   # ✅ ADD
             )
 
         remaining = float(pending_amount) - amount
@@ -218,9 +214,12 @@ class ReceiveB2BSaleBillCashView(APIView):
 # ════════════════════════════════════════════════════════════
 # RECEIVE — Bank against a B2B Sale bill
 # ════════════════════════════════════════════════════════════
+
 class ReceiveB2BSaleBillBankView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsSuperAdminRole]
+    # ✅ CHANGE
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]
+    page_key = "/Bank-receipt"   # ✅ ADD
 
     def post(self, request):
         sale_id = request.data.get('b2b_sale_bill_id')
@@ -235,9 +234,8 @@ class ReceiveB2BSaleBillBankView(APIView):
         if not sale_id or not bank_account_id or not amount or not date:
             return Response({'detail': 'b2b_sale_bill_id, bank_account, amount and date are required.'}, status=400)
 
-        try:
-            my_branch = Branch.objects.get(user=request.user)
-        except Branch.DoesNotExist:
+        my_branch = request.user.get_effective_branch()   # ✅ FIXED
+        if not my_branch:
             return Response({'detail': 'Branch not found.'}, status=404)
 
         try:
@@ -305,6 +303,7 @@ class ReceiveB2BSaleBillBankView(APIView):
                 narration=f"B2B Sale {sale.sale_no} payment received",
                 type='B2BBR',
                 b2b_sale=sale,
+                created_by=request.user,   # ✅ ADD
             )
 
         remaining = float(pending_amount) - amount
@@ -314,6 +313,3 @@ class ReceiveB2BSaleBillBankView(APIView):
             'voucher_no': receipt.voucher_no,
             'remaining_pending': remaining,
         }, status=201)
-        
-        
-        
