@@ -55,6 +55,7 @@ urlpatterns = [
     path('api/ecommerce/', include('ecommerce.urls.vendor_order_urls')),
     #subscription urls
     path("api/ecommerce/", include("ecommerce.urls.subscription_urls")),
+    path("api/ecommerce/", include("ecommerce.urls.qrcard_urls")),
 
     #POS (branch)
     path("api/pos/" , include("pos.urls.branch_urls")),

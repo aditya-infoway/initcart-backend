@@ -5,7 +5,8 @@ Django settings for core project - DEVELOPMENT
 from pathlib import Path
 import os  # ✅ Import os
 from decouple import config
-from datetime import timedelta  
+from datetime import timedelta 
+ 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -53,11 +54,11 @@ CORS_ALLOW_ALL_ORIGINS = True
 
 ROOT_URLCONF = 'core.urls'
 
-# ✅ TEMPLATES UPDATE - SAME AS PRODUCTION
+
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [os.path.join(BASE_DIR, 'templates')],  # ✅ Yeh line add karein
+        'DIRS': [os.path.join(BASE_DIR, 'templates')], 
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -150,15 +151,14 @@ SIMPLE_JWT = {
 
 # Internationalization
 LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'Asia/Kolkata'  # ✅ Same as production
-USE_I18N = True
+TIME_ZONE = 'Asia/Kolkata'
 USE_TZ = True
 
 # Static files - Development
 STATIC_URL = 'static/'
-STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')  # ✅ Add this
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles') 
 STATICFILES_DIRS = [
-    os.path.join(BASE_DIR, 'static'),  # ✅ Add this
+    os.path.join(BASE_DIR, 'static'), 
 ]
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
@@ -166,7 +166,7 @@ AUTH_USER_MODEL = "users.User"
 
 # Media files
 MEDIA_URL = "/media/"
-MEDIA_ROOT = os.path.join(BASE_DIR, "media")  # ✅ Use os.path.join
+MEDIA_ROOT = os.path.join(BASE_DIR, "media")
 
 # For large file uploads
 DATA_UPLOAD_MAX_MEMORY_SIZE = 50 * 1024 * 1024  # 50MB
@@ -237,3 +237,16 @@ PASSWORD_RESET_TIMEOUT = 86400
 RAZORPAY_KEY_ID = config('RAZORPAY_KEY_ID', default='test_key')
 RAZORPAY_KEY_SECRET = config('RAZORPAY_KEY_SECRET', default='test_secret')
 RAZORPAY_WEBHOOK_SECRET = config('RAZORPAY_WEBHOOK_SECRET', default='test_webhook_secret')
+
+#AI INTEGRATION
+# OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+# PURCHASE_INVOICE_AI_MODEL = os.environ.get("PURCHASE_INVOICE_AI_MODEL", "qwen2.5vl:3b")
+
+
+# PURCHASE_INVOICE_AI_TIMEOUT = int(
+#     os.environ.get("PURCHASE_INVOICE_AI_TIMEOUT", "180")
+# )
+
+# PURCHASE_INVOICE_AI_MAX_PDF_PAGES = int(
+#     os.environ.get("PURCHASE_INVOICE_AI_MAX_PDF_PAGES", "10")
+# )

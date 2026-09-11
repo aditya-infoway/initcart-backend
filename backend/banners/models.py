@@ -1,5 +1,6 @@
 # models.py
 from django.db import models
+from django.core.validators import FileExtensionValidator
 
 class SliderImage(models.Model):
     image = models.ImageField(upload_to="slider/")
@@ -31,24 +32,34 @@ class SmallAd(models.Model):
     def __str__(self):
         return f"Slot {self.slot} - {self.title}"
     
+
+
 class SuperAdminProfile(models.Model):
     name = models.CharField(max_length=200)
     email = models.EmailField()
     phone = models.CharField(max_length=20)
     address = models.TextField(blank=True)
-    
+
     profile_image = models.ImageField(
         upload_to="admin_profile/",
         blank=True,
         null=True
     )
-    
-        # ✅ NEW: Brochure PDF field
+
     brochure_pdf = models.FileField(
         upload_to="brochures/",
         blank=True,
         null=True,
         help_text="Upload company brochure (PDF only)"
+    )
+
+    # ✅ NEW: APK file field
+    apk_file = models.FileField(
+        upload_to="app_apk/",
+        blank=True,
+        null=True,
+        validators=[FileExtensionValidator(allowed_extensions=['apk'])],
+        help_text="Upload Android app APK file"
     )
 
     youtube = models.URLField(blank=True)
@@ -61,11 +72,6 @@ class SuperAdminProfile(models.Model):
 
     def __str__(self):
         return self.name
-
-
-# models.py - Mobile Banner Model (Simple)
-
-# models.py - Ensure model is correct
 
 class MobileBanner(models.Model):
     """Mobile banner - simple, no validation"""

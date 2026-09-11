@@ -1,5 +1,5 @@
 # pos/views/stock_return_refund_views.py
-# ✅ FIXED — No stock_return FK dependency
+# ✅ SIRF page_key ADD KIYA HAI — KUCH AUR NAHI BADLA!
 
 from datetime import datetime
 from decimal import Decimal
@@ -15,12 +15,11 @@ from pos.models.account import Account
 from pos.models.stock_return import StockReturn
 from pos.models.cashpayment import CashPayment
 from pos.models.bankpayment import BankPayment
-from pos.views.stock_transfer_views import IsSuperAdminRole
+from ecommerce.permissions import IsSuperAdminOrPagePermittedEmployee   # ✅ Already correct
 from pos.views.stock_transfer_receipt_views import get_branch_linked_account
 
 
 def get_return_total(stock_return):
-    """Sum of net_amount across all items of a return."""
     total = Decimal("0")
     for item in stock_return.items.all():
         total += Decimal(str(item.net_amount or 0))
@@ -28,11 +27,6 @@ def get_return_total(stock_return):
 
 
 def get_return_refund_paid(stock_return):
-    """
-    Total already refunded (cash + bank) by superadmin against this return.
-    ✅ FIX: Since CashPayment/BankPayment don't have stock_return FK,
-    we find payments by type + narration.
-    """
     cash_paid = CashPayment.objects.filter(
         branch=stock_return.to_branch,
         type='STRCP',
@@ -49,16 +43,17 @@ def get_return_refund_paid(stock_return):
 
 
 # ════════════════════════════════════════════════════════════
-# LIST — Stock Return refunds pending, superadmin side
+# LIST — Stock Return refunds pending
 # ════════════════════════════════════════════════════════════
+
 class StockReturnRefundBillsView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsSuperAdminRole]
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]
+    page_key = "/Bank-payment"   # ✅ SIRF YEH ADD KIYA
 
     def get(self, request):
-        try:
-            my_branch = Branch.objects.get(user=request.user)
-        except Branch.DoesNotExist:
+        my_branch = request.user.get_effective_branch()
+        if not my_branch:
             return Response({'success': False, 'message': 'Branch not found'}, status=404)
 
         query = request.GET.get('query', '').strip()
@@ -107,9 +102,11 @@ class StockReturnRefundBillsView(APIView):
 # ════════════════════════════════════════════════════════════
 # PAY — Cash refund against a Stock Return
 # ════════════════════════════════════════════════════════════
+
 class PayStockReturnBillCashView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsSuperAdminRole]
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]
+    page_key = "/Bank-payment"   # ✅ SIRF YEH ADD KIYA
 
     def post(self, request):
         return_id = request.data.get('stock_return_bill_id')
@@ -120,9 +117,8 @@ class PayStockReturnBillCashView(APIView):
         if not return_id or not cash_account_id or not amount or not date:
             return Response({'detail': 'stock_return_bill_id, cash_account, amount and date are required.'}, status=400)
 
-        try:
-            my_branch = Branch.objects.get(user=request.user)
-        except Branch.DoesNotExist:
+        my_branch = request.user.get_effective_branch()
+        if not my_branch:
             return Response({'detail': 'Branch not found.'}, status=404)
 
         try:
@@ -182,7 +178,7 @@ class PayStockReturnBillCashView(APIView):
                 amount=amount,
                 narration=f"Refund against Stock Return {stock_return.return_no}",
                 type='STRCP',
-                #  No stock_return FK — using narration + type for tracking
+                created_by=request.user, 
             )
 
         remaining = pending_amount - amount
@@ -197,9 +193,11 @@ class PayStockReturnBillCashView(APIView):
 # ════════════════════════════════════════════════════════════
 # PAY — Bank refund against a Stock Return
 # ════════════════════════════════════════════════════════════
+
 class PayStockReturnBillBankView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsSuperAdminRole]
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]
+    page_key = "/Bank-payment"   # ✅ SIRF YEH ADD KIYA
 
     def post(self, request):
         return_id = request.data.get('stock_return_bill_id')
@@ -214,9 +212,8 @@ class PayStockReturnBillBankView(APIView):
         if not return_id or not bank_account_id or not amount or not date:
             return Response({'detail': 'stock_return_bill_id, bank_account, amount and date are required.'}, status=400)
 
-        try:
-            my_branch = Branch.objects.get(user=request.user)
-        except Branch.DoesNotExist:
+        my_branch = request.user.get_effective_branch()
+        if not my_branch:
             return Response({'detail': 'Branch not found.'}, status=404)
 
         try:
@@ -282,7 +279,8 @@ class PayStockReturnBillBankView(APIView):
                 cheque_clear_date=cheque_clear_date if mode == 'CHEQUE' else None,
                 narration=f"Refund against Stock Return {stock_return.return_no}",
                 type='STRBP',
-                #  No stock_return FK — using narration + type for tracking
+                created_by=request.user,
+                
             )
 
         remaining = pending_amount - amount
@@ -292,6 +290,3 @@ class PayStockReturnBillBankView(APIView):
             'voucher_no': payment.voucher_no,
             'remaining_pending': float(remaining),
         }, status=201)
-        
-        
-        

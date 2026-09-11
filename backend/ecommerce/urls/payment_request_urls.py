@@ -26,3 +26,25 @@ urlpatterns = [
     path('admin/payment-requests/<int:pk>/mark-paid/', AdminPaymentRequestMarkPaidAPIView.as_view()),
     path('admin/order-report/', AdminAllVendorsOrderReportAPIView.as_view()),
 ]
+
+
+from ecommerce.views.return_views import (
+    CustomerCreateReturnAPIView, CustomerReturnListAPIView, CustomerRequestAgainAPIView,
+    VendorReturnListAPIView, VendorReturnActionAPIView,
+    AdminReturnListAPIView, AdminReturnActionAPIView,
+)
+
+urlpatterns += [
+    # Customer
+    path('public/returns/create/', CustomerCreateReturnAPIView.as_view()),
+    path('public/returns/', CustomerReturnListAPIView.as_view()),
+    path('public/returns/<int:pk>/request-again/', CustomerRequestAgainAPIView.as_view()),
+
+    # Vendor
+    path('vendor/returns/', VendorReturnListAPIView.as_view()),
+    path('vendor/returns/<int:pk>/action/', VendorReturnActionAPIView.as_view()),
+
+    # Admin
+    path('admin/returns/', AdminReturnListAPIView.as_view()),
+    path('admin/returns/<int:pk>/action/', AdminReturnActionAPIView.as_view()),
+]

@@ -7,6 +7,8 @@ from pos.models.branch import Branch
 from datetime import datetime
 from pos.models.branch_order import BranchOrder
 
+
+
 User = get_user_model()
 
 
@@ -124,7 +126,8 @@ class StockTransferItem(models.Model):
     
     # ✅ Stock verification flag
     is_stock_updated = models.BooleanField(default=False)
-    
+    discount_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0, blank=True, null=True)
+    discount_amount  = models.DecimalField(max_digits=12, decimal_places=2, default=0, blank=True, null=True)  
     # ✅ NEW — GST breakup (branch_price par, toggle ke hisaab se inclusive/exclusive)
     tax_percent  = models.CharField(max_length=20, blank=True, null=True, default="0")
     basic_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0,  blank=True, null=True,)
@@ -132,7 +135,7 @@ class StockTransferItem(models.Model):
     cgst         = models.DecimalField(max_digits=10, decimal_places=2, default=0, blank=True, null=True,)
     sgst         = models.DecimalField(max_digits=10, decimal_places=2, default=0, blank=True, null=True,)
     igst         = models.DecimalField(max_digits=10, decimal_places=2, default=0, blank=True, null=True,)
-    net_amount   = models.DecimalField(max_digits=12, decimal_places=2, default=0,blank=True, null=True,)
+    net_amount   = models.DecimalField(max_digits=12, decimal_places=2, default=0, blank=True, null=True,)
 
     website_display_on_verify = models.BooleanField(default=False)
     class Meta:

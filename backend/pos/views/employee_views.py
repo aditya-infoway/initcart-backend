@@ -88,7 +88,7 @@ class EmployeePermissionView(APIView):
     authentication_classes = [JWTAuthentication, SessionAuthentication] 
 
     def get(self, request, employee_id):
-        branch = getattr(request.user, 'branch', None)
+        branch = getattr(request.user, 'branch', None)  
         employee = get_object_or_404(Employee, id=employee_id, branch=branch)
         return Response({"success": True, "data": EmployeeDetailSerializer(employee).data})
 

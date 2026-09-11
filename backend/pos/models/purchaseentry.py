@@ -34,7 +34,7 @@ class PurchaseMaster(CreatedByMixin, models.Model):
         on_delete=models.SET_NULL, 
         null=True, 
         blank=True,
-        related_name='purchase_entry'
+        related_name='purchase_entry'                                                             
     )
     
     def __str__(self):
@@ -241,8 +241,8 @@ class PurchaseItem(models.Model):
             net_amount = amount_after_discount
 
         # ---------- GST SPLIT ----------
-        branch_state_norm = (self.purchase.branch.state or "").strip().lower()
-        party_state_norm = (self.purchase.partyName.state or "").strip().lower()
+        branch_state_norm = (getattr(self.purchase.branch, "state", "") or "").strip().lower()
+        party_state_norm = (getattr(self.purchase.partyName, "state", "") or "").strip().lower()
 
         if branch_state_norm and party_state_norm and branch_state_norm == party_state_norm:
             half_tax = (total_tax / Decimal('2')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)

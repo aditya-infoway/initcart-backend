@@ -34,6 +34,10 @@ def branch_idproof_path(instance, filename):
 def branch_licence_path(instance, filename):
     return os.path.join("branch-license", unique_filename(instance, filename, "branch-license"))
 
+# ✅ NEW — PAN card file ka upload path
+def branch_pancard_path(instance, filename):
+    return os.path.join("branch-pancard", unique_filename(instance, filename, "branch-pancard"))
+
 class Branch(CreatedByMixin,models.Model):
     BRANCH_TYPE_CHOICES = [
         ('fashion', 'Fashion'),
@@ -76,6 +80,14 @@ class Branch(CreatedByMixin,models.Model):
     gst_certificate = models.FileField(upload_to=branch_gst_path, blank=True, null=True)
     branch_logo = models.FileField(upload_to=branch_logo_path, blank=True, null=True)
     id_proof = models.FileField(upload_to=branch_idproof_path, blank=True, null=True)
+
+    # ✅ NEW — GST / PAN details
+    # 'branch' (ownership_type=branch) ke liye ye superadmin ki apni branch se copy hote hain.
+    # 'franchise' ke liye ye khud branch/franchise create karte waqt bharne padte hain.
+    gst_number = models.CharField(max_length=15, blank=True, null=True, help_text="GSTIN")
+    pan_number = models.CharField(max_length=10, blank=True, null=True, help_text="PAN Number")
+    pan_card = models.FileField(upload_to=branch_pancard_path, blank=True, null=True)
+
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -99,6 +111,20 @@ class Branch(CreatedByMixin,models.Model):
         related_name='linked_as_creditor_branch',
         help_text="Account representing this branch as a creditor (payable) for other branches' books"
     )
+    
+    # Add this field inside class Branch, near sundry_creditor_account:
+    parent_franchise = models.ForeignKey(
+        'self',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='franchise_branches',
+        help_text=(
+            "Set ONLY when this Branch was created BY a Franchise "
+            "(2-level hierarchy: Superadmin → Franchise → Branch). "
+            "Null for top-level Branch/Franchise rows created by Superadmin."
+        )
+    )
 
     def __str__(self):
         return self.branch_name
@@ -111,6 +137,49 @@ class Branch(CreatedByMixin,models.Model):
         else:
             self.branch_code = None
         super().save(*args, **kwargs)
+
+    # ✅ NEW — Superadmin ki apni (Head Office) branch nikaalne ke liye helper
+    @classmethod
+    def get_superadmin_branch(cls):
+        """
+        Superadmin ki khud ki branch record (login ke waqt auto-create hoti hai),
+        jisme master GST/PAN save hote hain. 'branch' type branches yahi se copy karti hain.
+        """
+        return cls.objects.filter(user__role='superadmin').order_by('id').first()
+
+    # ✅ NEW — Naye 'branch' (franchise nahi) ke liye superadmin ke GST/PAN copy karo
+    def copy_tax_details_from_superadmin(self):
+        """
+        ownership_type == 'branch' hone par ye superadmin ki branch se
+        gst_number, pan_number, pan_card copy karke is instance ko save karta hai.
+        Franchise ke liye ye kabhi call nahi hota — franchise apna alag GST/PAN deta hai.
+        """
+        sa_branch = Branch.get_superadmin_branch()
+        if not sa_branch or sa_branch.id == self.id:
+            return
+
+        self.gst_number = sa_branch.gst_number
+        self.pan_number = sa_branch.pan_number
+        if sa_branch.pan_card:
+            self.pan_card = sa_branch.pan_card.name
+        self.save(update_fields=["gst_number", "pan_number", "pan_card"])
+
+    # Add this method inside class Branch, right after copy_tax_details_from_superadmin():
+
+    def copy_tax_details_from_franchise(self):
+        """
+        Franchise ke banaye hue sub-branch ke liye — parent Franchise ka
+        GST/PAN copy karta hai. copy_tax_details_from_superadmin() jaisa hi
+        hai, bas source superadmin ki jagah parent_franchise hai.
+        """
+        if not self.parent_franchise:
+            return
+        self.gst_number = self.parent_franchise.gst_number
+        self.pan_number = self.parent_franchise.pan_number
+        if self.parent_franchise.pan_card:
+            self.pan_card = self.parent_franchise.pan_card.name
+        self.save(update_fields=["gst_number", "pan_number", "pan_card"])
+    
     def get_or_create_vendor(self):
         """Get or create vendor for this branch"""
         from ecommerce.models.vendor import Vendor
@@ -172,6 +241,3 @@ def delete_branch_user(sender, instance, **kwargs):
             print(f" User already deleted for branch '{instance.branch_name}'")
         except Exception as e:
             print(f" Error deleting user for branch '{instance.branch_name}': {str(e)}")
-            
-            
-            

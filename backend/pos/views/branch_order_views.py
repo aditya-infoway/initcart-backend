@@ -105,15 +105,10 @@ def handle_stock_on_status_change(order_item, old_status, new_status):
 
 
 class BranchOrderListAPIView(APIView):
-    """
-    API for branch to list their orders
-    Branch ka apna vendor hota hai, uske through orders filter hote hain
-    """
-    
-    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
-    page_key = "/Orders"
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]  # ✅ items jaisa hi
+    page_key = "/Orders"                                                 # ✅ EmployeePermission yahi page_key match karega
     authentication_classes = [JWTAuthentication]
-    
+
     def get(self, request):
         try:
             user = request.user
@@ -122,12 +117,8 @@ class BranchOrderListAPIView(APIView):
 
             branch = user.get_effective_branch()
             if not branch:
-                return Response({
-                    'success': False,
-                    'message': 'No branch linked to this user'
-                }, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'success': False, 'message': 'No branch linked to this user'}, status=400)
 
-            # Employee ko bhi branch_id override allow
             branch_id_param = request.query_params.get('branch_id')
             if branch_id_param:
                 if is_superadmin or is_employee:
@@ -206,9 +197,9 @@ class BranchOrderListAPIView(APIView):
             paginated_orders = orders[start:end]
             
             serializer = VendorOrderListSerializer(
-                paginated_orders, 
-                many=True, 
-                context={'request': request}
+                paginated_orders,
+                many=True,
+                context={'request': request, 'vendor': vendor}
             )
             
             return Response({
@@ -310,14 +301,10 @@ class BranchOrderStatsAPIView(APIView):
 
 
 class BranchOrderDetailAPIView(APIView):
-    """
-    API for branch to view order details
-    """
-    
     permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
     page_key = "/Orders"
     authentication_classes = [JWTAuthentication]
-    
+
     def get(self, request, order_id):
         try:
             user = request.user
@@ -326,12 +313,8 @@ class BranchOrderDetailAPIView(APIView):
 
             branch = user.get_effective_branch()
             if not branch:
-                return Response({
-                    'success': False,
-                    'message': 'No branch linked to this user'
-                }, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'success': False, 'message': 'No branch linked to this user'}, status=400)
 
-            # Employee ko bhi branch_id override allow
             branch_id_param = request.query_params.get('branch_id')
             if branch_id_param:
                 if is_superadmin or is_employee:
@@ -341,42 +324,23 @@ class BranchOrderDetailAPIView(APIView):
                     except Branch.DoesNotExist:
                         return Response({'error': 'Branch not found'}, status=404)
 
-            # Get vendor from branch user
             try:
                 vendor = Vendor.objects.get(user=branch.user) if branch.user else None
             except Vendor.DoesNotExist:
-                return Response({
-                    'success': False,
-                    'message': 'Vendor profile not found for this branch'
-                }, status=status.HTTP_404_NOT_FOUND)
-            
+                return Response({'success': False, 'message': 'Vendor profile not found for this branch'}, status=404)
             if not vendor:
-                return Response({
-                    'success': False,
-                    'message': 'Vendor profile not found'
-                }, status=status.HTTP_404_NOT_FOUND)
-            
-            # Get order that has items from this vendor
+                return Response({'success': False, 'message': 'Vendor profile not found'}, status=404)
+
             order = Order.objects.filter(
-                id=order_id,
-                items__vendor=vendor
-            ).prefetch_related(
-                "items",
-                "items__product_stock"
-            ).distinct().first()
-            
+                id=order_id, items__vendor=vendor
+            ).prefetch_related("items", "items__product_stock").distinct().first()
+
             if not order:
-                return Response({
-                    'success': False,
-                    'message': 'Order not found or you do not have permission'
-                }, status=status.HTTP_404_NOT_FOUND)
-            
-            serializer = VendorOrderSerializer(order, context={'request': request})
-            
-            return Response({
-                'success': True,
-                'data': serializer.data
-            })
+                return Response({'success': False, 'message': 'Order not found or you do not have permission'}, status=404)
+
+            serializer = VendorOrderSerializer(order, context={'request': request, 'vendor': vendor})  # 🔑 YE LINE
+
+            return Response({'success': True, 'data': serializer.data})
             
         except Exception as e:
             logger.error(f"Error in BranchOrderDetailAPIView: {str(e)}")

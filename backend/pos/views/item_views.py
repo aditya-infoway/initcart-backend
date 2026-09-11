@@ -57,7 +57,7 @@ class ItemCreate(APIView):
 
         item = serializer.save(
             branch=branch,
-            created_by_superadmin=acts_as_admin   # 👈 employee ke items bhi "company/superadmin" items maane jayenge
+            created_by_superadmin=acts_as_admin   #  employee ke items bhi "company/superadmin" items maane jayenge
         )
         return Response({"success": True, "item_id": item.id}, status=status.HTTP_201_CREATED)
 

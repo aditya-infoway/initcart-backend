@@ -40,7 +40,8 @@ services:
     dns:
       - 8.8.8.8
       - 1.1.1.1      
-
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
   phpmyadmin:
     image: phpmyadmin/phpmyadmin
     container_name: supercommerce_phpmyadmin

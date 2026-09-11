@@ -115,7 +115,7 @@ class itemvariants(models.Model):
     discountAmount = models.FloatField(default=0)
     taxAmount = models.FloatField(default=0)
     netValue = models.FloatField(default=0)
-    current_stock = models.IntegerField(default=0)
+    current_stock = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     branchPrice = models.FloatField(default=0)
     
     # Dynamic fields like size, color, etc.

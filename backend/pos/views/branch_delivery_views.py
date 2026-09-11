@@ -1,55 +1,90 @@
 # pos/views/branch_delivery_views.py
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework import status
-from django.shortcuts import get_object_or_404
 from ecommerce.models.order import Order, OrderItem, VendorDeliveryInfo
 from ecommerce.models.vendor import Vendor
 import logging
 
+# ✅ Same permission class used everywhere else in Orders module
+from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
+
 logger = logging.getLogger(__name__)
+
+
+def resolve_branch_and_vendor(request):
+    """
+    Common helper — same pattern as BranchOrderListAPIView / BranchOrderDetailAPIView etc.
+    Returns (branch, vendor, error_response). error_response is None on success.
+    """
+    user = request.user
+    is_superadmin = user.role == 'superadmin'
+    is_employee = user.role == 'employee'
+
+    # ✅ FIX 1: hasattr(user, 'branch') ki jagah get_effective_branch() —
+    # employee/superadmin ke paas direct .branch attribute nahi hota
+    branch = user.get_effective_branch()
+    if not branch:
+        return None, None, Response({
+            'success': False,
+            'message': 'No branch linked to this user'
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    # Superadmin/Employee ko branch_id query param se override allow karo
+    # (BranchOrdersPage.tsx se selectedBranch.id branch_id param ke roop me aata hai)
+    branch_id_param = request.query_params.get('branch_id')
+    if branch_id_param:
+        if is_superadmin or is_employee:
+            from pos.models.branch import Branch
+            try:
+                branch = Branch.objects.get(id=branch_id_param)
+            except Branch.DoesNotExist:
+                return None, None, Response({'error': 'Branch not found'}, status=404)
+
+    # ✅ FIX 2: Vendor.objects.get(user=user) ki jagah Vendor.objects.get(user=branch.user) —
+    # employee ka apna vendor nahi hota, branch-owner ka hota hai
+    try:
+        vendor = Vendor.objects.get(user=branch.user) if branch.user else None
+    except Vendor.DoesNotExist:
+        vendor = None
+
+    if not vendor:
+        return None, None, Response({
+            'success': False,
+            'message': 'Vendor profile not found for this branch'
+        }, status=status.HTTP_404_NOT_FOUND)
+
+    return branch, vendor, None
 
 
 class BranchDeliveryInfoAPIView(APIView):
     """
     API for branch to get/update delivery information
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]  # ✅ FIX 3
+    page_key = "/Orders"                                                 # ✅ FIX 3
     authentication_classes = [JWTAuthentication]
-    
+
     def get(self, request, order_id):
         try:
-            user = request.user
-            
-            if not hasattr(user, 'branch'):
-                return Response({
-                    'success': False,
-                    'message': 'Only branch users can access this endpoint'
-                }, status=status.HTTP_403_FORBIDDEN)
-            
-            try:
-                vendor = Vendor.objects.get(user=user)
-            except Vendor.DoesNotExist:
-                return Response({
-                    'success': False,
-                    'message': 'Vendor profile not found'
-                }, status=status.HTTP_404_NOT_FOUND)
-            
+            branch, vendor, error = resolve_branch_and_vendor(request)
+            if error:
+                return error
+
             # Check if order has vendor's items
             if not OrderItem.objects.filter(order_id=order_id, vendor=vendor).exists():
                 return Response({
                     'success': False,
                     'message': 'Order not found or you do not have permission'
                 }, status=status.HTTP_404_NOT_FOUND)
-            
+
             # Get or create delivery info
             delivery_info, created = VendorDeliveryInfo.objects.get_or_create(
                 order_id=order_id,
                 vendor=vendor
             )
-            
+
             return Response({
                 'success': True,
                 'data': {
@@ -67,61 +102,49 @@ class BranchDeliveryInfoAPIView(APIView):
                     'updated_at': delivery_info.updated_at
                 }
             })
-            
+
         except Exception as e:
             logger.error(f"Error in BranchDeliveryInfoAPIView GET: {str(e)}")
             return Response({
                 'success': False,
                 'message': f'Error: {str(e)}'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
+
     def post(self, request, order_id):
         try:
-            user = request.user
-            
-            if not hasattr(user, 'branch'):
-                return Response({
-                    'success': False,
-                    'message': 'Only branch users can access this endpoint'
-                }, status=status.HTTP_403_FORBIDDEN)
-            
-            try:
-                vendor = Vendor.objects.get(user=user)
-            except Vendor.DoesNotExist:
-                return Response({
-                    'success': False,
-                    'message': 'Vendor profile not found'
-                }, status=status.HTTP_404_NOT_FOUND)
-            
+            branch, vendor, error = resolve_branch_and_vendor(request)
+            if error:
+                return error
+
             # Check if order has vendor's items
             if not OrderItem.objects.filter(order_id=order_id, vendor=vendor).exists():
                 return Response({
                     'success': False,
                     'message': 'Order not found or you do not have permission'
                 }, status=status.HTTP_404_NOT_FOUND)
-            
+
             # Get or create delivery info
             delivery_info, created = VendorDeliveryInfo.objects.get_or_create(
                 order_id=order_id,
                 vendor=vendor
             )
-            
+
             # Update fields
             delivery_info.delivery_service = request.data.get('delivery_service', delivery_info.delivery_service)
             delivery_info.delivery_man_name = request.data.get('delivery_man_name', delivery_info.delivery_man_name)
             delivery_info.delivery_man_phone = request.data.get('delivery_man_phone', delivery_info.delivery_man_phone)
-            
+
             if request.data.get('delivery_incentive'):
                 delivery_info.delivery_incentive = request.data.get('delivery_incentive')
-                
+
             delivery_info.expected_delivery_date = request.data.get('expected_delivery_date', delivery_info.expected_delivery_date)
             delivery_info.tracking_id = request.data.get('tracking_id', delivery_info.tracking_id)
             delivery_info.courier_name = request.data.get('courier_name', delivery_info.courier_name)
             delivery_info.courier_website = request.data.get('courier_website', delivery_info.courier_website)
             delivery_info.delivery_status = request.data.get('delivery_status', delivery_info.delivery_status)
-            
+
             delivery_info.save()
-            
+
             return Response({
                 'success': True,
                 'message': 'Delivery information updated successfully',
@@ -139,7 +162,7 @@ class BranchDeliveryInfoAPIView(APIView):
                     'updated_at': delivery_info.updated_at
                 }
             })
-            
+
         except Exception as e:
             logger.error(f"Error in BranchDeliveryInfoAPIView POST: {str(e)}")
             return Response({
@@ -152,51 +175,40 @@ class BranchInvoiceAPIView(APIView):
     """
     API for branch to get invoice data
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]  # ✅ FIX 3
+    page_key = "/Orders"                                                 # ✅ FIX 3
     authentication_classes = [JWTAuthentication]
-    
+
     def get(self, request, order_id):
         try:
-            user = request.user
-            
-            if not hasattr(user, 'branch'):
-                return Response({
-                    'success': False,
-                    'message': 'Only branch users can access this endpoint'
-                }, status=status.HTTP_403_FORBIDDEN)
-            
-            try:
-                vendor = Vendor.objects.get(user=user)
-            except Vendor.DoesNotExist:
-                return Response({
-                    'success': False,
-                    'message': 'Vendor profile not found'
-                }, status=status.HTTP_404_NOT_FOUND)
-            
+            branch, vendor, error = resolve_branch_and_vendor(request)
+            if error:
+                return error
+
             # Get order with vendor's items
             order = Order.objects.filter(
                 id=order_id,
                 items__vendor=vendor
             ).distinct().first()
-            
+
             if not order:
                 return Response({
                     'success': False,
                     'message': 'Order not found'
                 }, status=status.HTTP_404_NOT_FOUND)
-            
+
             # Get vendor's items
             vendor_items = OrderItem.objects.filter(
                 order=order,
                 vendor=vendor
             )
-            
+
             # Calculate totals
             subtotal = sum(float(item.total_price) for item in vendor_items)
             discount = sum(float(item.discount_amount) for item in vendor_items)
             tax = sum(float(item.tax_amount) for item in vendor_items)
             total = subtotal - discount + tax
-            
+
             # Get delivery info
             try:
                 delivery_info = VendorDeliveryInfo.objects.get(order=order, vendor=vendor)
@@ -207,7 +219,7 @@ class BranchInvoiceAPIView(APIView):
                 delivery_service = None
                 tracking_id = None
                 courier_name = None
-            
+
             invoice_data = {
                 'order_number': order.order_number,
                 'order_date': order.created_at,
@@ -257,12 +269,12 @@ class BranchInvoiceAPIView(APIView):
                     'courier_name': courier_name
                 } if delivery_service else None
             }
-            
+
             return Response({
                 'success': True,
                 'data': invoice_data
             })
-            
+
         except Exception as e:
             logger.error(f"Error in BranchInvoiceAPIView: {str(e)}")
             return Response({

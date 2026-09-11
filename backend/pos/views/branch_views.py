@@ -252,6 +252,7 @@ class BranchLoginViewset(APIView):
                     "branch_type": branch.branch_type,
                     "phone": branch.phone,
                     "status": branch.status,
+                    "ownership_type": getattr(branch, "ownership_type", "branch"),
                 },
                 "user": {
                     "id": auth_user.id,
@@ -368,6 +369,7 @@ class BranchLoginViewset(APIView):
                     "branch_type": branch.branch_type,
                     "phone": branch.phone,
                     "status": branch.status,
+                    "ownership_type": getattr(branch, "ownership_type", "branch"),
                 }
 
                 return Response({
@@ -455,6 +457,7 @@ class BranchLoginViewset(APIView):
                 "branch_type": branch.branch_type,
                 "phone": branch.phone,
                 "status": branch.status,
+                "ownership_type": getattr(branch, "ownership_type", "branch"),
             },
             "user": {
                 "id": user.id,
@@ -591,7 +594,29 @@ class BranchMeView(APIView):
     authentication_classes = [JWTAuthentication, SessionAuthentication]
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
-
+    @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
+    def superadmin_tax_details(self, request):
+        """Get superadmin branch GST/PAN details"""
+        try:
+            sa_branch = Branch.objects.filter(user__role='superadmin').first()
+            if not sa_branch:
+                return Response({
+                    "success": False,
+                    "message": "Superadmin branch not found"
+                }, status=404)
+            
+            return Response({
+                "success": True,
+                "data": {
+                    "gst_number": sa_branch.gst_number or "",
+                    "pan_number": sa_branch.pan_number or "",
+                }
+            })
+        except Exception as e:
+            return Response({
+                "success": False,
+                "message": str(e)
+            }, status=500)
     def get(self, request):
         branch = request.user.get_effective_branch()
         if not branch:
@@ -624,6 +649,10 @@ class BranchMeView(APIView):
         if is_superadmin:
             allowed_fields |= {"branch_name", "branch_type", "branch_logo", "email", "pincode"}
             allowed_fields -= {"bank_name", "account_number", "ifsc_code", "upi_id"}
+            # ✅ NEW — Superadmin apna master GST Number, PAN Number, PAN Card yahin se edit karega.
+            # Ye is superadmin ki branch record par save hota hai, aur naye 'branch' type
+            # branches create hote waqt yahin se copy hote hain.
+            allowed_fields |= {"gst_number", "pan_number", "pan_card"}
 
         data = {k: v for k, v in request.data.items() if k in allowed_fields}
 
@@ -684,6 +713,22 @@ class BranchMeView(APIView):
             ),
             "data": BranchDetailSerializer(branch).data
         })
-    
-    
-    
+        
+# pos/views/branch_views.py - LAST MEIN ADD KARO
+
+class SuperadminTaxDetailsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        sa_branch = Branch.objects.filter(user__role='superadmin').first()
+        if not sa_branch:
+            return Response({"success": False, "message": "Superadmin branch not found"}, status=404)
+        
+        return Response({
+            "success": True,
+            "data": {
+                "gst_number": sa_branch.gst_number or "",
+                "pan_number": sa_branch.pan_number or "",
+            }
+        })        
+        

@@ -30,9 +30,10 @@ def create_full_item_in_destination(source_item, destination_branch):
     ).first()
 
 class TransferItemCreateSerializer(serializers.Serializer):
-    from_variant_id = serializers.IntegerField()
-    quantity        = serializers.IntegerField(min_value=1)
-    rate            = serializers.FloatField(default=0)
+    from_variant_id   = serializers.IntegerField()
+    quantity          = serializers.IntegerField(min_value=1)
+    rate              = serializers.FloatField(default=0)
+    discount_percent  = serializers.FloatField(default=0, required=False, min_value=0, max_value=100)
 
 
 
