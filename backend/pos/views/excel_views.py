@@ -32,19 +32,22 @@ from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
 class DownloadExcelTemplate(APIView):
     """Download Excel template for company items import"""
     
-    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
     permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
-    page_key = "/ExcelImportExport"  # ✅ ADD: Frontend route
+    page_key = "/ExcelImportExport"
 
     def get(self, request):
-        # ✅ CHANGE: request.user.branch → get_effective_branch()
         branch = request.user.get_effective_branch()
         if not branch:
             return Response({
                 "success": False,
                 "error": "No branch linked to this user"
             }, status=status.HTTP_400_BAD_REQUEST)
-            
+
+        # ✅ ADD: role check — Branch Price column sirf superadmin/employee ke liye
+        user = request.user
+        is_superadmin = user.role == 'superadmin'
+        acts_as_admin = is_superadmin or user.role == 'employee'
+
         branch_type = branch.branch_type.lower()
 
         wb = Workbook()
@@ -79,9 +82,13 @@ class DownloadExcelTemplate(APIView):
             "electronics": ["VARIANT_SIZE", "VARIANT_COLOR", "SERIAL_NO", "WARRANTY_DATE"],
         }
 
-        variant_columns = branch_variant_fields.get(branch_type, []) + [
-            "PURCHASE_PRICE*", "SALES_PRICE*", "MRP*", "BARCODE", "OPENING_STOCK"
-        ]
+        # ✅ CHANGE: PURCHASE_PRICE ke turant baad BRANCH_PRICE* sirf admin/employee ke liye
+        price_columns = ["PURCHASE_PRICE*"]
+        if acts_as_admin:
+            price_columns.append("BRANCH_PRICE*")
+        price_columns += ["SALES_PRICE*", "MRP*", "BARCODE", "OPENING_STOCK"]
+
+        variant_columns = branch_variant_fields.get(branch_type, []) + price_columns
 
         all_headers = main_columns + [{"header": col, "width": 20} for col in variant_columns]
 
@@ -110,7 +117,7 @@ class DownloadExcelTemplate(APIView):
             "CATEGORY_NAME": sorted(list(Category.objects.values_list('name', flat=True))),
             "GROUP_NAME": sorted(list(ItemGroup.objects.filter(branch=branch).values_list('name', flat=True))),
             "UNIT_NAME": sorted(list(ItemUnit.objects.filter(is_active=True).values_list('symbol', flat=True))),
-            "TAX_SLAB": ["5%", "12%", "18%", "28%", "Tax Free"],
+            "TAX_SLAB": ["5%", "12%", "18%", "28%", "0"],
             "WEBSITE_DISPLAY": ["YES", "NO"]
         }
 
@@ -216,12 +223,20 @@ class DownloadExcelTemplate(APIView):
         # =========================================================
 
         # ===== CONDITIONAL FORMATTING =====
-        red_fill = PatternFill(start_color="FFC7CE", fill_type="solid")
-
-        ws_data.conditional_formatting.add(
-            f"N2:N500",
-            CellIsRule(operator='lessThan', formula=['M2'], fill=red_fill)
-        )
+        # ✅ FIX: hardcoded M2/N2 hata kar dynamic column-index nikala,
+        # kyunki BRANCH_PRICE add hone se SALES_PRICE/MRP columns shift ho sakte hain,
+        # aur pehle ye sirf "mart" ke liye accidentally sahi tha.
+        header_names = [col["header"].replace("*", "") for col in all_headers]
+        try:
+            sales_col_letter = get_column_letter(header_names.index("SALES_PRICE") + 1)
+            mrp_col_letter = get_column_letter(header_names.index("MRP") + 1)
+            red_fill = PatternFill(start_color="FFC7CE", fill_type="solid")
+            ws_data.conditional_formatting.add(
+                f"{sales_col_letter}2:{sales_col_letter}{max_row}",
+                CellIsRule(operator='greaterThan', formula=[f"${mrp_col_letter}2"], fill=red_fill)
+            )
+        except ValueError:
+            pass
 
         # ===== RESPONSE =====
         response = HttpResponse(
@@ -236,9 +251,8 @@ class DownloadExcelTemplate(APIView):
 class ImportItemsFromExcel(APIView):
     """Import company items from Excel"""
     
-    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
     permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
-    page_key = "/ExcelImportExport"  # ✅ ADD: Frontend route
+    page_key = "/ExcelImportExport"
 
     def post(self, request):
         used_barcodes = set()
@@ -246,14 +260,18 @@ class ImportItemsFromExcel(APIView):
         if not excel_file:
             return Response({"error": "No file uploaded"}, status=400)
 
-        # ✅ CHANGE: request.user.branch → get_effective_branch()
         branch = request.user.get_effective_branch()
         if not branch:
             return Response({
                 "success": False,
                 "error": "No branch linked to this user"
             }, status=status.HTTP_400_BAD_REQUEST)
-            
+
+        # ✅ ADD: role check
+        user = request.user
+        is_superadmin = user.role == 'superadmin'
+        acts_as_admin = is_superadmin or user.role == 'employee'
+
         branch_type = branch.branch_type.lower()
 
         variant_field_mapping = {
@@ -325,7 +343,8 @@ class ImportItemsFromExcel(APIView):
                 "12": "12%", "12%": "12%",
                 "18": "18%", "18%": "18%",
                 "28": "28%", "28%": "28%",
-                "TAXFREE": "Tax Free", "TAXFREE%": "Tax Free", "TAX_FREE": "Tax Free",
+                "0": "0", "0%": "0",
+                "TAXFREE": "0", "TAXFREE%": "0", "TAX_FREE": "0",
             }
             return mapping.get(raw, "")
 
@@ -454,7 +473,7 @@ class ImportItemsFromExcel(APIView):
                 elif not val_tax:
                     errors.append(
                         f"Row {row_num}: TAX_SLAB '{clean(raw_tax)}' is invalid. "
-                        f"Allowed values: 5%, 12%, 18%, 28%, Tax Free"
+                        f"Allowed values: 5%, 12%, 18%, 28%, 0"
                     )
                     item_has_error = True
 
@@ -513,6 +532,15 @@ class ImportItemsFromExcel(APIView):
             if sales_price > mrp:
                 errors.append(f"Row {row_num}: SALES_PRICE > MRP")
 
+            # ✅ ADD: BRANCH_PRICE — sirf superadmin/employee ke liye column read hoga,
+            # normal branch ya empty column ke liye purchase_price fallback
+            if acts_as_admin:
+                branch_price = to_float(row.get('BRANCH_PRICE'))
+                if branch_price is None:
+                    branch_price = purchase_price
+            else:
+                branch_price = purchase_price
+
             # ===== BARCODE =====
             raw_barcode = row.get('BARCODE')
             if is_empty(raw_barcode):
@@ -527,13 +555,17 @@ class ImportItemsFromExcel(APIView):
 
             # ===== TAX =====
             tax_str = items_data[item_name]["item_fields"].get("tax", "")
-            tax_rate = float(tax_str.replace('%', '').replace('Tax Free', '0') or 0) if tax_str else 0.0
+            if tax_str and tax_str != "0":
+                tax_rate = float(tax_str.replace('%', '') or 0)
+            else:
+                tax_rate = 0.0
             basic = qty * purchase_price
             tax_amt = (basic * tax_rate) / 100
             net = basic + tax_amt
 
             variant = {
                 "purchasePrice": purchase_price,
+                "branchPrice": branch_price,  # ✅ ADD
                 "salesPrice": sales_price,
                 "mrp": mrp,
                 "barcode": barcode,
@@ -599,7 +631,8 @@ class ImportItemsFromExcel(APIView):
                     unit_id=f["unit"],
                     hsnCode=f["hsn"],
                     taxSlab=f["tax"],
-                    website_display=f["website"]
+                    website_display=f["website"],
+                    created_by=user,
                 )
                 created_items += 1
 
@@ -607,6 +640,7 @@ class ImportItemsFromExcel(APIView):
                     itemvariants.objects.create(
                         item=item,
                         purchasePrice=v["purchasePrice"],
+                        branchPrice=v["branchPrice"],  # ✅ ADD
                         salesPrice=v["salesPrice"],
                         mrp=v["mrp"],
                         barcode=v["barcode"],
@@ -632,22 +666,25 @@ class ImportItemsFromExcel(APIView):
 class ExportItemsToExcel(APIView):
     """Export company items to Excel"""
     
-    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
     permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
-    page_key = "/ExcelImportExport"  # ✅ ADD: Frontend route
+    page_key = "/ExcelImportExport"
 
     def get(self, request):
         from openpyxl.utils import get_column_letter
         import pandas as pd
 
-        # ✅ CHANGE: request.user.branch → get_effective_branch()
         branch = request.user.get_effective_branch()
         if not branch:
             return Response({
                 "success": False,
                 "error": "No branch linked to this user"
             }, status=status.HTTP_400_BAD_REQUEST)
-            
+
+        # ✅ ADD: role check
+        user = request.user
+        is_superadmin = user.role == 'superadmin'
+        acts_as_admin = is_superadmin or user.role == 'employee'
+
         branch_type = branch.branch_type.lower()
 
         item_queryset = items.objects.filter(branch=branch, entry_type='company').prefetch_related('variants')
@@ -676,9 +713,20 @@ class ExportItemsToExcel(APIView):
                     "BARCODE":            variant.barcode or "",
                     "OPENING_STOCK":      variant.opStock,
                 }
+                # ✅ ADD: sirf superadmin/employee ke export me Branch Price column
+                if acts_as_admin:
+                    row["BRANCH_PRICE"] = variant.branchPrice
                 data.append(row)
 
         df = pd.DataFrame(data)
+
+        # ✅ ADD: BRANCH_PRICE ko PURCHASE_PRICE ke baad reorder karo (agar present hai)
+        if "BRANCH_PRICE" in df.columns:
+            cols = list(df.columns)
+            cols.remove("BRANCH_PRICE")
+            pp_idx = cols.index("PURCHASE_PRICE")
+            cols.insert(pp_idx + 1, "BRANCH_PRICE")
+            df = df[cols]
 
         response = HttpResponse(
             content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'

@@ -237,16 +237,34 @@ class StockTransferItemTaxAPIView(APIView):
         rate = from_variant.branchPrice or 0
         tax_percent = from_variant.item.taxSlab or "0"
 
+        # ✅ NEW — Discount ko safely parse karo aur 0-100 ke beech clamp karo
+        discount_percent = request.data.get("discount_percent", 0)
+        try:
+            discount_percent = float(discount_percent or 0)
+        except (TypeError, ValueError):
+            discount_percent = 0
+        if discount_percent < 0:
+            discount_percent = 0
+        if discount_percent > 100:
+            discount_percent = 100
+
+        # ✅ NEW — Branch price se discount minus karo, GST isi discounted price par calculate hogi
+        discount_amount_per_unit = (rate * discount_percent) / 100
+        discounted_rate = rate - discount_amount_per_unit
+
         settings_obj = SettingModel.objects.filter(branch=from_branch).first()
         gst_toggle = getattr(settings_obj, "stock_transfer_gst_toggle", False)
         same_state = (from_branch.state or "") == (to_branch.state or "")
 
-        result = calculate_gst_split(rate, quantity, tax_percent, gst_toggle, same_state)
+        result = calculate_gst_split(discounted_rate, quantity, tax_percent, gst_toggle, same_state)
 
         return Response({
             "from_variant_id": from_variant.id,
             "item_name": from_variant.item.itemName,
             "rate": float(rate),
+            "discount_percent": discount_percent,
+            "discount_amount": float(discount_amount_per_unit * quantity),
+            "discounted_rate": float(discounted_rate),
             "quantity": quantity,
             "tax_percent": float(str(tax_percent).replace("%", "") or 0),
             "gst_toggle": gst_toggle,
@@ -266,17 +284,39 @@ class StockTransferItemTaxAPIView(APIView):
 # ─────────────────────────────────────────────────────────────────────────────
 class MyBranchItemsView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsSuperAdminOrPagePermittedEmployee]
+    permission_classes = [IsAuthenticated]
     page_key = "/stockTransfer"
+    ALLOWED_PAGE_KEYS = ["/stockTransfer", "/b2bsales"]
 
     def get(self, request):
+        user = request.user
+        role = getattr(user, "role", None)
+
+        if role == "superadmin":
+            pass  # full access, jaisa pehle tha
+
+        elif role == "employee":
+            employee = getattr(user, "employee_profile", None)
+            if not employee:
+                return Response({'success': False, 'message': 'Permission denied.'}, status=403)
+
+            has_access = employee.permissions.filter(
+                page_key__in=self.ALLOWED_PAGE_KEYS,
+                can_view=True
+            ).exists()
+
+            if not has_access:
+                return Response({'success': False, 'message': 'Permission denied.'}, status=403)
+
+        else:
+            return Response({'success': False, 'message': 'Permission denied.'}, status=403)
+
         my_branch = request.user.get_effective_branch()
         if not my_branch:
             return Response({'success': False, 'message': 'Your branch not found.'}, status=404)
 
         items_qs = Items.objects.filter(
             branch=my_branch,
-            created_by_superadmin=True
         ).prefetch_related('variants', 'unit', 'c_brand', 'c_category').order_by('itemName')
 
         data = []

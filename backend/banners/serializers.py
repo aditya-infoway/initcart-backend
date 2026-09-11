@@ -34,60 +34,83 @@ class SmallAdSerializer(serializers.ModelSerializer):
 class SuperAdminProfileSerializer(serializers.ModelSerializer):
     profile_image = serializers.SerializerMethodField()
     brochure_pdf_url = serializers.SerializerMethodField()
-    
+    apk_file_url = serializers.SerializerMethodField()  # ✅ NEW
+
     class Meta:
         model = SuperAdminProfile
         fields = [
-            "name", "email", "phone", "address", 
+            "name", "email", "phone", "address",
             "profile_image", "brochure_pdf", "brochure_pdf_url",
+            "apk_file", "apk_file_url",  # ✅ NEW
             "youtube", "instagram", "twitter", "facebook", "whatsapp"
         ]
         extra_kwargs = {
-            'brochure_pdf': {'required': False}
+            'brochure_pdf': {'required': False},
+            'apk_file': {'required': False},  # ✅ NEW
         }
-    
+
     def get_profile_image(self, obj):
         if obj.profile_image:
             request = self.context.get("request")
-            if request:  # ✅ Safety check
+            if request:
                 return request.build_absolute_uri(obj.profile_image.url)
-            return obj.profile_image.url  # Fallback to relative URL
+            return obj.profile_image.url
         return ""
-    
+
     def get_brochure_pdf_url(self, obj):
         if obj.brochure_pdf:
             request = self.context.get("request")
-            if request:  # ✅ Safety check
+            if request:
                 return request.build_absolute_uri(obj.brochure_pdf.url)
-            return obj.brochure_pdf.url  # Fallback to relative URL
+            return obj.brochure_pdf.url
+        return ""
+
+    # ✅ NEW
+    def get_apk_file_url(self, obj):
+        if obj.apk_file:
+            request = self.context.get("request")
+            if request:
+                return request.build_absolute_uri(obj.apk_file.url)
+            return obj.apk_file.url
         return ""
 
 
 class initAdminFooterSerializer(serializers.ModelSerializer):
     brochure_pdf_url = serializers.SerializerMethodField()
-    
+    apk_file_url = serializers.SerializerMethodField()  # ✅ NEW
+
     class Meta:
         model = SuperAdminProfile
         fields = [
             "phone", "email", "address",
             "youtube", "instagram", "twitter", "facebook", "whatsapp",
-            "brochure_pdf_url"
+            "brochure_pdf_url",
+            "apk_file_url"  # ✅ NEW
         ]
-    
+
     def get_profile_image(self, obj):
         if obj.profile_image:
             request = self.context.get("request")
-            if request:  # ✅ Safety check
+            if request:
                 return request.build_absolute_uri(obj.profile_image.url)
             return obj.profile_image.url
         return ""
-    
+
     def get_brochure_pdf_url(self, obj):
         if obj.brochure_pdf:
             request = self.context.get("request")
-            if request:  # ✅ Safety check
+            if request:
                 return request.build_absolute_uri(obj.brochure_pdf.url)
             return obj.brochure_pdf.url
+        return ""
+
+    # ✅ NEW
+    def get_apk_file_url(self, obj):
+        if obj.apk_file:
+            request = self.context.get("request")
+            if request:
+                return request.build_absolute_uri(obj.apk_file.url)
+            return obj.apk_file.url
         return ""
         
 

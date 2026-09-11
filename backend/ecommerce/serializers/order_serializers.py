@@ -465,7 +465,7 @@ class VendorOrderListSerializer(serializers.ModelSerializer):
     vendor_item_status = serializers.SerializerMethodField()
     store = serializers.SerializerMethodField()
     totalAmount = serializers.SerializerMethodField()
-    
+ 
     class Meta:
         model = Order
         fields = [
@@ -476,67 +476,60 @@ class VendorOrderListSerializer(serializers.ModelSerializer):
             'vendor_total', 'vendor_item_status',
             'store', 'totalAmount'
         ]
-    
-    def get_store(self, obj):
-        """Get store/vendor name for this order"""
+ 
+    def get_vendor(self):
+        """
+        🔑 Single source of truth for vendor resolution.
+        Context se vendor mile to wahi use karo (BranchOrderListAPIView isse
+        branch.user se resolve karke bhejta hai — superadmin AUR employee dono
+        ke liye sahi). Context me na mile to hi fallback request.user par jao
+        (yeh sirf non-branch / direct-vendor-login flows ke liye hai).
+        """
+        vendor = self.context.get('vendor')
+        if vendor:
+            return vendor
         request = self.context.get('request')
         if request and hasattr(request, 'user') and request.user.is_authenticated:
             try:
-                # ✅ Get the vendor's business name
-                vendor = Vendor.objects.get(user=request.user)
-                print(f"Store name for vendor: {vendor.business_name}")  # Debug
-                return vendor.business_name  # Return actual business name
+                return Vendor.objects.get(user=request.user)
             except Vendor.DoesNotExist:
-                print("Vendor not found for user")  # Debug
-                return None
-            except Exception as e:
-                print(f"Error in get_store: {e}")  # Debug
                 return None
         return None
-    
+ 
+    def get_store(self, obj):
+        """Get store/vendor name for this order"""
+        vendor = self.get_vendor()   # ✅ FIX — context-aware helper use kiya
+        if not vendor:
+            return None
+        return vendor.business_name
+ 
     def get_totalAmount(self, obj):
-        request = self.context.get('request')
-        if request and hasattr(request, 'user') and request.user.is_authenticated:
-            try:
-                vendor = Vendor.objects.get(user=request.user)
-                vendor_items = obj.items.filter(vendor=vendor)
-                return sum(float(item.total_price) for item in vendor_items)
-            except Vendor.DoesNotExist:
-                return 0
-        return 0
-    
+        vendor = self.get_vendor()   # ✅ FIX
+        if not vendor:
+            return 0
+        vendor_items = obj.items.filter(vendor=vendor)
+        return sum(float(item.total_price) for item in vendor_items)
+ 
     def get_vendor_items_count(self, obj):
-        request = self.context.get('request')
-        if request and hasattr(request, 'user') and request.user.is_authenticated:
-            try:
-                vendor = Vendor.objects.get(user=request.user)
-                return obj.items.filter(vendor=vendor).count()
-            except Vendor.DoesNotExist:
-                return 0
-        return 0
-    
+        vendor = self.get_vendor()   # ✅ FIX
+        if not vendor:
+            return 0
+        return obj.items.filter(vendor=vendor).count()
+ 
     def get_vendor_total(self, obj):
-        request = self.context.get('request')
-        if request and hasattr(request, 'user') and request.user.is_authenticated:
-            try:
-                vendor = Vendor.objects.get(user=request.user)
-                vendor_items = obj.items.filter(vendor=vendor)
-                return sum(float(item.total_price) for item in vendor_items)
-            except Vendor.DoesNotExist:
-                return 0
-        return 0
-    
+        vendor = self.get_vendor()   # ✅ FIX
+        if not vendor:
+            return 0
+        vendor_items = obj.items.filter(vendor=vendor)
+        return sum(float(item.total_price) for item in vendor_items)
+ 
     def get_vendor_item_status(self, obj):
-        request = self.context.get('request')
-        if request and hasattr(request, 'user') and request.user.is_authenticated:
-            try:
-                vendor = Vendor.objects.get(user=request.user)
-                vendor_items = obj.items.filter(vendor=vendor)
-                if vendor_items.exists():
-                    # Return the status of the first item
-                    return vendor_items.first().item_status
-            except Vendor.DoesNotExist:
-                return None
+        vendor = self.get_vendor()   # ✅ FIX
+        if not vendor:
+            return None
+        vendor_items = obj.items.filter(vendor=vendor)
+        if vendor_items.exists():
+            return vendor_items.first().item_status
         return None
 
 class VendorOrderSerializer(serializers.ModelSerializer):
@@ -559,6 +552,9 @@ class VendorOrderSerializer(serializers.ModelSerializer):
 
     # 🔹 vendor ek hi baar nikalega
     def get_vendor(self):
+        vendor = self.context.get('vendor')
+        if vendor:
+            return vendor
         request = self.context.get("request")
         if request and request.user.is_authenticated:
             try:

@@ -282,7 +282,7 @@ class StockReportAPIView(APIView):
 
             db_stock = Decimal(str(variant.current_stock or 0))
             if db_stock != calculated_stock:
-                variant.current_stock = float(calculated_stock)
+                variant.current_stock = calculated_stock
                 variants_to_update.append(variant)
 
             last_price = last_price_map.get(vid)

@@ -109,6 +109,12 @@ class itemSerializers(serializers.ModelSerializer):
 
 
     def validate(self, data):
+        tax_slab_val = data.get("taxSlab")
+        if tax_slab_val is not None:
+            cleaned = str(tax_slab_val).strip().lower()
+            if cleaned in ["tax free", "taxfree", "tax-free"]:
+                data["taxSlab"] = "0"
+
         request = self.context.get("request", None)
         user = getattr(request, "user", None)
 

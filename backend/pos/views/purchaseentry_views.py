@@ -174,7 +174,7 @@ class PurchaseCreateView(APIView):
 
             #  CASH PURCHASE - PCP बनाएं (Supplier balance नहीं बदलेगा)
             elif terms == "cash":
-                print("💵 CASH PURCHASE - Creating PCP (Supplier balance unchanged)")
+                print(" CASH PURCHASE - Creating PCP (Supplier balance unchanged)")
 
                 cash_account = purchase.case_account
 
@@ -742,7 +742,7 @@ class PurchaseCreditBillsAPIView(APIView):
 
             pending_amount = bill.grand_total - total_paid - credit_returns_unsettled
 
-            print(f"📋 PI {bill.billNo}: Grand={bill.grand_total}, Paid={total_paid}, UnsettledCreditReturns={credit_returns_unsettled}, Pending={pending_amount}")
+            print(f" PI {bill.billNo}: Grand={bill.grand_total}, Paid={total_paid}, UnsettledCreditReturns={credit_returns_unsettled}, Pending={pending_amount}")
 
             if pending_amount > Decimal('0.005'):
                 bills_data.append({

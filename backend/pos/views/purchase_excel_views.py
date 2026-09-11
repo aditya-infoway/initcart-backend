@@ -186,6 +186,27 @@ def to_decimal(val, default=Decimal("0.00")):
     except (InvalidOperation, ValueError):
         return default
 
+def parse_decimal_strict(val):
+    """
+    to_decimal() jaisa hi, lekin ye batata hai ki cell FILLED thi lekin
+    number-format GALAT tha (jaise "abc"). Returns (Decimal_value, is_valid_format).
+    is_valid_format=True jab cell blank ho (0 default) ya sahi number ho.
+    is_valid_format=False sirf tab jab kuch bhara tha par number nahi tha.
+    """
+    if val is None:
+        return Decimal("0.00"), True
+    try:
+        if pd.isna(val):
+            return Decimal("0.00"), True
+    except (TypeError, ValueError):
+        pass
+    s = str(val).replace("%", "").strip()
+    if s == "" or s.lower() == "nan":
+        return Decimal("0.00"), True
+    try:
+        return Decimal(s), True
+    except (InvalidOperation, ValueError):
+        return Decimal("0.00"), False
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1) TEMPLATE DOWNLOAD
@@ -514,9 +535,9 @@ class PurchaseExcelImportView(APIView):
                 current["items"].append({
                     "row_no": row_no,
                     "item_raw": item_raw,
-                    "qty": to_decimal(row.get("QTY")),
-                    "price": to_decimal(row.get("PRICE")),
-                    "discount_percent": to_decimal(row.get("DISCOUNT_PERCENT")),
+                    "qty_raw": row.get("QTY"),
+                    "price_raw": row.get("PRICE"),
+                    "discount_raw": row.get("DISCOUNT_PERCENT"),
                 })
 
         if current:
@@ -534,21 +555,34 @@ class PurchaseExcelImportView(APIView):
             if not party:
                 errors.append(f"Row {row_no}: Supplier '{g['party_name_raw']}' not found in this branch")
 
+            # ── DATE — ab explicitly required aur valid format hona chahiye ──
+            date_val = None
+            if is_empty(g["date_raw"]):
+                errors.append(f"Row {row_no}: DATE is required")
+            else:
+                date_val = parse_date(g["date_raw"])
+                if date_val is None:
+                    errors.append(f"Row {row_no}: DATE '{g['date_raw']}' is not a valid date")
+
             terms_val = g["terms_raw"].capitalize()
             if terms_val not in TERMS_CHOICES:
                 errors.append(f"Row {row_no}: TERMS must be one of Credit/Cash/Bank (got '{g['terms_raw']}')")
 
             cash_acc = bank_acc = None
+            due_date_val = None
             due_date_filled = not is_empty(g["due_date_raw"])
             cash_filled = bool(g["cash_account_raw"])
             bank_filled = bool(g["bank_account_raw"])
 
-            # ── DUE_DATE / CASH_ACCOUNT / BANK_ACCOUNT — is PARTICULAR
-            # entry (row) ke TERMS ke hisaab se sirf wohi ek column bhara
-            # hona chahiye. Credit ke liye Due Date COMPULSORY hai.
             if terms_val == "Credit":
                 if not due_date_filled:
                     errors.append(f"Row {row_no}: DUE_DATE is required when TERMS = Credit")
+                else:
+                    due_date_val = parse_date(g["due_date_raw"])
+                    if due_date_val is None:
+                        errors.append(f"Row {row_no}: DUE_DATE '{g['due_date_raw']}' is not a valid date")
+                    elif date_val and due_date_val < date_val:
+                        errors.append(f"Row {row_no}: DUE_DATE cannot be earlier than DATE")
                 if cash_filled or bank_filled:
                     errors.append(
                         f"Row {row_no}: TERMS = Credit — only DUE_DATE should be filled "
@@ -579,37 +613,74 @@ class PurchaseExcelImportView(APIView):
                         f"(remove value from DUE_DATE/CASH_ACCOUNT)"
                     )
 
+            # ── FREIGHT / OTHER / ROUND — negative values allowed nahi ──
+            for label, val in (
+                ("FREIGHT_CHARGE", g["freight"]),
+                ("OTHER_EXPENSE", g["other_expense"]),
+                ("ROUND_AMOUNT", g["round_amount"]),
+            ):
+                if val < 0:
+                    errors.append(f"Row {row_no}: {label} cannot be negative")
+
             if not g["items"]:
                 errors.append(f"Row {row_no}: This purchase entry has no items")
 
             resolved_items = []
+            seen_variant_ids = set()
             for it in g["items"]:
                 variant = variant_map.get(it["item_raw"].strip().lower())
                 if not variant:
                     errors.append(f"Row {it['row_no']}: Item/variant '{it['item_raw']}' not found")
                     continue
-                if it["qty"] <= 0:
+
+                if variant.id in seen_variant_ids:
+                    errors.append(
+                        f"Row {it['row_no']}: Item '{it['item_raw']}' is added more than once in the "
+                        f"same purchase entry — combine the quantity in a single row instead"
+                    )
+                    continue
+
+                qty_val, qty_ok = parse_decimal_strict(it["qty_raw"])
+                if not qty_ok:
+                    errors.append(f"Row {it['row_no']}: QTY '{it['qty_raw']}' is not a valid number")
+                    continue
+                if qty_val <= 0:
                     errors.append(f"Row {it['row_no']}: QTY must be greater than 0")
                     continue
-                price = it["price"] if it["price"] > 0 else to_decimal(variant.purchasePrice)
+
+                price_val, price_ok = parse_decimal_strict(it["price_raw"])
+                if not price_ok:
+                    errors.append(f"Row {it['row_no']}: PRICE '{it['price_raw']}' is not a valid number")
+                    continue
+                price = price_val if price_val > 0 else to_decimal(variant.purchasePrice)
                 if price <= 0:
                     errors.append(f"Row {it['row_no']}: PRICE must be greater than 0")
                     continue
+
+                discount_val, discount_ok = parse_decimal_strict(it["discount_raw"])
+                if not discount_ok:
+                    errors.append(f"Row {it['row_no']}: DISCOUNT_PERCENT '{it['discount_raw']}' is not a valid number")
+                    continue
+                if discount_val < 0 or discount_val > 100:
+                    errors.append(f"Row {it['row_no']}: DISCOUNT_PERCENT must be between 0 and 100 (got {discount_val})")
+                    continue
+
+                seen_variant_ids.add(variant.id)
                 resolved_items.append({
                     "item_obj": variant.item,
                     "variant_obj": variant,
-                    "qty": it["qty"],
+                    "qty": qty_val,
                     "price": price,
-                    "discount_percent": it["discount_percent"],
+                    "discount_percent": discount_val,
                 })
 
             resolved_groups.append({
                 "row_no": row_no,
                 "party": party,
-                "date_val": parse_date(g["date_raw"], default=datetime.now().date()),
+                "date_val": date_val or datetime.now().date(),
                 "purchasebill_no": g["purchasebill_no"],
                 "terms": terms_val,
-                "due_date": parse_date(g["due_date_raw"]) if terms_val == "Credit" else None,
+                "due_date": due_date_val,
                 "cash_account": cash_acc,
                 "bank_account": bank_acc,
                 "narration": g["narration"],
@@ -618,74 +689,88 @@ class PurchaseExcelImportView(APIView):
                 "round_amount": g["round_amount"],
                 "items": resolved_items,
             })
-
         if errors:
             return Response({"success": False, "errors": errors[:200]}, status=400)
 
         # ── PASS 3: create everything in one transaction ──
         created_bills = []
-        with transaction.atomic():
-            for g in resolved_groups:
-                purchase = PurchaseMaster.objects.create(
-                    branch=branch,
-                    partyName=g["party"],
-                    billNo=generate_purchase_voucher(branch),
-                    purchasebill_no=g["purchasebill_no"],
-                    date=g["date_val"],
-                    dueDate=g["due_date"],
-                    terms=g["terms"],
-                    narration=g["narration"],
-                    frightcharge=g["freight"],
-                    otherexpnse=g["other_expense"],
-                    roundamount=g["round_amount"],
-                    bank_account=g["bank_account"],
-                    case_account=g["cash_account"],
-                    created_by=request.user,
-                )
-
-                for it in g["items"]:
-                    pi = PurchaseItem(
-                        purchase=purchase,
-                        itemName=it["item_obj"],
-                        variant=it["variant_obj"],
-                        hsnCode=it["item_obj"].hsnCode or "",
-                        quantity=it["qty"],
-                        altQuantity=Decimal("0.00"),
-                        price=it["price"],
-                        per=_unit_symbol(it["item_obj"]),
-                        discountPercent=it["discount_percent"],
-                        netValue=Decimal("0.00"),
+        try:
+            with transaction.atomic():
+                for g in resolved_groups:
+                    purchase = PurchaseMaster.objects.create(
+                        branch=branch,
+                        partyName=g["party"],
+                        billNo=generate_purchase_voucher(branch),
+                        purchasebill_no=g["purchasebill_no"],
+                        date=g["date_val"],
+                        dueDate=g["due_date"],
+                        terms=g["terms"],
+                        narration=g["narration"],
+                        frightcharge=g["freight"],
+                        otherexpnse=g["other_expense"],
+                        roundamount=g["round_amount"],
+                        bank_account=g["bank_account"],
+                        case_account=g["cash_account"],
+                        created_by=request.user,
                     )
-                    pi.save()  # ✅ EXISTING model logic — GST/discount calc yahin hota hai
 
-                agg = purchase.items.aggregate(b=Sum("basicAmount"), t=Sum("taxAmount"), n=Sum("netValue"))
-                total_basic = agg["b"] or Decimal("0.00")
-                total_tax = agg["t"] or Decimal("0.00")
-                total_net = agg["n"] or Decimal("0.00")
-                grand_total = total_net + g["freight"] + g["other_expense"] + g["round_amount"]
+                    for it in g["items"]:
+                        try:
+                            pi = PurchaseItem(
+                                purchase=purchase,
+                                itemName=it["item_obj"],
+                                variant=it["variant_obj"],
+                                hsnCode=it["item_obj"].hsnCode or "",
+                                quantity=it["qty"],
+                                altQuantity=Decimal("0.00"),
+                                price=it["price"],
+                                per=_unit_symbol(it["item_obj"]),
+                                discountPercent=it["discount_percent"],
+                                netValue=Decimal("0.00"),
+                            )
+                            pi.save()
+                        except Exception as item_err:
+                            raise Exception(
+                                f"Purchase for '{g['party'].account_name}' — item "
+                                f"'{it['item_obj'].itemName}': {type(item_err).__name__}: {item_err}"
+                            )
 
-                purchase.total_basic = total_basic
-                purchase.total_tax = total_tax
-                purchase.total_net = total_net
-                purchase.grand_total = grand_total
-                purchase.save(update_fields=[
-                    "total_basic", "total_tax", "total_net", "grand_total"
-                ])
+                    agg = purchase.items.aggregate(b=Sum("basicAmount"), t=Sum("taxAmount"), n=Sum("netValue"))
+                    total_basic = agg["b"] or Decimal("0.00")
+                    total_tax = agg["t"] or Decimal("0.00")
+                    total_net = agg["n"] or Decimal("0.00")
+                    grand_total = total_net + g["freight"] + g["other_expense"] + g["round_amount"]
 
-                terms_lower = g["terms"].lower()
-                if terms_lower == "credit":
-                    PurchaseMaster.update_balance(purchase.partyName, purchase.grand_total, "Cr")
-                elif terms_lower == "cash" and purchase.case_account and purchase.partyName:
-                    self._create_cash_payment(purchase, branch, request)
-                elif terms_lower == "bank" and purchase.bank_account and purchase.partyName:
-                    self._create_bank_payment(purchase, branch, request)
+                    purchase.total_basic = total_basic
+                    purchase.total_tax = total_tax
+                    purchase.total_net = total_net
+                    purchase.grand_total = grand_total
+                    purchase.save(update_fields=[
+                        "total_basic", "total_tax", "total_net", "grand_total"
+                    ])
 
-                created_bills.append({
-                    "billNo": purchase.billNo,
-                    "party": purchase.partyName.account_name,
-                    "grand_total": float(purchase.grand_total),
-                    "items_count": len(g["items"]),
-                })
+                    terms_lower = g["terms"].lower()
+                    if terms_lower == "credit":
+                        PurchaseMaster.update_balance(purchase.partyName, purchase.grand_total, "Cr")
+                    elif terms_lower == "cash" and purchase.case_account and purchase.partyName:
+                        self._create_cash_payment(purchase, branch, request)
+                    elif terms_lower == "bank" and purchase.bank_account and purchase.partyName:
+                        self._create_bank_payment(purchase, branch, request)
+
+                    created_bills.append({
+                        "billNo": purchase.billNo,
+                        "party": purchase.partyName.account_name,
+                        "grand_total": float(purchase.grand_total),
+                        "items_count": len(g["items"]),
+                    })
+        except Exception as e:
+            import traceback
+            print("❌❌❌ PURCHASE IMPORT CRASH ❌❌❌")
+            traceback.print_exc()
+            return Response({
+                "success": False,
+                "errors": [f"Import failed while saving entries: {str(e)}"]
+            }, status=status.HTTP_400_BAD_REQUEST)
 
         return Response({
             "success": True,

@@ -28,19 +28,22 @@ from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
 class ManualDownloadExcelTemplate(APIView):
     """Download Excel template for manual items import"""
     
-    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
     permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
-    page_key = "/ExcelImportExport"  # ✅ ADD: Frontend route
+    page_key = "/ExcelImportExport"
 
     def get(self, request):
-        # ✅ CHANGE: request.user.branch → get_effective_branch()
         branch = request.user.get_effective_branch()
         if not branch:
             return Response({
                 "success": False,
                 "error": "No branch linked to this user"
             }, status=status.HTTP_400_BAD_REQUEST)
-            
+
+        # ✅ ADD: role check
+        user = request.user
+        is_superadmin = user.role == 'superadmin'
+        acts_as_admin = is_superadmin or user.role == 'employee'
+
         branch_type = branch.branch_type.lower()
 
         wb = Workbook()
@@ -74,9 +77,13 @@ class ManualDownloadExcelTemplate(APIView):
             "electronics": ["VARIANT_SIZE", "VARIANT_COLOR", "SERIAL_NO", "WARRANTY_DATE"],
         }
 
-        variant_columns = branch_variant_fields.get(branch_type, []) + [
-            "PURCHASE_PRICE*", "SALES_PRICE*", "MRP*", "BARCODE", "OPENING_STOCK"
-        ]
+        # ✅ CHANGE: PURCHASE_PRICE ke baad BRANCH_PRICE* sirf admin/employee ke liye
+        price_columns = ["PURCHASE_PRICE*"]
+        if acts_as_admin:
+            price_columns.append("BRANCH_PRICE*")
+        price_columns += ["SALES_PRICE*", "MRP*", "BARCODE", "OPENING_STOCK"]
+
+        variant_columns = branch_variant_fields.get(branch_type, []) + price_columns
 
         all_headers = main_columns + [{"header": col, "width": 20} for col in variant_columns]
 
@@ -92,7 +99,7 @@ class ManualDownloadExcelTemplate(APIView):
         dropdown_map = {
             "GROUP_NAME": sorted(list(ItemGroup.objects.filter(branch=branch).values_list('name', flat=True))),
             "UNIT_NAME":  sorted(list(ItemUnit.objects.filter(is_active=True).values_list('symbol', flat=True))),
-            "TAX_SLAB":   ["5%", "12%", "18%", "28%", "Tax Free"],
+            "TAX_SLAB":   ["5%", "12%", "18%", "28%", "0"],
         }
 
         hidden_start = len(all_headers) + 2
@@ -148,9 +155,8 @@ class ManualDownloadExcelTemplate(APIView):
 class ManualImportItemsFromExcel(APIView):
     """Import manual items from Excel"""
     
-    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
     permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
-    page_key = "/ExcelImportExport"  # ✅ ADD: Frontend route
+    page_key = "/ExcelImportExport"
 
     def post(self, request):
         used_barcodes = set()
@@ -159,14 +165,18 @@ class ManualImportItemsFromExcel(APIView):
         if not excel_file:
             return Response({"error": "No file uploaded"}, status=400)
 
-        # ✅ CHANGE: request.user.branch → get_effective_branch()
         branch = request.user.get_effective_branch()
         if not branch:
             return Response({
                 "success": False,
                 "error": "No branch linked to this user"
             }, status=status.HTTP_400_BAD_REQUEST)
-            
+
+        # ✅ ADD: role check
+        user = request.user
+        is_superadmin = user.role == 'superadmin'
+        acts_as_admin = is_superadmin or user.role == 'employee'
+
         branch_type = branch.branch_type.lower()
 
         variant_field_mapping = {
@@ -220,7 +230,7 @@ class ManualImportItemsFromExcel(APIView):
             if isinstance(val, (int, float)):
                 num = float(val)
                 if num == 0:
-                    return "Tax Free"
+                    return "0"
                 if 0 < num < 1:
                     num = round(num * 100, 2)
                 valid_slabs = {5.0: "5%", 12.0: "12%", 18.0: "18%", 28.0: "28%"}
@@ -229,7 +239,7 @@ class ManualImportItemsFromExcel(APIView):
             cleaned = re.sub(r"\s+", "", str(val)).upper()
 
             if "TAXFREE" in cleaned or cleaned in ("NIL", "0%", "0"):
-                return "Tax Free"
+                return "0"
 
             match = re.search(r"(\d+(\.\d+)?)", cleaned)
             if not match:
@@ -365,7 +375,7 @@ class ManualImportItemsFromExcel(APIView):
 
                 val_tax = normalize_tax(row.get('TAX_SLAB'))
                 if not val_tax:
-                    errors.append(f"Row {row_num}: TAX_SLAB is required/invalid (allowed: 5%, 12%, 18%, 28%, Tax Free)")
+                    errors.append(f"Row {row_num}: TAX_SLAB is required/invalid (allowed: 5%, 12%, 18%, 28%, 0)")
                     item_has_error = True
 
                 if item_has_error:
@@ -398,6 +408,14 @@ class ManualImportItemsFromExcel(APIView):
             if sales_price > mrp:
                 errors.append(f"Row {row_num}: SALES_PRICE cannot be greater than MRP")
 
+            # ✅ ADD: BRANCH_PRICE — sirf superadmin/employee ke liye read, warna purchase_price fallback
+            if acts_as_admin:
+                branch_price = to_float(row.get('BRANCH_PRICE'))
+                if branch_price is None:
+                    branch_price = purchase_price
+            else:
+                branch_price = purchase_price
+
             # ===== BARCODE =====
             raw_barcode = row.get('BARCODE')
             if is_empty(raw_barcode):
@@ -412,12 +430,13 @@ class ManualImportItemsFromExcel(APIView):
 
             # ===== TAX =====
             tax_str = normalize_tax(row.get('TAX_SLAB'))
-            tax_rate = 0.0
-            if tax_str and tax_str != "Tax Free":
+            if tax_str and tax_str != "0":
                 try:
                     tax_rate = float(tax_str.replace('%', ''))
                 except:
                     tax_rate = 0.0
+            else:
+                tax_rate = 0.0
 
             basic = qty * purchase_price
             tax_amt = (basic * tax_rate) / 100
@@ -425,6 +444,7 @@ class ManualImportItemsFromExcel(APIView):
 
             variant = {
                 "purchasePrice": purchase_price,
+                "branchPrice":   branch_price,  # ✅ ADD
                 "salesPrice":    sales_price,
                 "mrp":           mrp,
                 "barcode":       barcode,
@@ -493,6 +513,7 @@ class ManualImportItemsFromExcel(APIView):
                     unit_id=f["unit"],
                     hsnCode=f["hsn"],
                     taxSlab=f["tax"],
+                    created_by = user,
                 )
                 created_items += 1
 
@@ -500,6 +521,7 @@ class ManualImportItemsFromExcel(APIView):
                     itemvariants.objects.create(
                         item=item_obj,
                         purchasePrice=v["purchasePrice"],
+                        branchPrice=v["branchPrice"],  # ✅ ADD
                         salesPrice=v["salesPrice"],
                         mrp=v["mrp"],
                         barcode=v["barcode"],
@@ -525,22 +547,25 @@ class ManualImportItemsFromExcel(APIView):
 class ManualExportItemsToExcel(APIView):
     """Export manual items to Excel"""
     
-    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
     permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
-    page_key = "/ExcelImportExport"  # ✅ ADD: Frontend route
+    page_key = "/ExcelImportExport"
 
     def get(self, request):
         from openpyxl.utils import get_column_letter
         import pandas as pd
 
-        # ✅ CHANGE: request.user.branch → get_effective_branch()
         branch = request.user.get_effective_branch()
         if not branch:
             return Response({
                 "success": False,
                 "error": "No branch linked to this user"
             }, status=status.HTTP_400_BAD_REQUEST)
-            
+
+        # ✅ ADD: role check
+        user = request.user
+        is_superadmin = user.role == 'superadmin'
+        acts_as_admin = is_superadmin or user.role == 'employee'
+
         branch_type = branch.branch_type.lower()
 
         item_queryset = items.objects.filter(
@@ -570,9 +595,20 @@ class ManualExportItemsToExcel(APIView):
                     "BARCODE":               variant.barcode or "",
                     "OPENING_STOCK":         variant.opStock,
                 }
+                # ✅ ADD: sirf superadmin/employee ke export me Branch Price column
+                if acts_as_admin:
+                    row["BRANCH_PRICE"] = variant.branchPrice
                 data.append(row)
 
         df = pd.DataFrame(data)
+
+        # ✅ ADD: BRANCH_PRICE ko PURCHASE_PRICE ke baad reorder karo (agar present hai)
+        if "BRANCH_PRICE" in df.columns:
+            cols = list(df.columns)
+            cols.remove("BRANCH_PRICE")
+            pp_idx = cols.index("PURCHASE_PRICE")
+            cols.insert(pp_idx + 1, "BRANCH_PRICE")
+            df = df[cols]
 
         response = HttpResponse(
             content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
