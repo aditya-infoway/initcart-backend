@@ -332,7 +332,7 @@ class StockReportAPIView(APIView):
 # STOCK HISTORY VIEW (with permission check)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class StockHistoryAPIView(APIView):
+class StockHistoryAPIView(APIView): 
     """Get stock history for a specific variant"""
     
     permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
@@ -349,14 +349,35 @@ class StockHistoryAPIView(APIView):
 
         user = request.user
         is_superadmin = user.role == 'superadmin'
+        is_employee = user.role == 'employee'
 
-        # ✅ CHANGE: Branch fetch → get_effective_branch()
+        # ✅ FIX: Branch selection — same logic as StockReportAPIView
         branch = user.get_effective_branch()
         if not branch:
             return Response({
                 "success": False,
                 "error": "No branch linked to this user"
             }, status=400)
+
+        # ✅ ADD: Support branch_id query param (superadmin/employee ke liye)
+        branch_id_param = request.GET.get('branch_id')
+        if branch_id_param:
+            if is_superadmin:
+                from pos.models.branch import Branch
+                try:
+                    branch = Branch.objects.get(id=branch_id_param)
+                except Branch.DoesNotExist:
+                    return Response({'error': 'Branch not found'}, status=404)
+            elif is_employee:
+                # Employee allow karo agar uski branch superadmin branch hai
+                employee_branch = user.get_effective_branch()
+                if employee_branch and employee_branch.user and employee_branch.user.role == 'superadmin':
+                    from pos.models.branch import Branch
+                    try:
+                        branch = Branch.objects.get(id=branch_id_param)
+                    except Branch.DoesNotExist:
+                        return Response({'error': 'Branch not found'}, status=404)
+                # warna apni branch hi rahe
 
         try:
             variant = itemvariants.objects.get(

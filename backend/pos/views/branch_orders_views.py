@@ -20,12 +20,17 @@ from pos.serializers.branch_order_serializers import (
 )
 from pos.utils.pagination import StandardResultsSetPagination
 
+from ecommerce.permissions import (
+    IsSuperAdminOrPagePermittedEmployee,
+    IsSuperAdminOrBranchOrPagePermittedEmployee,
+)
+
 
 # ─────────────────────────────────────────────────────────────
 # 1. Normal Branch: Company items list (order karne ke liye)
 # ─────────────────────────────────────────────────────────────
 
-# pos/views/branch_order_views.py - CompanyItemsForOrderView
+# pos/views/branch_orders_views.py - CompanyItemsForOrderView
 
 class CompanyItemsForOrderView(APIView):
     permission_classes = [IsAuthenticated]
@@ -185,21 +190,25 @@ class BranchOrderListCreateView(APIView):
 
 
 class BranchOrderDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
     authentication_classes = [JWTAuthentication, SessionAuthentication]
+    page_key = "/stockTransfer"
 
     def get(self, request, order_id):
         user = request.user
 
-        if user.role == 'superadmin':
-            # Superadmin kisi bhi order ka detail dekh sakta hai
+        # ✅ Superadmin ya permitted employee — dono koi bhi order dekh sakte hain
+        # (Order Tracking page superadmin branch ke employee ke liye hai)
+        if user.role == 'superadmin' or user.role == 'employee':
             try:
                 order = BranchOrder.objects.prefetch_related('items').get(id=order_id)
             except BranchOrder.DoesNotExist:
                 return Response({"error": "Order not found"}, status=404)
         else:
-            # Branch sirf apne orders dekh sakti hai
-            branch = getattr(user, 'branch', None)
+            # Franchise branch user sirf apne orders dekh sakti hai
+            branch = user.get_effective_branch()
+            if not branch:
+                return Response({"error": "No branch assigned"}, status=400)
             try:
                 order = BranchOrder.objects.prefetch_related('items').get(
                     id=order_id, branch=branch
@@ -210,23 +219,22 @@ class BranchOrderDetailView(APIView):
         serializer = BranchOrderDetailSerializer(order, context={"request": request})
         return Response({"success": True, "order": serializer.data})
 
-
 # ─────────────────────────────────────────────────────────────
 # 3. Superadmin: All Orders List (Order Tracking)
 # ─────────────────────────────────────────────────────────────
 
 class AdminOrderListView(APIView):
     """
-    Superadmin ke liye — saari branches ke orders.
+    Superadmin + permitted employee — saari branches ke orders.
     Stock Transfer page ke Order Tracking tab mein use hoga.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]
     authentication_classes = [JWTAuthentication, SessionAuthentication]
+    page_key = "/stockTransfer"
 
     def get(self, request):
-        user = request.user
-        if user.role != 'superadmin':
-            return Response({"success": False, "message": "Superadmin only."}, status=403)
+        # ✅ Permission class already check kar chuki hai (superadmin ya permitted employee)
+        # Hard-coded role check hata diya
 
         status_filter = request.GET.get('status', '').strip()
         branch_filter = request.GET.get('branch_id', '').strip()
@@ -260,16 +268,13 @@ class AdminOrderListView(APIView):
 # ─────────────────────────────────────────────────────────────
 
 class AdminProcessOrderView(APIView):
-    """
-    Superadmin order items adjust karke stock transfer create karta hai.
-    """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]
     authentication_classes = [JWTAuthentication, SessionAuthentication]
+    page_key = "/stockTransfer"
 
     def post(self, request, order_id):
+        # ✅ Permission class handle kar rahi hai
         user = request.user
-        if user.role != 'superadmin':
-            return Response({"success": False, "message": "Superadmin only."}, status=403)
 
         try:
             order = BranchOrder.objects.prefetch_related('items').get(id=order_id)
@@ -301,13 +306,12 @@ class AdminProcessOrderView(APIView):
 
 
 class AdminCancelOrderView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]
     authentication_classes = [JWTAuthentication, SessionAuthentication]
+    page_key = "/stockTransfer"
 
     def post(self, request, order_id):
         user = request.user
-        if user.role != 'superadmin':
-            return Response({"success": False, "message": "Superadmin only."}, status=403)
 
         try:
             order = BranchOrder.objects.get(id=order_id)
