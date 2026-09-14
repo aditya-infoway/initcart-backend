@@ -61,6 +61,7 @@ class EligibleB2BItemsForReturnView(APIView):
     # ✅ CHANGE: IsBranchRole → IsSuperAdminOrBranchOrPagePermittedEmployee
     permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
     page_key = "/b2bstockReturn"  # ✅ ADD: Frontend route
+    
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def get(self, request):
@@ -362,25 +363,28 @@ class B2BStockReturnListView(APIView):
 class B2BStockReturnDetailView(APIView):
     """Get B2B return detail"""
     
-    # ✅ CHANGE: IsBranchRole → IsSuperAdminOrBranchOrPagePermittedEmployee
     permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
-    page_key = "/b2bstockReturn"  # ✅ ADD: Frontend route
+    page_key = "/b2bstockReturnverification"
+    ALLOWED_PAGE_KEYS = ["/b2bstockReturn", "/b2bstockReturnverification"]
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def get(self, request, return_id):
         user = request.user
         
-        try:
-            if user.role == 'superadmin':
+        if user.role == 'superadmin' or user.role == 'employee':
+            try:
                 return_request = B2BStockReturn.objects.get(id=return_id)
-            else:
-                # ✅ CHANGE: getattr(user, 'branch', None) → get_effective_branch()
-                branch = user.get_effective_branch()
-                if not branch:
-                    return Response({'success': False, 'message': 'No branch assigned.'}, status=400)
+            except B2BStockReturn.DoesNotExist:
+                return Response({'success': False, 'message': 'Return not found.'}, status=404)
+        else:
+            # Franchise branch user — sirf apne returns
+            branch = user.get_effective_branch()
+            if not branch:
+                return Response({'success': False, 'message': 'No branch assigned.'}, status=400)
+            try:
                 return_request = B2BStockReturn.objects.get(id=return_id, branch=branch)
-        except B2BStockReturn.DoesNotExist:
-            return Response({'success': False, 'message': 'Return not found.'}, status=404)
+            except B2BStockReturn.DoesNotExist:
+                return Response({'success': False, 'message': 'Return not found.'}, status=404)
 
         serializer = B2BStockReturnDetailSerializer(return_request)
         return Response({'success': True, 'data': serializer.data})

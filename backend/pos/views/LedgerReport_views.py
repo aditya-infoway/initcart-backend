@@ -100,25 +100,43 @@ class LedgerHistoryAPIView(APIView):
     def get(self, request, account_id):
         user = request.user
         is_superadmin = user.role == 'superadmin'
+        is_employee = user.role == 'employee'
 
-        # ✅ FIX: Branch fetch
-        if is_superadmin:
-            # Superadmin kisi bhi branch ka account dekh sakta hai
-            try:
-                account = Account.objects.get(id=account_id)
-            except Account.DoesNotExist:
-                return Response({'detail': 'Account not found.'}, status=404)
-        else:
-            branch = user.get_effective_branch()
-            if not branch:
-                return Response({
-                    "success": False,
-                    "error": "No branch linked to this user"
-                }, status=status.HTTP_400_BAD_REQUEST)
-            try:
-                account = Account.objects.get(id=account_id, branch=branch)
-            except Account.DoesNotExist:
-                return Response({'detail': 'Account not found.'}, status=404)
+        # ✅ FIX: Branch selection logic — same as LedgerAccountListView
+        branch = user.get_effective_branch()
+        if not branch:
+            return Response({
+                "success": False,
+                "error": "No branch linked to this user"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # ✅ ADD: Support branch_id query param
+        branch_id_param = request.query_params.get('branch_id', '').strip()
+        if branch_id_param:
+            # Superadmin hamesha allow
+            if is_superadmin:
+                from pos.models.branch import Branch
+                try:
+                    branch = Branch.objects.get(id=branch_id_param)
+                except Branch.DoesNotExist:
+                    return Response({'detail': 'Branch not found.'}, status=404)
+            # ✅ Employee allow karo agar uski branch superadmin branch hai
+            elif is_employee:
+                employee_branch = user.get_effective_branch()
+                if employee_branch and employee_branch.user and employee_branch.user.role == 'superadmin':
+                    from pos.models.branch import Branch
+                    try:
+                        branch = Branch.objects.get(id=branch_id_param)
+                    except Branch.DoesNotExist:
+                        return Response({'detail': 'Branch not found.'}, status=404)
+                # warna apni branch hi rahe
+            # Non-superadmin/employee (franchise branch user) → apni branch hi rahe
+
+        # ✅ FIX: Ab account ko selected branch se fetch karo
+        try:
+            account = Account.objects.get(id=account_id, branch=branch)
+        except Account.DoesNotExist:
+            return Response({'detail': 'Account not found.'}, status=404)
 
         date_from = None
         date_to = None
