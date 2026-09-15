@@ -14,7 +14,7 @@ ENTRY_TYPE_CHOICES = [
 class items(CreatedByMixin, models.Model):
     # Basic fields
     entry_type = models.CharField(max_length=10, choices=ENTRY_TYPE_CHOICES)
-    itemName = models.CharField(max_length=100)
+    itemName = models.CharField(max_length=150)
     branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True)
     brand = models.CharField(max_length=50, blank=True, null=True)
     c_brand = models.ForeignKey(Brand, on_delete=models.CASCADE, blank=True, null=True)
