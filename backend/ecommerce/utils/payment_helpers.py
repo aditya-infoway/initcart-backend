@@ -1,4 +1,4 @@
-# ecommerce/utils/payment_helpers.py
+# ecommerce/utils/payment_helpers.py  (FULL FILE — replace your existing one with this)
 from decimal import Decimal
 from ecommerce.models.order import OrderItem, VendorDeliveryInfo
 from ecommerce.models.payment_request import VendorCODRecovery
@@ -29,12 +29,44 @@ def _apply_date_range(qs, date_from, date_to):
     return qs
 
 
+def _non_payable_item_ids(vendor):
+    """
+    Order-item ids for this vendor that must NEVER count toward a vendor
+    payout right now:
+      - already has an OrderRefund (pending or processed) — return accepted,
+        refund created/done, the customer's money is gone.
+      - has a ReturnRequest still awaiting a decision (requested / re_requested)
+        — "on hold" until vendor/admin actually accept or reject it, so a
+        payout can't slip through while it's still being decided.
+    Rejected returns (vendor_rejected / admin_rejected, with no active
+    re_requested afterwards) do NOT appear here — those items are normal
+    and payable again.
+    """
+    from ecommerce.models.refund import OrderRefund
+    from ecommerce.models.return_request import ReturnRequest
+
+    refunded_ids = OrderRefund.objects.filter(
+        order_item__vendor=vendor,
+        status__in=['pending', 'processed'],
+    ).values_list('order_item_id', flat=True)
+
+    pending_decision_ids = ReturnRequest.objects.filter(
+        order_item__vendor=vendor,
+        status__in=['requested', 're_requested'],
+    ).values_list('order_item_id', flat=True)
+
+    return set(refunded_ids) | set(pending_decision_ids)
+
+
 def get_vendor_eligible_online_orders(vendor, date_from=None, date_to=None):
     """
     Online (razorpay), delivered orders for this vendor within the date range.
     Excludes:
       - orders currently sitting in a PENDING request (awaiting admin decision)
       - orders that were ACTUALLY APPROVED in some approved/paid request
+      - individual order_items covered by _non_payable_item_ids (refunded /
+        return decision still pending) — so a multi-item order still shows
+        up for its non-returned items, just with a reduced total.
     Orders that were part of a request but did NOT get approved (partial
     approval leftovers) become eligible again automatically.
     """
@@ -55,11 +87,13 @@ def get_vendor_eligible_online_orders(vendor, date_from=None, date_to=None):
     excluded_order_ids = set(pending_order_ids) | set(approved_order_ids)
     excluded_order_ids.discard(None)
 
+    non_payable_item_ids = _non_payable_item_ids(vendor)
+
     items = OrderItem.objects.filter(
         vendor=vendor,
         order__payment_method='razorpay',
         order__order_status='delivered',
-    ).exclude(order_id__in=excluded_order_ids)
+    ).exclude(order_id__in=excluded_order_ids).exclude(id__in=non_payable_item_ids)
 
     items = _apply_date_range(items, date_from, date_to)
     items = items.select_related('order', 'product_stock', 'product').order_by('-order__created_at')
@@ -86,12 +120,14 @@ def get_vendor_eligible_online_orders(vendor, date_from=None, date_to=None):
         result.append(data)
     return result
 
+
 def get_vendor_cod_platform_charge(vendor, date_from=None, date_to=None):
     """
     Total platform charge to recover from COD + self-delivery, delivered
     orders (vendor already collected this money directly) within the range,
     excluding items already recovered in a previous non-rejected request.
     Returns (total_charge: Decimal, item_charges: list[(OrderItem, Decimal)]).
+    (Unchanged — COD refund flow is a separate, later step.)
     """
     recovered_ids = VendorCODRecovery.objects.filter(
         order_item__vendor=vendor
@@ -123,10 +159,18 @@ def get_vendor_cod_platform_charge(vendor, date_from=None, date_to=None):
 
 
 def get_order_summaries(vendor, order_ids):
-    """Per-order vendor_total + platform_charge for a specific set of order ids."""
+    """
+    Per-order vendor_total + platform_charge for a specific set of order ids.
+    Same _non_payable_item_ids exclusion as get_vendor_eligible_online_orders,
+    so a payment request being created/approved can never end up counting a
+    returned item's amount — even if the return was accepted AFTER the
+    payment request was first submitted.
+    """
+    non_payable_item_ids = _non_payable_item_ids(vendor)
+
     items = OrderItem.objects.filter(
         vendor=vendor, order_id__in=order_ids
-    ).select_related('order', 'product_stock', 'product')
+    ).exclude(id__in=non_payable_item_ids).select_related('order', 'product_stock', 'product')
 
     orders_map = {}
     for item in items:
@@ -147,11 +191,10 @@ def get_order_summaries(vendor, order_ids):
     return list(orders_map.values())
 
 
-
-
 def get_vendor_order_report(vendor, date_from=None, date_to=None, search=None):
     """
     Full order-level report for a SINGLE vendor.
+    (Unchanged)
     """
     items = OrderItem.objects.filter(vendor=vendor).select_related(
         'order', 'product_stock', 'product'
@@ -178,6 +221,7 @@ def get_all_vendors_order_report(date_from=None, date_to=None, search=None):
     """
     Full order-level report ACROSS ALL VENDORS — for superadmin.
     Search covers order number, customer details, AND vendor name/email.
+    (Unchanged)
     """
     items = OrderItem.objects.all().select_related(
         'order', 'product_stock', 'product', 'vendor'
@@ -210,13 +254,13 @@ def _build_order_report_rows(items, include_vendor=False):
     NOTE: when include_vendor=True, orders are split PER VENDOR
     (an order with items from 2 vendors becomes 2 rows), since each
     vendor has its own platform charge / receivable on that order.
+    (Unchanged)
     """
     orders_map = {}
     now = timezone.now()
 
     for item in items:
         order = item.order
-        # key by (order_id, vendor_id) when multi-vendor, else just order_id
         key = (order.id, item.vendor_id) if include_vendor else order.id
 
         if key not in orders_map:

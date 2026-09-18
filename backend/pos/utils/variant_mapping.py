@@ -2,7 +2,7 @@ from pos.models.items import items as Items, itemvariants as ItemVariants
 from pos.models.stock_transfer import VariantBranchMapping
 
 
-def get_or_create_dest_variant(from_variant, to_branch, sync_fields=False):
+def get_or_create_dest_variant(from_variant, to_branch, sync_fields=False, price_override=None):
     """
     from_variant  -> superadmin/source variant
     to_branch     -> destination branch
@@ -11,8 +11,22 @@ def get_or_create_dest_variant(from_variant, to_branch, sync_fields=False):
                       current source values se sync honge.
                       False = sirf existence ensure karo, fields mat chhedo
                       (item-copy / pre-create ke waqt use hota hai).
+    price_override -> Diya gaya ho to purchasePrice/branchPrice ISI value se set
+                      hoga (from_variant.branchPrice ko IGNORE karke). B2B Sale
+                      verify flow yaha B2BSaleItem.rate bhejta hai — jo us sale
+                      me ACTUALLY charge hui price hai (Excel import se custom
+                      Franchise Price bhi ho sakti hai) — taaki destination
+                      branch ka purchase price wahi ho jo B2B sale me tha, na
+                      ki source branch ka AAJ ka live branchPrice.
+                      None (default) = purana behavior — Stock Transfer flow
+                      isse touch nahi karta, isliye uska behavior same rahega.
     Returns: (dest_variant, created: bool)
     """
+    def _resolve_price():
+        if price_override is not None:
+            return price_override or 0
+        return from_variant.branchPrice or 0
+
     mapping = VariantBranchMapping.objects.filter(
         source_variant=from_variant, to_branch=to_branch
     ).select_related('dest_variant').first()
@@ -20,7 +34,7 @@ def get_or_create_dest_variant(from_variant, to_branch, sync_fields=False):
     if mapping:
         dest_variant = mapping.dest_variant
         if sync_fields:
-            branch_price = from_variant.branchPrice or 0
+            branch_price = _resolve_price()
             dest_variant.barcode = from_variant.barcode
             dest_variant.mrp = from_variant.mrp
             dest_variant.salesPrice = from_variant.salesPrice
@@ -70,7 +84,7 @@ def get_or_create_dest_variant(from_variant, to_branch, sync_fields=False):
             source_variant=from_variant, to_branch=to_branch, dest_variant=legacy_dest_variant
         )
         if sync_fields:
-            branch_price = from_variant.branchPrice or 0
+            branch_price = _resolve_price()
             legacy_dest_variant.barcode = from_variant.barcode
             legacy_dest_variant.mrp = from_variant.mrp
             legacy_dest_variant.salesPrice = from_variant.salesPrice
@@ -125,7 +139,7 @@ def get_or_create_dest_variant(from_variant, to_branch, sync_fields=False):
             specifications=from_item.specifications,
         )
 
-    branch_price = from_variant.branchPrice or 0
+    branch_price = _resolve_price()
     dest_variant = ItemVariants.objects.create(
         item=dest_item,
         purchasePrice=branch_price,

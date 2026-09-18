@@ -332,7 +332,7 @@ class B2BSaleItemDetailView(APIView):
                 'hsnCode': getattr(item.from_item, 'hsnCode', "") if item.from_item else "",
                 'taxSlab': item.tax_percent or "0",
                 'purchase_price': float(fv.purchasePrice) if fv else 0,
-                'branch_price': float(fv.branchPrice) if fv else 0,
+                'branch_price': float(item.rate or 0),
                 'sales_price': float(fv.salesPrice) if fv else 0,
                 'mrp': float(fv.mrp) if fv else 0,
                 'tax_percent': item.tax_percent or "0",
@@ -426,14 +426,20 @@ class VerifyB2BSaleItemView(APIView):
         with transaction.atomic():
             from_variant = item.from_variant
 
-            dest_variant, _created = get_or_create_dest_variant(from_variant, branch, sync_fields=True)
+            # ✅ price_override=item.rate — destination purchase price ab is
+            # B2B sale me ACTUALLY use hui price (Excel import ki custom
+            # Franchise Price ho sakti hai) se set hoti hai, na ki
+            # from_variant ka AAJ ka live branchPrice.
+            dest_variant, _created = get_or_create_dest_variant(
+                from_variant, branch, sync_fields=True, price_override=item.rate
+            )
             dest_item = dest_variant.item
 
             if website_display:
                 Items.objects.filter(id=dest_item.id).update(website_display=True, website_status='pending')
 
             dest_variant.current_stock = (dest_variant.current_stock or 0) + item.quantity
-            dest_variant.purchasePrice = from_variant.branchPrice
+            dest_variant.purchasePrice = item.rate
             dest_variant.save(update_fields=['current_stock', 'purchasePrice'])
 
             item.is_stock_updated = True
@@ -568,7 +574,11 @@ class VerifyAllB2BSaleItemsView(APIView):
             for item in pending_items:
                 from_variant = item.from_variant
 
-                dest_variant, _created = get_or_create_dest_variant(from_variant, branch, sync_fields=True)
+                # ✅ Same fix as single-item verify — us B2BSaleItem ki
+                # actual rate use karo, source ka live branchPrice nahi.
+                dest_variant, _created = get_or_create_dest_variant(
+                    from_variant, branch, sync_fields=True, price_override=item.rate
+                )
 
                 if website_display:
                     Items.objects.filter(id=dest_variant.item.id).update(
@@ -576,7 +586,7 @@ class VerifyAllB2BSaleItemsView(APIView):
                     )
 
                 dest_variant.current_stock = (dest_variant.current_stock or 0) + item.quantity
-                dest_variant.purchasePrice = from_variant.branchPrice
+                dest_variant.purchasePrice = item.rate
                 dest_variant.save(update_fields=['current_stock', 'purchasePrice'])
 
                 item.is_stock_updated = True
