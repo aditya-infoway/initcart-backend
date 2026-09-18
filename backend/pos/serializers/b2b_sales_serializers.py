@@ -9,7 +9,7 @@ from pos.utils.gst_calc import calculate_gst_split
 from pos.models.settings import setting
 from pos.serializers.stock_transfer_serializers import (
     variant_info_str,
-    create_full_item_in_destination,   # ✅ NEW — same function jo Stock Transfer use karta hai
+    create_full_item_in_destination,   # ✅ same function jo Stock Transfer use karta hai
 )
 #  Reuse existing helpers — no duplication
 from pos.serializers.stock_transfer_serializers import variant_info_str
@@ -21,6 +21,10 @@ from pos.serializers.mixins_serializers import CreatedByReadMixin
 class B2BSaleItemCreateSerializer(serializers.Serializer):
     from_variant_id = serializers.IntegerField()
     quantity        = serializers.IntegerField(min_value=1)
+    # ✅ Ab actually honor hota hai create() me. 0 (default) = "not provided" →
+    #    purana behavior (from_variant.branchPrice) chalega, jaise manual
+    #    "New B2B Sale" form ke liye chalta tha. Excel import ab yaha
+    #    FRANCHISE_PRICE bhejta hai, jo GST calc me use hoga.
     rate            = serializers.FloatField(default=0)
 
 
@@ -128,7 +132,11 @@ class B2BSaleCreateSerializer(serializers.Serializer):
                 if cache_key not in created_items_cache:
                     created_items_cache[cache_key] = create_full_item_in_destination(from_item, to_branch)
 
-                branch_price = from_variant.branchPrice or 0
+                # ✅ CHANGED — excel import se aaya custom rate (FRANCHISE_PRICE) hai to
+                # wahi use hoga; warna purana default: from_variant.branchPrice.
+                # Manual "New B2B Sale" form rate nahi bhejta (default 0), isliye uska
+                # behavior bilkul pehle jaisa hi rahega.
+                branch_price = item_data.get('rate') or from_variant.branchPrice or 0
                 tax_percent = from_item.taxSlab or "0"
                 gst_result = calculate_gst_split(branch_price, qty, tax_percent, gst_toggle, same_state)
 
@@ -179,4 +187,4 @@ class B2BSaleListSerializer(serializers.ModelSerializer):
                   'sale_date', 'status', 'item_count', 'created_at', 'created_by_name']  
 
     def get_created_by_name(self, obj):
-        return obj.created_by.username if obj.created_by else None   
+        return obj.created_by.username if obj.created_by else None

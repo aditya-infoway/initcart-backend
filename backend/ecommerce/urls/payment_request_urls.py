@@ -10,6 +10,13 @@ from ecommerce.views.payment_request_views import (
     VendorOrderReportAPIView, AdminAllVendorsOrderReportAPIView,
 )
 
+# Add these imports near your other view imports in ecommerce/urls.py
+from ecommerce.views.refund_views import (
+    AdminRefundListAPIView,
+    AdminRefundProcessAPIView,
+    VendorRefundListAPIView,
+)
+
 urlpatterns = [
     # Vendor
     path('vendor/payment-request/form-data/', VendorPaymentRequestFormDataAPIView.as_view()),
@@ -47,4 +54,14 @@ urlpatterns += [
     # Admin
     path('admin/returns/', AdminReturnListAPIView.as_view()),
     path('admin/returns/<int:pk>/action/', AdminReturnActionAPIView.as_view()),
+]
+
+
+urlpatterns += [
+    # Vendor — read-only visibility
+    path('vendor/refunds/', VendorRefundListAPIView.as_view(), name='vendor-refund-list'),
+
+    # Superadmin
+    path('admin/refunds/', AdminRefundListAPIView.as_view(), name='admin-refund-list'),
+    path('admin/refunds/<int:pk>/process/', AdminRefundProcessAPIView.as_view(), name='admin-refund-process'),
 ]

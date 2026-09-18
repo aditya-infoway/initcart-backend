@@ -7,6 +7,9 @@ from ecommerce.views.cart_views import (
  LoyaltyPointsAPIView, CreateRazorpayOrderAPIView
 )
 
+
+
+
 router = DefaultRouter()
 router.register(r'cart', CartViewSet, basename='cart')
 router.register(r'customer/addresses', CustomerAddressViewSet, basename='customer-address')
@@ -20,3 +23,5 @@ urlpatterns = [
     path('orders/', OrderListAPIView.as_view(), name='order-list'),
     path('orders/detail/', OrderDetailAPIView.as_view(), name='order-detail'),
 ]                                                     
+
+

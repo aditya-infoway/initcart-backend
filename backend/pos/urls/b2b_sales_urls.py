@@ -17,6 +17,8 @@ from pos.views.b2b_sales_receipt_views import (
 )
 from pos.views.stock_transfer_views import MyBranchItemsView
 
+from pos.views.b2b_sales_excel_views import (B2BSalesExcelImportView, B2BSalesExcelTemplateView)
+
 urlpatterns = [
     # Main CRUD endpoints
     path('b2b-sales/', B2BSaleViewSet.as_view({'get': 'list', 'post': 'create'}), name='b2b-sales-list'),
@@ -36,4 +38,8 @@ urlpatterns = [
     path('b2b-sale-credit-bills/', B2BSaleCreditBillsView.as_view()),
     path('receive-b2b-sale-bill-cash/', ReceiveB2BSaleBillCashView.as_view()),
     path('receive-b2b-sale-bill-bank/', ReceiveB2BSaleBillBankView.as_view()),
+    
+    #excel import export endpoints
+    path('b2b-sales-excel/template/', B2BSalesExcelTemplateView.as_view() ),
+    path('b2b-sales-excel/import/', B2BSalesExcelImportView.as_view()),
 ]
