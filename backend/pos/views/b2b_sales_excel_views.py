@@ -141,17 +141,16 @@ def parse_date(v, default=None):
         return default
 
 
-def parse_int_strict(v):
-    """(int_value, is_valid). QTY on B2BSaleItem is an IntegerField."""
+def parse_qty_strict(v):
+    """(decimal_value, is_valid). QTY on B2BSaleItem is now a DecimalField —
+    fractional quantities (e.g. 2.5) are valid."""
     if is_empty(v):
         return None, True
     try:
         f = float(str(v).strip())
     except (ValueError, TypeError):
         return None, False
-    if not f.is_integer():
-        return None, False
-    return int(f), True
+    return round(f, 2), True
 
 
 def parse_price_strict(v):
@@ -426,9 +425,9 @@ class B2BSalesExcelImportView(APIView):
                 errors.append(f"Row {row_no}: Item '{item_raw}' appears more than once — combine the quantity instead")
                 continue
 
-            qty_val, qty_ok = parse_int_strict(qty_raw)
+            qty_val, qty_ok = parse_qty_strict(qty_raw)
             if not qty_ok or not qty_val or qty_val <= 0:
-                errors.append(f"Row {row_no}: QTY '{qty_raw}' is not a valid whole number greater than 0")
+                errors.append(f"Row {row_no}: QTY '{qty_raw}' is not a valid number greater than 0")
                 continue
 
             # Franchise Price: use whatever the user left in the sheet; if

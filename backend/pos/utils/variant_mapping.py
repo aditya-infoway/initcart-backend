@@ -1,8 +1,28 @@
-from pos.models.items import items as Items, itemvariants as ItemVariants
+from pos.models.items import items as Items, itemvariants as ItemVariants, VariantPurchasePriceHistory
 from pos.models.stock_transfer import VariantBranchMapping
 
 
-def get_or_create_dest_variant(from_variant, to_branch, sync_fields=False, price_override=None):
+def _log_price_change(variant, old_price, new_price, source, reference):
+    """
+    Sirf tab entry save karo jab price GENUINELY badli ho (ya pehli baar
+    create hui ho — old_price=None). Same price dobara save hone par
+    (no-op sync) duplicate history row nahi banegi.
+    """
+    old_val = float(old_price) if old_price is not None else None
+    new_val = float(new_price or 0)
+    if old_val is not None and old_val == new_val:
+        return
+    VariantPurchasePriceHistory.objects.create(
+        variant=variant,
+        old_price=old_val,
+        new_price=new_val,
+        source=source,
+        reference=reference,
+    )
+
+
+def get_or_create_dest_variant(from_variant, to_branch, sync_fields=False, price_override=None,
+                                source=None, reference=None):
     """
     from_variant  -> superadmin/source variant
     to_branch     -> destination branch
@@ -20,6 +40,9 @@ def get_or_create_dest_variant(from_variant, to_branch, sync_fields=False, price
                       ki source branch ka AAJ ka live branchPrice.
                       None (default) = purana behavior — Stock Transfer flow
                       isse touch nahi karta, isliye uska behavior same rahega.
+    source, reference -> Sirf history logging ke liye (e.g. source="B2B Sale",
+                      reference=sale.sale_no). None chhod do to bhi kaam
+                      karega, bas history row me "—" dikhega.
     Returns: (dest_variant, created: bool)
     """
     def _resolve_price():
@@ -35,6 +58,7 @@ def get_or_create_dest_variant(from_variant, to_branch, sync_fields=False, price
         dest_variant = mapping.dest_variant
         if sync_fields:
             branch_price = _resolve_price()
+            old_purchase_price = dest_variant.purchasePrice
             dest_variant.barcode = from_variant.barcode
             dest_variant.mrp = from_variant.mrp
             dest_variant.salesPrice = from_variant.salesPrice
@@ -48,6 +72,8 @@ def get_or_create_dest_variant(from_variant, to_branch, sync_fields=False, price
                 'barcode', 'mrp', 'salesPrice', 'purchasePrice', 'branchPrice',
                 'size', 'color', 'srno', 'warrantydate'
             ])
+            # ✅ History — sirf tab jab price genuinely badli ho
+            _log_price_change(dest_variant, old_purchase_price, branch_price, source, reference)
         return dest_variant, False
 
     # ── Mapping nahi mili — pehle check karo ki destination branch me is item ka
@@ -85,6 +111,7 @@ def get_or_create_dest_variant(from_variant, to_branch, sync_fields=False, price
         )
         if sync_fields:
             branch_price = _resolve_price()
+            old_purchase_price = legacy_dest_variant.purchasePrice
             legacy_dest_variant.barcode = from_variant.barcode
             legacy_dest_variant.mrp = from_variant.mrp
             legacy_dest_variant.salesPrice = from_variant.salesPrice
@@ -98,6 +125,8 @@ def get_or_create_dest_variant(from_variant, to_branch, sync_fields=False, price
                 'barcode', 'mrp', 'salesPrice', 'purchasePrice', 'branchPrice',
                 'size', 'color', 'srno', 'warrantydate'
             ])
+            # ✅ History
+            _log_price_change(legacy_dest_variant, old_purchase_price, branch_price, source, reference)
         return legacy_dest_variant, False
 
     # ── Genuinely pehli baar — naya item/variant banao ──
@@ -159,4 +188,7 @@ def get_or_create_dest_variant(from_variant, to_branch, sync_fields=False, price
     VariantBranchMapping.objects.create(
         source_variant=from_variant, to_branch=to_branch, dest_variant=dest_variant
     )
+    # ✅ History — initial entry, old_price=None (pehli baar create hui)
+    _log_price_change(dest_variant, None, branch_price, source, reference)
+
     return dest_variant, True

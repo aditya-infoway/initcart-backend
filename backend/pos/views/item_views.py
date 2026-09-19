@@ -7,7 +7,7 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.authentication import SessionAuthentication
 from rest_framework import status
 
-from pos.models.items import items, itemvariants
+from pos.models.items import items, itemvariants, VariantPurchasePriceHistory
 from ecommerce.models.category import Category, SubSubCategory, SubCategory
 from ecommerce.models.vendor import Brand
 from django.db.models import Q
@@ -566,4 +566,45 @@ class ItemWithVariantsDetailAPIView(APIView):
             "variants": variant_serializer.data
         })       
         
-    
+
+
+# ------------------ Variant Purchase Price History ------------------
+class VariantPurchasePriceHistoryView(APIView):
+    """
+    GET /items-variant-price-history/?variant=<id>
+    Ek variant ke purchase price ki poori timeline — jab bhi B2B Sale
+    verify (ya Stock Transfer verify) hone par price badli, wo yahan
+    dikhegi, sabse naya sabse upar.
+    """
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [JWTAuthentication, SessionAuthentication]
+
+    def get(self, request):
+        variant_id = request.GET.get("variant")
+        if not variant_id:
+            return Response({"success": False, "message": "variant is required"}, status=400)
+
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({"success": False, "message": "No branch linked to this user"}, status=400)
+
+        try:
+            variant = itemvariants.objects.select_related("item").get(id=variant_id, item__branch=branch)
+        except itemvariants.DoesNotExist:
+            return Response({"success": False, "message": "Variant not found"}, status=404)
+
+        history = variant.purchase_price_history.all()
+        data = [{
+            "id": h.id,
+            "old_price": h.old_price,
+            "new_price": h.new_price,
+            "source": h.source or "—",
+            "reference": h.reference or "",
+            "changed_at": h.changed_at,
+        } for h in history]
+
+        return Response({
+            "success": True,
+            "current_purchase_price": float(variant.purchasePrice or 0),
+            "history": data,
+        })   

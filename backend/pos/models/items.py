@@ -132,5 +132,25 @@ class itemvariants(models.Model):
     def __str__(self):
         return f"{self.item.itemName} - {self.color or ''} {self.size or ''}"
     
-    
-    
+
+class VariantPurchasePriceHistory(models.Model):
+    """
+    Purchase Price change history — jab bhi kisi variant ka purchasePrice
+    badalta hai (B2B Sale verify, Stock Transfer verify, ya kisi aur sync
+    se), ek row yahan add hoti hai. Items list page par is history ko
+    dikhane ke liye use hoti hai.
+    """
+    variant = models.ForeignKey(
+        itemvariants, on_delete=models.CASCADE, related_name='purchase_price_history'
+    )
+    old_price = models.FloatField(null=True, blank=True)
+    new_price = models.FloatField(default=0)
+    source    = models.CharField(max_length=50, blank=True, null=True)   
+    reference = models.CharField(max_length=100, blank=True, null=True)
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-changed_at']
+
+    def __str__(self):
+        return f"{self.variant} | {self.old_price} → {self.new_price} ({self.source or '—'})"   

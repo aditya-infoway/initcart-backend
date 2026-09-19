@@ -72,7 +72,7 @@ class B2BSaleItem(models.Model):
     from_variant_info = models.CharField(max_length=100, blank=True, null=True)
     from_barcode      = models.CharField(max_length=100, blank=True, null=True)
 
-    quantity = models.IntegerField(default=0)
+    quantity = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     rate     = models.FloatField(default=0)
 
     # ── DESTINATION (Franchise branch) — verify ke baad set hota hai ──
