@@ -6,7 +6,7 @@ from pos.views.item_views import (
     UserBranchTypeView, Itemview, Itemvariantview, Itemvariantdelete,
     CategoryListAPI, SubCategoryListAPI, SubSubCategoryListAPI,
     BrandListAPI, ItemDetailAPIView,ItemWithVariantsDetailAPIView,
-    ItemFilterOptionsAPI, CheckBranchBarcodeView
+    ItemFilterOptionsAPI, CheckBranchBarcodeView, VariantPurchasePriceHistoryView
 )
 from pos.views.website_item_views import (
     WebsiteItemsListAPI, WebsiteItemDetailAPI, UpdateWebsiteItemAPI,
@@ -66,6 +66,7 @@ urlpatterns = [
     path('items/<int:pk>/', ItemDetailAPIView.as_view()),
     path("items-variantes/", Itemvariantview.as_view()),
     path("variant-delete/<int:pk>/", Itemvariantdelete.as_view()),
+    path('items-variant-price-history/', VariantPurchasePriceHistoryView.as_view()),
     path("categories/", CategoryListAPI.as_view()),
     path("subcategories/", SubCategoryListAPI.as_view()),
     path("subsubcategories/", SubSubCategoryListAPI.as_view()),

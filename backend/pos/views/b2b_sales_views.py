@@ -431,7 +431,8 @@ class VerifyB2BSaleItemView(APIView):
             # Franchise Price ho sakti hai) se set hoti hai, na ki
             # from_variant ka AAJ ka live branchPrice.
             dest_variant, _created = get_or_create_dest_variant(
-                from_variant, branch, sync_fields=True, price_override=item.rate
+                from_variant, branch, sync_fields=True, price_override=item.rate,
+                source="B2B Sale", reference=sale.sale_no,
             )
             dest_item = dest_variant.item
 
@@ -577,7 +578,8 @@ class VerifyAllB2BSaleItemsView(APIView):
                 # ✅ Same fix as single-item verify — us B2BSaleItem ki
                 # actual rate use karo, source ka live branchPrice nahi.
                 dest_variant, _created = get_or_create_dest_variant(
-                    from_variant, branch, sync_fields=True, price_override=item.rate
+                    from_variant, branch, sync_fields=True, price_override=item.rate,
+                    source="B2B Sale", reference=sale.sale_no,
                 )
 
                 if website_display:

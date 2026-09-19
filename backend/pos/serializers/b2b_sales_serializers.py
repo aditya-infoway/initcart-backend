@@ -1,6 +1,7 @@
 # pos/serializers/b2b_sales_serializers.py
 from rest_framework import serializers
 from django.db import transaction
+from decimal import Decimal
 
 from pos.models.b2b_sales import B2BSale, B2BSaleItem
 from pos.models.branch import Branch
@@ -20,7 +21,7 @@ from pos.serializers.mixins_serializers import CreatedByReadMixin
 
 class B2BSaleItemCreateSerializer(serializers.Serializer):
     from_variant_id = serializers.IntegerField()
-    quantity        = serializers.IntegerField(min_value=1)
+    quantity        = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal('0.01'))
     # ✅ Ab actually honor hota hai create() me. 0 (default) = "not provided" →
     #    purana behavior (from_variant.branchPrice) chalega, jaise manual
     #    "New B2B Sale" form ke liye chalta tha. Excel import ab yaha
@@ -96,15 +97,13 @@ class B2BSaleCreateSerializer(serializers.Serializer):
 
             # ✅ NEW — ek hi item ke liye baar baar destination creation na ho, isliye cache
             created_items_cache = {}
-
             for item_data in items_data:
                 from_variant = ItemVariants.objects.select_related('item').get(
                     id=item_data['from_variant_id'],
                     item__branch=from_branch
                 )
                 from_item = from_variant.item
-                qty = item_data['quantity']
-
+                qty = item_data['quantity']  
                 # ✅ Stock check
                 available = from_variant.current_stock or 0
                 if available <= 0:
@@ -138,7 +137,7 @@ class B2BSaleCreateSerializer(serializers.Serializer):
                 # behavior bilkul pehle jaisa hi rahega.
                 branch_price = item_data.get('rate') or from_variant.branchPrice or 0
                 tax_percent = from_item.taxSlab or "0"
-                gst_result = calculate_gst_split(branch_price, qty, tax_percent, gst_toggle, same_state)
+                gst_result = calculate_gst_split(branch_price, float(qty), tax_percent, gst_toggle, same_state)
 
                 B2BSaleItem.objects.create(
                     sale=sale,
