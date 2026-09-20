@@ -405,10 +405,6 @@ class B2BSalesExcelImportView(APIView):
             qty_raw = row.get("QTY")
             price_raw = row.get("FRANCHISE_PRICE")
 
-            # ✅ Inclusion is decided by QTY alone — Franchise Price comes
-            # pre-filled on every row by default, so it can't be used to tell
-            # "selected" items apart. Whichever rows have a Qty typed in are
-            # the ones that go into this B2B sale entry.
             if is_empty(qty_raw):
                 continue  # not selected for this import — skip silently
 

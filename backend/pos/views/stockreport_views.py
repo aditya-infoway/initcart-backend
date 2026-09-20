@@ -20,10 +20,22 @@ from pos.models.b2b_transfer import B2BStockTransferItem
 from pos.models.b2b_stock_return import B2BStockReturnItem
 from pos.models.b2b_sales import B2BSaleItem
 from django.db.models import Q
-from pos.models.b2b_sales import B2BSaleItem
 
 # ✅ ADD: Permission imports
 from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HELPER: Safe multiplication of rate (float/Decimal/None) and quantity
+# ─────────────────────────────────────────────────────────────────────────────
+def safe_amount(rate, qty):
+    """Safely multiply rate and quantity, handling None, float, Decimal."""
+    try:
+        r = Decimal(str(rate)) if rate is not None else Decimal('0')
+        q = Decimal(str(qty)) if qty is not None else Decimal('0')
+        return float(r * q)
+    except Exception:
+        return 0.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -41,7 +53,6 @@ class StockReportAPIView(APIView):
         is_superadmin = user.role == 'superadmin'
         is_employee = user.role == 'employee'
 
-        # ✅ FIX: Branch selection logic - Employee ko sirf apni branch
         branch = user.get_effective_branch()
         if not branch:
             return Response({
@@ -49,17 +60,14 @@ class StockReportAPIView(APIView):
                 "error": "No branch linked to this user"
             }, status=400)
 
-        # ✅ FIX: Branch filter - Superadmin ko kisi bhi branch ka data, Employee ko sirf apna
         branch_id_param = request.GET.get('branch_id')
         if branch_id_param:
-            # Superadmin hamesha allow
             if is_superadmin:
                 from pos.models.branch import Branch
                 try:
                     branch = Branch.objects.get(id=branch_id_param)
                 except Branch.DoesNotExist:
                     return Response({'error': 'Branch not found'}, status=404)
-            # ✅ Employee allow karo agar uski branch superadmin branch hai
             elif is_employee:
                 employee_branch = user.get_effective_branch()
                 if employee_branch and employee_branch.user and employee_branch.user.role == 'superadmin':
@@ -68,9 +76,6 @@ class StockReportAPIView(APIView):
                         branch = Branch.objects.get(id=branch_id_param)
                     except Branch.DoesNotExist:
                         return Response({'error': 'Branch not found'}, status=404)
-                else:
-                    # Employee ki branch superadmin branch nahi hai, toh apni branch hi use kare
-                    pass
 
         branch_id = branch.id
 
@@ -329,7 +334,7 @@ class StockReportAPIView(APIView):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STOCK HISTORY VIEW (with permission check)
+# STOCK HISTORY VIEW (with permission check) — ✅ FIXED for float * Decimal
 # ─────────────────────────────────────────────────────────────────────────────
 
 class StockHistoryAPIView(APIView): 
@@ -351,7 +356,6 @@ class StockHistoryAPIView(APIView):
         is_superadmin = user.role == 'superadmin'
         is_employee = user.role == 'employee'
 
-        # ✅ FIX: Branch selection — same logic as StockReportAPIView
         branch = user.get_effective_branch()
         if not branch:
             return Response({
@@ -359,7 +363,6 @@ class StockHistoryAPIView(APIView):
                 "error": "No branch linked to this user"
             }, status=400)
 
-        # ✅ ADD: Support branch_id query param (superadmin/employee ke liye)
         branch_id_param = request.GET.get('branch_id')
         if branch_id_param:
             if is_superadmin:
@@ -369,7 +372,6 @@ class StockHistoryAPIView(APIView):
                 except Branch.DoesNotExist:
                     return Response({'error': 'Branch not found'}, status=404)
             elif is_employee:
-                # Employee allow karo agar uski branch superadmin branch hai
                 employee_branch = user.get_effective_branch()
                 if employee_branch and employee_branch.user and employee_branch.user.role == 'superadmin':
                     from pos.models.branch import Branch
@@ -377,7 +379,6 @@ class StockHistoryAPIView(APIView):
                         branch = Branch.objects.get(id=branch_id_param)
                     except Branch.DoesNotExist:
                         return Response({'error': 'Branch not found'}, status=404)
-                # warna apni branch hi rahe
 
         try:
             variant = itemvariants.objects.get(
@@ -415,7 +416,7 @@ class StockHistoryAPIView(APIView):
                 "partyName": p.purchase.partyName.account_name if p.purchase.partyName else "",
                 "qty": float(qty),
                 "billNo": p.purchase.billNo,
-                "billAmount": float(p.netValue),
+                "billAmount": float(p.netValue or 0),
                 "currentStock": float(running_stock),
             })
 
@@ -431,7 +432,7 @@ class StockHistoryAPIView(APIView):
                 "partyName": pr.purchase_return.party.account_name if pr.purchase_return.party else "",
                 "qty": float(qty),
                 "billNo": pr.purchase_return.return_no,
-                "billAmount": float(pr.net_amount),
+                "billAmount": float(pr.net_amount or 0),
                 "currentStock": float(running_stock),
             })
 
@@ -449,7 +450,7 @@ class StockHistoryAPIView(APIView):
                 "partyName": f"From: {st.transfer.from_branch.branch_name}",
                 "qty": float(qty),
                 "billNo": st.transfer.transfer_no,
-                "billAmount": float(st.rate * st.quantity),
+                "billAmount": safe_amount(st.rate, st.quantity),  # ✅ FIXED
                 "currentStock": float(running_stock),
             })
 
@@ -468,7 +469,7 @@ class StockHistoryAPIView(APIView):
                     "partyName": f"To: {st.transfer.to_branch.branch_name}",
                     "qty": float(qty),
                     "billNo": st.transfer.transfer_no,
-                    "billAmount": float(st.rate * st.quantity),
+                    "billAmount": safe_amount(st.rate, st.quantity),  # ✅ FIXED
                     "currentStock": float(running_stock),
                 })
 
@@ -487,7 +488,7 @@ class StockHistoryAPIView(APIView):
                     "partyName": f"To: {sr.return_request.to_branch.branch_name}",
                     "qty": float(qty),
                     "billNo": sr.return_request.return_no,
-                    "billAmount": float(sr.quantity * sr.rate),
+                    "billAmount": safe_amount(sr.rate, sr.quantity),  # ✅ FIXED
                     "currentStock": float(running_stock),
                 })
 
@@ -506,7 +507,7 @@ class StockHistoryAPIView(APIView):
                     "partyName": f"From: {sr.return_request.branch.branch_name}",
                     "qty": float(qty),
                     "billNo": sr.return_request.return_no,
-                    "billAmount": float(sr.quantity * sr.rate),
+                    "billAmount": safe_amount(sr.rate, sr.quantity),  # ✅ FIXED
                     "currentStock": float(running_stock),
                 })
 
@@ -524,7 +525,7 @@ class StockHistoryAPIView(APIView):
                 "partyName": f"From: {bt.transfer.from_branch.branch_name}",
                 "qty": float(qty),
                 "billNo": bt.transfer.transfer_no,
-                "billAmount": float(bt.rate * bt.quantity),
+                "billAmount": safe_amount(bt.rate, bt.quantity),  # ✅ FIXED
                 "currentStock": float(running_stock),
             })
 
@@ -542,7 +543,7 @@ class StockHistoryAPIView(APIView):
                 "partyName": f"To: {bt.transfer.to_branch.branch_name}",
                 "qty": float(qty),
                 "billNo": bt.transfer.transfer_no,
-                "billAmount": float(bt.rate * bt.quantity),
+                "billAmount": safe_amount(bt.rate, bt.quantity),  # ✅ FIXED
                 "currentStock": float(running_stock),
             })
 
@@ -561,7 +562,7 @@ class StockHistoryAPIView(APIView):
                     "partyName": f"To: {br.return_request.to_branch.branch_name}",
                     "qty": float(qty),
                     "billNo": br.return_request.return_no,
-                    "billAmount": float(br.quantity * br.rate),
+                    "billAmount": safe_amount(br.rate, br.quantity),  # ✅ FIXED
                     "currentStock": float(running_stock),
                 })
 
@@ -580,7 +581,7 @@ class StockHistoryAPIView(APIView):
                     "partyName": f"From: {br.return_request.branch.branch_name}",
                     "qty": float(qty),
                     "billNo": br.return_request.return_no,
-                    "billAmount": float(br.quantity * br.rate),
+                    "billAmount": safe_amount(br.rate, br.quantity),  # ✅ FIXED
                     "currentStock": float(running_stock),
                 })
 
@@ -600,7 +601,7 @@ class StockHistoryAPIView(APIView):
                     "partyName": f"To: {b2b_item.sale.to_branch.branch_name}",
                     "qty": float(qty),
                     "billNo": b2b_item.sale.sale_no,
-                    "billAmount": float(b2b_item.rate * b2b_item.quantity),
+                    "billAmount": safe_amount(b2b_item.rate, b2b_item.quantity),  # ✅ FIXED
                     "currentStock": float(running_stock),
                 })
 
@@ -616,7 +617,7 @@ class StockHistoryAPIView(APIView):
                 "partyName": s.sales.customer.account_name if s.sales.customer else "",
                 "qty": float(qty),
                 "billNo": s.sales.bill_no,
-                "billAmount": float(s.net_amount),
+                "billAmount": float(s.net_amount or 0),
                 "currentStock": float(running_stock),
             })
 
@@ -633,7 +634,7 @@ class StockHistoryAPIView(APIView):
                 "partyName": ws.order.billing_name if ws.order else "",
                 "qty": float(qty),
                 "billNo": ws.order.order_number if ws.order else "",
-                "billAmount": float(ws.total_price),
+                "billAmount": float(ws.total_price or 0),
                 "currentStock": float(running_stock),
             })
 
@@ -649,7 +650,7 @@ class StockHistoryAPIView(APIView):
                 "partyName": sr.sales_return.customer.account_name if sr.sales_return.customer else "",
                 "qty": float(qty),
                 "billNo": sr.sales_return.return_no,
-                "billAmount": float(sr.net_amount),
+                "billAmount": float(sr.net_amount or 0),
                 "currentStock": float(running_stock),
             })
 

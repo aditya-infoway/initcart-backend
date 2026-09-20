@@ -570,6 +570,8 @@ class TransferItemDetailView(APIView):
                 'sgst': float(item.sgst or 0),
                 'igst': float(item.igst or 0),
                 'net_amount': float(item.net_amount or 0),
+                'discount_percent': float(item.discount_percent or 0),
+                'discount_amount': float(item.discount_amount or 0),  
             })
 
         return Response({

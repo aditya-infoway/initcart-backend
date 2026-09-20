@@ -1,5 +1,11 @@
 # pos/models/stock_transfer.py
 # SIMPLIFIED - No mapping, direct transfer
+#
+# ✅ CHANGE: StockTransferItem.quantity  IntegerField -> DecimalField(12, 2)
+#    (Excel import me decimal qty, e.g. 2.5, ke liye — B2BSaleItem jaisa)
+#    Model badalne ke baad migration zaroori hai:
+#        python manage.py makemigrations pos
+#        python manage.py migrate
 
 from django.db import models
 from django.contrib.auth import get_user_model
@@ -8,9 +14,7 @@ from datetime import datetime
 from pos.models.branch_order import BranchOrder
 
 
-
 User = get_user_model()
-
 
 class StockTransfer(models.Model):
     STATUS_CHOICES = [
@@ -19,7 +23,7 @@ class StockTransfer(models.Model):
         ('cancelled', 'Cancelled'),
     ]
     
-    # ✅ ADD THIS - Transfer type to distinguish manual vs order
+    #  ADD THIS - Transfer type to distinguish manual vs order
     TRANSFER_TYPE_CHOICES = [
         ('manual', 'Manual Transfer'),
         ('order', 'Order Transfer'),
@@ -113,7 +117,8 @@ class StockTransferItem(models.Model):
     from_barcode      = models.CharField(max_length=100, blank=True, null=True)
 
     # ── Transfer details ──────────────────────────────────────
-    quantity = models.IntegerField(default=0)
+    # ✅ CHANGED: IntegerField -> DecimalField (decimal qty support, max 2 places)
+    quantity = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     rate     = models.FloatField(default=0)
 
     # stock_transfer.py model mein yeh field add karo
@@ -167,4 +172,4 @@ class VariantBranchMapping(models.Model):
         unique_together = ('source_variant', 'to_branch')
 
     def __str__(self):
-        return f"src {self.source_variant_id} -> branch {self.to_branch_id} -> dest {self.dest_variant_id}"    
+        return f"src {self.source_variant_id} -> branch {self.to_branch_id} -> dest {self.dest_variant_id}"

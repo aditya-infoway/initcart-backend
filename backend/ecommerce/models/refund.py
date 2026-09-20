@@ -1,4 +1,4 @@
-# ecommerce/models/refund.py
+# ecommerce/models/refund.py  (FULL FILE — replace your existing one — adds commission_reversed field)
 import uuid
 from django.db import models
 from django.utils import timezone
@@ -34,6 +34,11 @@ class OrderRefund(models.Model):
 
     razorpay_refund_id = models.CharField(max_length=255, blank=True, null=True)
     failure_reason = models.TextField(blank=True, null=True)
+
+    # ✅ NEW — tracks whether MLM commission (agent wallet + total_sales) for
+    # this specific returned item has already been reversed, so it only
+    # ever happens once even if process_refund() gets called again.
+    commission_reversed = models.BooleanField(default=False)
 
     processed_at = models.DateTimeField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
