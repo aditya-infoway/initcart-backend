@@ -28,6 +28,11 @@ from pos.views.stock_transfer_payment_views import (
     PayStockReceivedBillBankView,
 )
 
+    # pos/urls.py
+from pos.views.stock_transfer_excel_views import (
+    StockTransferExcelTemplateView, StockTransferExcelImportView, StockTransferBranchListView,
+)
+
 router = DefaultRouter()
 router.register(r'stock-transfers', StockTransferViewSet, basename='stock-transfer')
 
@@ -55,6 +60,11 @@ urlpatterns = [
     path('pay-stock-received-bill-cash/', PayStockReceivedBillCashView.as_view(), name='pay-stock-received-bill-cash'),
     path('pay-stock-received-bill-bank/', PayStockReceivedBillBankView.as_view(), name='pay-stock-received-bill-bank'),
 
+
+
+    path('stock-transfer-excel/template/', StockTransferExcelTemplateView.as_view()),
+    path('stock-transfer-excel/import/',   StockTransferExcelImportView.as_view()),
+    path('stock-transfer-excel/branches/', StockTransferBranchListView.as_view()),
     
     # Router URLs (list, create, retrieve, complete, cancel)
     path('', include(router.urls)),

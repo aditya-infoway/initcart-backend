@@ -1,4 +1,4 @@
-# ecommerce/utils/refund_helpers.py
+# ecommerce/utils/refund_helpers.py  (FULL FILE — replace your existing one with this)
 from decimal import Decimal, ROUND_HALF_UP
 import razorpay
 from django.conf import settings
@@ -65,6 +65,12 @@ def create_refund_if_online(return_request):
 def process_refund(refund):
     """
     Calls Razorpay's refund API for this OrderRefund and updates its status.
+    On success, also:
+      - marks the order_item as 'refunded'
+      - marks the whole order as 'refunded' if every item on it is now refunded
+      - reverses the MLM commission (upline / pos / society) + the referral
+        agent's total_sales that were credited for this item — see
+        mlm/utils/commission_reversal.py
     Returns (success: bool, message: str). Never raises — all Razorpay/network
     errors are caught and stored on the refund record so admin can retry.
     """
@@ -100,6 +106,17 @@ def process_refund(refund):
         # reflect on the order item so order pages can show "Refunded"
         refund.order_item.item_status = 'refunded'
         refund.order_item.save(update_fields=['item_status'])
+
+        # ✅ If every item on this order is now refunded, mark the whole
+        # order as refunded too — reports/order lists key off order_status.
+        if not order.items.exclude(item_status='refunded').exists():
+            if order.order_status != 'refunded':
+                order.order_status = 'refunded'
+                order.save(update_fields=['order_status'])
+
+        # ✅ Reverse MLM commission + agent total_sales for this returned item
+        from utils.commission_reversal import reverse_commission_for_return
+        reverse_commission_for_return(refund)
 
         return True, "Refund processed successfully"
 
