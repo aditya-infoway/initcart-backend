@@ -31,6 +31,8 @@ def get_pos_payment_status(sale):
     ).aggregate(total=DjangoSum('amount'))['total'] or Decimal('0')
 
     return "paid" if total_received >= sale.grand_total else "credit"
+
+
 class AgentSalesAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -42,7 +44,7 @@ class AgentSalesAPIView(APIView):
 
         settings = MLMSettings.objects.first()
         min_required = float(settings.minimum_sale_amount) if settings else 0
-        threshold = Decimal(str(min_required))
+        threshold_decimal = Decimal(str(min_required))
 
         # ── WEBSITE ORDERS ──────────────────────────────────────────────
         website_orders = Order.objects.filter(
@@ -81,7 +83,7 @@ class AgentSalesAPIView(APIView):
         # POS sales
         for sale in pos_sales:
             is_referral = sale.referral_agent_id == request.user.id if sale.referral_agent_id else False
-            
+
             is_own = False
             customer_name = "Walk-in"
             if sale.customer:
@@ -110,17 +112,22 @@ class AgentSalesAPIView(APIView):
         merged_orders.sort(key=lambda x: x["date"], reverse=True)
 
         # ── Calculate total sales ──────────────────────────────────────
+        # ✅ FIX: pehle yahan amount sirf tab add hota tha jab running_total
+        # abhi threshold se neeche ho — matlab threshold cross hote hi
+        # future orders ka amount add hona hi band ho jata tha, isliye
+        # displayed total_sales kabhi badhta hi nahi tha uske baad.
+        # Ab amount hamesha add hota hai; "crossed" sirf ek baar mark hota hai.
         all_orders_asc = sorted(merged_orders, key=lambda x: x["date"])
         running_total = Decimal("0")
         crossed_order_id = None
-        threshold_decimal = Decimal(str(min_required))
+        threshold_crossed = False
 
         for order_data in all_orders_asc:
             amount = Decimal(str(order_data["amount"]))
-            if running_total < threshold_decimal:
-                running_total += amount
-                if running_total >= threshold_decimal:
-                    crossed_order_id = order_data["order_number"]
+            running_total += amount
+            if not threshold_crossed and running_total >= threshold_decimal:
+                crossed_order_id = order_data["order_number"]
+                threshold_crossed = True
 
         # ── Response ────────────────────────────────────────────────────
         total_orders = len(merged_orders)

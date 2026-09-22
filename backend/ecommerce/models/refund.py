@@ -33,6 +33,7 @@ class OrderRefund(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
 
     razorpay_refund_id = models.CharField(max_length=255, blank=True, null=True)
+    
     failure_reason = models.TextField(blank=True, null=True)
 
     # ✅ NEW — tracks whether MLM commission (agent wallet + total_sales) for
