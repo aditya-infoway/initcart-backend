@@ -319,7 +319,7 @@ class StockTransferExcelTemplateView(APIView):
     """
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsSuperAdminOrPagePermittedEmployee]
-    page_key = "/stocktransferexcel"
+    page_key = "/stockTransferExcel"
 
     def get(self, request):
         from_branch = request.user.get_effective_branch()
@@ -473,7 +473,7 @@ class StockTransferExcelImportView(APIView):
     """
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsSuperAdminOrPagePermittedEmployee]
-    page_key = "/stocktransferexcel"
+    page_key = "/stockTransferExcel"
 
     def post(self, request):
         from_branch = request.user.get_effective_branch()

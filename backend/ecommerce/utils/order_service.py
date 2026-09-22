@@ -1,4 +1,4 @@
-#ecommerce/utils/order_service.py
+#ecommerce/utils/order_service.py  (FULL FILE — replace your existing one with this)
 from django.utils import timezone
 from django.db import transaction
 from django.core.exceptions import ValidationError
@@ -109,50 +109,49 @@ def process_order_from_pending(pending, payment_data=None):
         pending.delete()
 
         return order
-      
+
+
 ########  M L M ###########
 
-""" def update_agent_sales(user, order_amount):
-
-    try:
-        agent = Agent.objects.get(user=user)
-    except Agent.DoesNotExist:
-        return
-
-    agent.total_sales += order_amount
-
-    settings = MLMSettings.objects.first()
-
-    if settings and agent.total_sales >= settings.minimum_sale_amount:
-        agent.is_active_agent = True
-
-    agent.save()   """
 # ecommerce/utils/order_service.py
 
+def update_agent_sales(user, amount, from_delivery=False, add_sales=True, order=None):
+    """
+    add_sales=False lets a caller check/apply the activation threshold
+    (is_active_agent / minimum_achieved_at) WITHOUT incrementing total_sales
+    again — used when total_sales for this order was already accounted for
+    by another path (see the self-purchase note in ecommerce/signals.py).
 
-
-def update_agent_sales(user, amount, from_delivery=False):
+    order: the Order instance whose delivery is triggering this call —
+    passed through so, if this call is what crosses the threshold, we can
+    record EXACTLY which order did it (minimum_achieved_order). That's what
+    is_agent_active() later uses to skip commission only on that exact
+    order — ID-based, no timestamp race.
+    """
     from mlm.models.agent import Agent
     from mlm.models.mlm_settings import MLMSettings
- 
+
     try:
         agent = Agent.objects.get(user=user, status="approved")
     except Agent.DoesNotExist:
         return False
- 
+
     amount = Decimal(str(amount))
- 
-    if amount > Decimal("0"):
+
+    if add_sales and amount > Decimal("0"):
         Agent.objects.filter(pk=agent.pk).update(
             total_sales=F("total_sales") + amount
         )
         agent.refresh_from_db()
         print(f"📊 Sales | {user.username} | +₹{amount} | Total: ₹{agent.total_sales}")
- 
+    elif not add_sales:
+        agent.refresh_from_db()
+        print(f"📊 Sales | {user.username} | skipped increment (already accounted for) | Total: ₹{agent.total_sales}")
+
     settings = MLMSettings.objects.first()
     if not settings:
         return False
- 
+
     if agent.total_sales >= settings.minimum_sale_amount:
         changed = []
         if not agent.is_active_agent:
@@ -163,12 +162,17 @@ def update_agent_sales(user, amount, from_delivery=False):
             agent.minimum_achieved_at = timezone.now()
             changed.append("minimum_achieved_at")
             print(f"⏰ minimum_achieved_at set: {user.username}")
+            # ✅ NAYA: exact achieving order record karo
+            if order is not None:
+                agent.minimum_achieved_order = order
+                changed.append("minimum_achieved_order")
+                print(f"🎯 minimum_achieved_order set: {user.username} → {order.order_number}")
         if changed:
             agent.save(update_fields=changed)
         return True
- 
+
     return False
- 
+
 def process_mlm_commission(order):
     """
     Commission on DELIVERY only.
