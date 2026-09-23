@@ -329,21 +329,25 @@ class VendorOrderStatusUpdateAPIView(APIView):
                 })
                 
             elif serializer.validated_data.get('order_id'):
-                # Update all items of this vendor in the order
                 order_items = OrderItem.objects.filter(
                     order_id=serializer.validated_data['order_id'],
                     vendor=vendor
                 )
-                
-                updated_count = order_items.update(
-                    item_status=serializer.validated_data['item_status']
-                )
-                
-                # Update overall order status
-                if updated_count > 0:
-                    order = order_items.first().order
+
+                # ✅ FIX: .update() fires no signals — loop + .save() so that
+                # item-level delivery/commission handling actually triggers,
+                # exactly the same as the single-item branch above.
+                updated_count = 0
+                order = None
+                for order_item in order_items:
+                    order_item.item_status = serializer.validated_data['item_status']
+                    order_item.save()
+                    order = order_item.order
+                    updated_count += 1
+
+                if updated_count > 0 and order:
                     update_order_status(order)
-                
+
                 return Response({
                     'success': True,
                     'message': f'Updated {updated_count} items successfully'
@@ -366,24 +370,39 @@ class VendorOrderStatusUpdateAPIView(APIView):
 # Replace update_order_status and _process_delivery_commission in vendor_order_views.py
 
 def update_order_status(order):
+    """
+    ✅ FIX: order_status ab sirf 'delivered' hota hai jab order ke SAARE
+    active (non-cancelled/non-refunded) items delivered ho chuke hon.
+    Pehle max(priority) le raha tha, isliye ek vendor deliver kare aur
+    doosra abhi processing mein ho, tab bhi poora order 'delivered' dikh
+    jata tha. Ab jab tak koi bhi active item delivered nahi hai, order
+    us sabse "kam advanced" active item status ko show karta hai — customer
+    ko saaf pata chalta hai ki order poora deliver nahi hua.
+    Per-product exact status ab OrderItemSerializer.item_status se aata
+    hai (already serialized) — frontend usko per-item badge ke roop mein
+    dikhayega.
+    """
     items = order.items.all()
     if not items.exists():
         return
 
-    statuses = set(items.values_list('item_status', flat=True))
+    statuses = list(items.values_list('item_status', flat=True))
+    active_statuses = [s for s in statuses if s not in ('cancelled', 'refunded')]
+
     status_priority = {
-        'cancelled': 0, 'refunded': 0, 'pending': 1,
-        'confirmed': 2, 'processing': 3, 'shipped': 4, 'delivered': 5
+        'pending': 1, 'confirmed': 2, 'processing': 3, 'shipped': 4, 'delivered': 5
     }
 
-    if len(statuses) == 1:
-        new_status = statuses.pop()
+    if not active_statuses:
+        # Saare items cancelled/refunded
+        new_status = 'refunded' if 'refunded' in statuses else 'cancelled'
+    elif all(s == 'delivered' for s in active_statuses):
+        new_status = 'delivered'
     else:
-        if 'cancelled' in statuses and len(statuses) > 1:
-            statuses.remove('cancelled')
-        if 'refunded' in statuses and len(statuses) > 1:
-            statuses.remove('refunded')
-        new_status = max(statuses, key=lambda s: status_priority.get(s, 0)) if statuses else 'cancelled'
+        # ✅ FIX: max nahi, min lo — jab tak SAB delivered nahi, order
+        # 'delivered' nahi dikhega. Sabse peeche wale active item ka
+        # status order-level pe dikhta hai.
+        new_status = min(active_statuses, key=lambda s: status_priority.get(s, 0))
 
     old_status = order.order_status
     if old_status == new_status:
@@ -393,11 +412,11 @@ def update_order_status(order):
 
     if new_status == 'delivered' and order.payment_method == 'cod':
         order.payment_status = 'completed'
-        
-    if new_status == 'delivered' and not order.delivered_at:
-        order.delivered_at = timezone.now()    
 
-    order.save()  # ← signal fires here, handles commission cleanly
+    if new_status == 'delivered' and not order.delivered_at:
+        order.delivered_at = timezone.now()
+
+    order.save()
 
     if new_status == 'delivered':
         VendorDeliveryInfo.objects.filter(order=order).update(delivery_status='delivered')

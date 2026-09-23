@@ -1,23 +1,28 @@
-# ecommerce/signals.py  (FULL FILE — replace your existing one with this)
+# ecommerce/signals.py
 from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 from django.db.models import Sum
 from decimal import Decimal
 
 from ecommerce.models.customer import CustomerProfile
-from ecommerce.models.order import Order
+from ecommerce.models.order import Order, OrderItem
 
 _PROCESSING_ORDERS = set()
+_PROCESSING_ITEMS = set()
 
 
 @receiver(post_save, sender=Order)
 def handle_order_status_change(sender, instance, created, update_fields, **kwargs):
+    """
+    Ab yeh sirf CUSTOMER STATS (total_spent/total_orders) aur self-purchase
+    agent sales sync ke liye chalta hai. MLM COMMISSION ab item-level pe
+    handle_order_item_delivered() se chalta hai — poore order pe nahi.
+    """
     if instance.pk in _PROCESSING_ORDERS:
-        print(f" Signal skipped (already processing): {instance.pk}")
         return
     _PROCESSING_ORDERS.add(instance.pk)
     try:
-        _handle_order(instance)
+        _update_customer_stats(instance)
     except Exception as e:
         print(f" Signal error for order {instance.pk}: {e}")
         import traceback; traceback.print_exc()
@@ -25,102 +30,97 @@ def handle_order_status_change(sender, instance, created, update_fields, **kwarg
         _PROCESSING_ORDERS.discard(instance.pk)
 
 
-def _handle_order(instance):
-    from ecommerce.utils.order_service import update_agent_sales, process_mlm_commission
-
-    print(f"\n SIGNAL FIRED: order={instance.order_number} status={instance.order_status} payment={instance.payment_status}")
-
-    _update_customer_stats(instance)
-
-    if instance.order_status != "delivered":
-        print(f" Not delivered yet ({instance.order_status}), skipping commission")
+@receiver(post_save, sender=OrderItem)
+def handle_order_item_delivered(sender, instance, created, **kwargs):
+    """
+    ✅ NAYA: commission ab is signal se, PER ITEM, fire hota hai.
+    Jis vendor ka item 'delivered' hua, sirf USI item ka platform_profit
+    commission mein jaata hai — poore order ka nahi. Doosre vendor ka
+    item abhi bhi pending/processing ho sakta hai, usse koi farak nahi
+    padta.
+    """
+    if created:
+        return
+    if instance.pk in _PROCESSING_ITEMS:
+        return
+    if instance.item_status != 'delivered':
+        return
+    if instance.mlm_commission_processed:
         return
 
-    print(f"\n ORDER DELIVERED: {instance.order_number}")
-    print(f"   referral_agent: {instance.referral_agent}")
-    print(f"   payment_status: {instance.payment_status}")
-    print(f"   mlm_commission_processed: {instance.mlm_commission_processed}")
-    print(f"   final_amount: {instance.final_amount}")
+    _PROCESSING_ITEMS.add(instance.pk)
+    try:
+        _handle_item_commission(instance)
+    except Exception as e:
+        print(f" Item signal error for item {instance.pk}: {e}")
+        import traceback; traceback.print_exc()
+    finally:
+        _PROCESSING_ITEMS.discard(instance.pk)
+
+
+def _handle_item_commission(item):
+    from ecommerce.utils.order_service import update_agent_sales, process_item_mlm_commission
 
     try:
-        fresh_order = Order.objects.get(pk=instance.pk)
-    except Order.DoesNotExist:
-        print(f" Order {instance.pk} not found in DB")
+        fresh_item = OrderItem.objects.select_related('order').get(pk=item.pk)
+    except OrderItem.DoesNotExist:
         return
 
-    print(f"   [DB fresh] order_status: {fresh_order.order_status}")
-    print(f"   [DB fresh] payment_status: {fresh_order.payment_status}")
-    print(f"   [DB fresh] mlm_commission_processed: {fresh_order.mlm_commission_processed}")
-    print(f"   [DB fresh] referral_agent: {fresh_order.referral_agent}")
+    order = fresh_item.order
+    print(f"\n ITEM DELIVERED: item={fresh_item.id} product={fresh_item.product_name} "
+          f"order={order.order_number}")
 
-    if fresh_order.mlm_commission_processed:
-        print(f" Already processed (DB check): {fresh_order.order_number}")
+    if fresh_item.mlm_commission_processed:
+        print(f" Already processed (DB check): item {fresh_item.id}")
         return
 
-    referral_agent = fresh_order.referral_agent
+    referral_agent = order.referral_agent
     if not referral_agent:
         from ecommerce.utils.agent_order_utils import resolve_referral_agent
-        referral_agent = resolve_referral_agent(fresh_order.customer)
+        referral_agent = resolve_referral_agent(order.customer)
         if referral_agent:
-            Order.objects.filter(pk=fresh_order.pk).update(referral_agent=referral_agent)
-            fresh_order.referral_agent = referral_agent
-            print(f" Auto-linked: {referral_agent.user.username} → {fresh_order.order_number}")
+            Order.objects.filter(pk=order.pk).update(referral_agent=referral_agent)
+            order.referral_agent = referral_agent
+            print(f" Auto-linked: {referral_agent.user.username} → {order.order_number}")
 
     if not referral_agent:
-        print(f" No referral agent found for order {fresh_order.order_number}")
+        print(f" No referral agent for item {fresh_item.id}")
         return
 
-    print(f"   Agent resolved: {referral_agent.user.username} | status={referral_agent.status}")
-
-    total_platform_profit = (
-        fresh_order.items.aggregate(total=Sum("platform_profit"))["total"] or Decimal("0")
-    )
-    print(f"   total_platform_profit on items: ₹{total_platform_profit}")
-
-    if total_platform_profit <= Decimal("0"):
-        print(f"  platform_profit is ZERO — commission cannot be created!")
-        print(f"   Check OrderItem.platform_profit values:")
-        for item in fresh_order.items.all():
-            print(f"     Item {item.id}: product={item.product_name} platform_profit={item.platform_profit}")
+    item_profit = Decimal(str(fresh_item.platform_profit or 0))
+    if item_profit <= Decimal("0"):
+        print(f"  platform_profit is ZERO for item {fresh_item.id} — nothing to commission")
+        OrderItem.objects.filter(pk=fresh_item.pk).update(mlm_commission_processed=True)
         return
 
-    is_self_purchase = referral_agent.user_id == fresh_order.customer_id
+    is_self_purchase = referral_agent.user_id == order.customer_id
     if is_self_purchase:
-        print(f"   ℹ️ Self-purchase detected — total_sales already synced by "
-              f"_update_customer_stats, skipping duplicate add")
+        print(f"  Self-purchase item — total_sales synced by _update_customer_stats, "
+              f"skipping duplicate add")
 
     update_agent_sales(
         referral_agent.user,
-        fresh_order.final_amount,
+        fresh_item.total_price,
         from_delivery=True,
         add_sales=not is_self_purchase,
-        order=fresh_order,
+        order=order,
     )
     referral_agent.refresh_from_db()
-    print(f"   Agent after sales update: is_active={referral_agent.is_active_agent} total_sales={referral_agent.total_sales}")
+    print(f"   Agent after sales update: is_active={referral_agent.is_active_agent} "
+          f"total_sales={referral_agent.total_sales}")
 
-    print(f"   Calling process_mlm_commission...")
-    process_mlm_commission(fresh_order)
+    # ✅ FIX: sirf tab mark karo jab distribution actually hui ho
+    was_distributed = process_item_mlm_commission(order, fresh_item, referral_agent)
 
-    Order.objects.filter(pk=fresh_order.pk).update(
-        mlm_commission_processed=True,
-        commission_distributed_at_delivery=True,
-    )
-    print(f"Commission processed and flags set for {fresh_order.order_number}")
+    if was_distributed:
+        OrderItem.objects.filter(pk=fresh_item.pk).update(mlm_commission_processed=True)
+        print(f" Commission processed and flag set for item {fresh_item.id}\n")
+    else:
+        print(f" Commission NOT distributed for item {fresh_item.id} — flag left False, will retry\n")
 
-    # ✅ FIX: pass order=fresh_order here too. Without it, if THIS is the
-    # call that first crosses an upline agent's threshold (total_sales
-    # already ≥ minimum from earlier deliveries but minimum_achieved_at
-    # still unset — a real race, since upline agents accumulate sales from
-    # many downstream orders arriving close together), minimum_achieved_at
-    # got set but minimum_achieved_order stayed NULL forever. That NULL is
-    # exactly what breaks the ID-based skip in is_agent_active() — the
-    # agent then gets commission on their own achieving order too.
-    from utils.upline_engine import get_upline_agents
-    for upline in get_upline_agents(referral_agent.user):
-        update_agent_sales(upline["user"], Decimal("0"), from_delivery=True, order=fresh_order)
-
-    print(f" _handle_order complete: {fresh_order.order_number}\n")
+    all_processed = not order.items.filter(mlm_commission_processed=False).exists()
+    if all_processed:
+        Order.objects.filter(pk=order.pk).update(mlm_commission_processed=True)
 
 
 def _update_customer_stats(instance):
@@ -149,13 +149,19 @@ def _update_customer_stats(instance):
         try:
             from mlm.models.agent import Agent
             from mlm.models.mlm_settings import MLMSettings
+            from ecommerce.models.order import OrderItem
 
             agent = Agent.objects.get(user=instance.customer, status="approved")
 
-            delivered_total = Order.objects.filter(
-                customer=instance.customer,
-                order_status="delivered",
-            ).aggregate(total=Sum("final_amount"))["total"] or Decimal("0.00")
+            # ✅ FIX: order_status='delivered' ab sirf tab set hota hai jab
+            # SAARE items deliver ho chuke hon. Self-purchase agent ka
+            # total_sales isliye ab per-DELIVERED-ITEM total_price se
+            # sync hota hai, order-level final_amount se nahi — warna
+            # partial-delivery ke dauran total_sales galat rehta.
+            delivered_total = OrderItem.objects.filter(
+                order__customer=instance.customer,
+                item_status="delivered",
+            ).aggregate(total=Sum("total_price"))["total"] or Decimal("0.00")
 
             if delivered_total != agent.total_sales:
                 agent.total_sales = delivered_total

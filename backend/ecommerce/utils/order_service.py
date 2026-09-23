@@ -157,16 +157,16 @@ def update_agent_sales(user, amount, from_delivery=False, add_sales=True, order=
         if not agent.is_active_agent:
             agent.is_active_agent = True
             changed.append("is_active_agent")
-            print(f"✅ ACTIVATED: {user.username}")
+            print(f" ACTIVATED: {user.username}")
         if not agent.minimum_achieved_at:
             agent.minimum_achieved_at = timezone.now()
             changed.append("minimum_achieved_at")
-            print(f"⏰ minimum_achieved_at set: {user.username}")
+            print(f" minimum_achieved_at set: {user.username}")
             # ✅ NAYA: exact achieving order record karo
             if order is not None:
                 agent.minimum_achieved_order = order
                 changed.append("minimum_achieved_order")
-                print(f"🎯 minimum_achieved_order set: {user.username} → {order.order_number}")
+                print(f" minimum_achieved_order set: {user.username} → {order.order_number}")
         if changed:
             agent.save(update_fields=changed)
         return True
@@ -206,7 +206,7 @@ def process_mlm_commission(order):
     )
 
     if total_platform_profit <= Decimal("0"):
-        print(f"⚠️ Zero platform_profit — no commission for {order.order_number}")
+        print(f"Zero platform_profit — no commission for {order.order_number}")
         return
 
     #  current_order pass karo — seller ke activation-order check ke liye
@@ -217,9 +217,45 @@ def process_mlm_commission(order):
     )
 
     if not result.get("upline_payouts"):
-        print(f"⏭️ No eligible upline agents for {order.order_number}")
+        print(f"No eligible upline agents for {order.order_number}")
         return
 
     distribute_commission(order, result)
-    print(f"✅ Commission distributed: {order.order_number} | "
+    print(f"Commission distributed: {order.order_number} | "
           f"{len(result['upline_payouts'])} agents credited")
+    
+    
+def process_item_mlm_commission(order, item, referral_agent):
+    """
+    ✅ FIX: ab yeh function True/False return karta hai — True sirf jab
+    kam se kam EK transaction actually create hui ho. Caller
+    (_handle_item_commission in signals.py) ab isi return value ke basis
+    par item.mlm_commission_processed set karega — "nothing to distribute"
+    (missing config, no eligible upline) aur "successfully paid" ab alag
+    dikhte hain, taaki pehla case future mein retry ho sake jab config
+    aa jaye, aur dusra case kabhi dobara na chale.
+    """
+    from utils.profit_engine import calculate_profit_distribution
+    from utils.commision_engine import distribute_commission
+
+    print(f"\n process_item_mlm_commission: order={order.order_number} item={item.id}")
+
+    item_profit = Decimal(str(item.platform_profit or 0))
+    if item_profit <= Decimal("0"):
+        print(f"⚠️ Zero platform_profit — no commission for item {item.id}")
+        return True  # ✅ genuinely nothing will ever be owed here — safe to mark processed
+
+    result = calculate_profit_distribution(
+        total_profit=item_profit,
+        seller_user=referral_agent.user,
+        current_order=order,
+    )
+
+    if not result.get("upline_payouts") and not result.get("seller_extra"):
+        print(f"⏭️ Nothing to distribute for item {item.id} — "
+              f"NOT marking processed (will retry on next relevant save)")
+        return False  # ✅ do NOT lock this in — could be missing config, retry later
+
+    distribute_commission(order, result, order_item=item)
+    print(f"✅ Commission distributed for item {item.id}")
+    return True
