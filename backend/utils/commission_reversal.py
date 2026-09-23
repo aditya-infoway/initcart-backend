@@ -6,41 +6,22 @@ from mlm.models.mlm_transaction import MLMTransaction
 
 def reverse_commission_for_return(refund):
     """
-    Call this right after a Razorpay refund is successfully PROCESSED
-    (see ecommerce/utils/refund_helpers.py -> process_refund()).
+    ✅ FIX (this version): original_transactions ab order_item se filter
+    hota hai, order se nahi. Pehle `MLMTransaction.objects.filter(order=order)`
+    tha — multi-vendor order mein yeh DOOSRE vendor ke item ki commission
+    transactions bhi utha leta, aur unko bhi reverse kar deta jab sirf EK
+    item refund ho raha ho. Ab sirf usi order_item ki transactions match
+    hoti hain jiska refund ho raha hai.
 
-    Reverses everything that was credited for the RETURNED item —
-    proportional to how much of the order's platform_profit that one
-    order_item was responsible for:
-
-      1. Upline MLM commission, POS-branch profit, Society profit —
-         each gets a matching NEGATIVE MLMTransaction. Original
-         transactions are never touched, so history stays visible.
-
-      2. referral_agent.total_sales is reduced — BUT ONLY when the
-         referral_agent is NOT the order's own customer (self-purchase).
-         For self-purchases, _update_customer_stats() already
-         recalculated total_sales from scratch (order no longer counts
-         as 'delivered'), so we don't subtract again here.
-
-      3. ✅ BUG FIX: minimum_achieved_order / minimum_achieved_at reset.
-         Previously this only cleared when the REFUNDED order happened
-         to be the exact order stored as minimum_achieved_order. But if
-         total_sales drops below the minimum because of a DIFFERENT
-         order's refund, minimum_achieved_order was left pointing at a
-         stale order — and since update_agent_sales() only ever sets a
-         new minimum_achieved_order when minimum_achieved_at is None,
-         that stale pointer never gets replaced. The agent then gets
-         is_active_agent flipped back to True on their next qualifying
-         order, but the stale ID means the *actual* new crossing order
-         no longer gets correctly skipped — commission fires on it by
-         mistake. Fix: whenever total_sales drops below minimum, ALWAYS
-         clear minimum_achieved_at / minimum_achieved_order, regardless
-         of which order caused the drop. The next order that re-crosses
-         the threshold (via update_agent_sales) will then correctly set
-         a fresh minimum_achieved_order.
-
-    Idempotent — refund.commission_reversed guards against double-firing.
+    total_platform_profit ab bhi order-wide hai kyunki `fraction` ka
+    matlab tha "is item ka profit / order ka poora profit" — lekin ab jab
+    commission khud item-level pe distribute hota hai, tx.amount pehle se
+    hi is item ke liye hai, poore order ke liye nahi. Isliye fraction
+    calculation ab REDUNDANT hai (fraction hamesha ~1.0 hoga agar sirf is
+    item ki transactions match ho rahi hain) — lekin partial-item-quantity
+    refunds ke liye (agar aap kabhi ek item ke andar ke quantity ka partial
+    refund support karte ho) yeh proportional scaling abhi bhi kaam ka hai,
+    isliye rakha hai as a safety multiplier.
     """
     if refund.commission_reversed:
         return
@@ -48,27 +29,40 @@ def reverse_commission_for_return(refund):
     order = refund.order
     order_item = refund.order_item
 
-    if not order.mlm_commission_processed:
+    if not order_item.mlm_commission_processed:
         refund.commission_reversed = True
         refund.save(update_fields=['commission_reversed'])
         return
-
-    total_platform_profit = order.items.aggregate(
-        total=Sum('platform_profit')
-    )['total'] or Decimal('0')
 
     item_profit = Decimal(str(order_item.platform_profit or 0))
 
-    if total_platform_profit <= 0 or item_profit <= 0:
+    if item_profit <= 0:
         refund.commission_reversed = True
         refund.save(update_fields=['commission_reversed'])
         return
 
-    fraction = item_profit / total_platform_profit
-    print(f"\n  ↩️  Reversing commission for {order.order_number} — "
-          f"item share = {fraction:.4f} of order profit")
+    # ✅ FIX: order_item se filter, order se nahi
+    original_transactions = MLMTransaction.objects.filter(
+        order_item=order_item, amount__gt=0
+    )
 
-    original_transactions = MLMTransaction.objects.filter(order=order, amount__gt=0)
+    if not original_transactions.exists():
+        # order_item tag se pehle (migration se pehle) ki transactions ho
+        # sakti hain jinke paas order_item set nahi hai — un legacy cases
+        # ke liye yahan manually reconcile karna padega.
+        print(f"    ⚠️ No order_item-tagged transactions found for item "
+              f"{order_item.id} — may be pre-migration commission, "
+              f"skipping automated reversal")
+        refund.commission_reversed = True
+        refund.save(update_fields=['commission_reversed'])
+        return
+
+    fraction = Decimal(str(refund.refund_amount)) / Decimal(str(order_item.total_price)) \
+        if order_item.total_price else Decimal("1")
+    fraction = min(fraction, Decimal("1"))
+
+    print(f"\n  ↩️  Reversing commission for {order.order_number} item {order_item.id} — "
+          f"refund fraction = {fraction:.4f}")
 
     for tx in original_transactions:
         reversal_amount = (Decimal(str(tx.amount)) * fraction).quantize(Decimal('0.01'))
@@ -78,6 +72,7 @@ def reverse_commission_for_return(refund):
         MLMTransaction.objects.create(
             user=tx.user,
             order=order,
+            order_item=order_item,
             level=tx.level,
             percentage=tx.percentage,
             amount=-reversal_amount,
@@ -86,7 +81,6 @@ def reverse_commission_for_return(refund):
         print(f"    ↩️ {tx.transaction_type} reversed | {tx.user.username} | "
               f"L{tx.level} | -₹{reversal_amount}")
 
-    # ── Adjust referral agent's total_sales / activation ───────────────────
     if order.referral_agent:
         agent = order.referral_agent
         is_self_purchase = agent.user_id == order.customer_id
@@ -114,11 +108,6 @@ def reverse_commission_for_return(refund):
                 update_fields.append('is_active_agent')
                 print(f"    ⚠️ Agent deactivated (sales fell below minimum): {agent.full_name}")
 
-            # ✅ FIX: reset unconditionally on drop-below-minimum, not only
-            # when this specific order matches minimum_achieved_order_id.
-            # Whatever was stored as the achieving order is no longer
-            # meaningful once total_sales is back under threshold — the
-            # next order to re-cross it must become the new one.
             if agent.minimum_achieved_at is not None or agent.minimum_achieved_order_id is not None:
                 agent.minimum_achieved_at = None
                 agent.minimum_achieved_order = None

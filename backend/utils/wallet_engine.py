@@ -1,11 +1,4 @@
-# ============================================================
-# FILE: utils/wallet_engine.py
-# ACTION: REPLACE the entire file with this
-# ============================================================
-# CHANGE: Added optional `pos_sale` param so POS sales can
-#         be recorded without an ecommerce Order object
-# ============================================================
-
+# utils/wallet_engine.py  (FULL FILE — replace your existing one with this)
 from decimal import Decimal
 from mlm.models.mlm_transaction import MLMTransaction
 
@@ -16,14 +9,17 @@ def credit_wallet(
     level,
     percentage,
     tx_type="upline",
-    order=None,       # ecommerce Order (website sales)
-    pos_sale=None,    # SalesMaster    (POS sales)  ← NEW
+    order=None,
+    order_item=None,   # ✅ NAYA — item-level commission tagging
+    pos_sale=None,
 ):
     """
     Create one MLMTransaction record (commission / profit credit).
 
-    Exactly ONE of `order` or `pos_sale` should be provided.
-    Both can be None only in tests; in production always pass one.
+    order_item: jab commission ek specific OrderItem ki delivery se
+    trigger hua ho (website multi-vendor orders), taaki refund reversal
+    exactly usi item ki transactions ko target kar sake — doosre
+    vendor ke item ki commission ko touch kiye bina.
     """
     amount = Decimal(str(amount))
 
@@ -36,8 +32,9 @@ def credit_wallet(
 
     tx = MLMTransaction.objects.create(
         user             = user,
-        order            = order,       # None for POS sales
-        pos_sale         = pos_sale,    # None for website sales
+        order            = order,
+        order_item       = order_item,   # ✅ NAYA
+        pos_sale         = pos_sale,
         level            = level,
         percentage       = Decimal(str(percentage)),
         amount           = amount,
@@ -45,10 +42,10 @@ def credit_wallet(
     )
 
     ref = getattr(order, "order_number", None) or getattr(pos_sale, "bill_no", None)
+    item_ref = f" item={order_item.id}" if order_item else ""
     print(
         f"  ✅ Commission credited | User: {user.username} | "
         f"Level: {level} | {percentage}% | ₹{amount} | "
-        f"Type: {tx_type} | Ref: {ref}"
+        f"Type: {tx_type} | Ref: {ref}{item_ref}"
     )
     return tx
-

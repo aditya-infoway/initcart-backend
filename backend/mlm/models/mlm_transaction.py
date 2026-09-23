@@ -1,11 +1,4 @@
-# ============================================================
-# FILE: mlm/models/mlm_transaction.py
-# ACTION: REPLACE the entire file with this
-# ============================================================
-# CHANGE: Added `pos_sale` nullable FK to SalesMaster
-#         So one table handles both website orders AND POS sales
-# ============================================================
-
+# mlm/models/mlm_transaction.py  (FULL FILE — replace your existing one with this)
 from django.db import models
 from users.models import User
 from ecommerce.models.order import Order
@@ -21,7 +14,6 @@ class MLMTransaction(models.Model):
 
     user  = models.ForeignKey(User,  on_delete=models.CASCADE)
 
-    # ── Website order (ecommerce) ──────────────────────────────────────
     order = models.ForeignKey(
         Order,
         on_delete=models.CASCADE,
@@ -30,10 +22,24 @@ class MLMTransaction(models.Model):
         related_name="mlm_transactions",
     )
 
-    # ── POS sale (NEW) ─────────────────────────────────────────────────
-    # Rule: either `order` OR `pos_sale` will be filled, never both
+    # ✅ NAYA: item-level commission ke liye. Multi-vendor order mein
+    # ek order ke andar 2+ alag commission-runs ho sakte hain (har
+    # vendor ka item apni delivery pe apna commission trigger karta
+    # hai) — is FK ke bina saari transactions sirf `order` se hi
+    # linked hoti, aur refund reversal (jo ek specific item refund
+    # karta hai) galti se DOOSRE vendor ke item ki commission bhi
+    # reverse kar deta. Website orders ke liye set; POS sales ke liye
+    # hamesha null (POS abhi bhi sale-level hai, item-level nahi).
+    order_item = models.ForeignKey(
+        "ecommerce.OrderItem",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="mlm_transactions",
+    )
+
     pos_sale = models.ForeignKey(
-        "pos.SalesMaster",          # string ref → avoids circular import
+        "pos.SalesMaster",
         on_delete=models.CASCADE,
         null=True,
         blank=True,
@@ -60,7 +66,3 @@ class MLMTransaction(models.Model):
             f"{self.user.username} | L{self.level} | "
             f"₹{self.amount} | {self.transaction_type} | ref={ref}"
         )
-        
-        
-        
-        
