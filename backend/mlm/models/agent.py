@@ -70,6 +70,14 @@ class Agent(models.Model):
         blank=True,
         related_name='minimum_achieving_agents'
     )
+    
+    minimum_achieved_item = models.ForeignKey(
+        'ecommerce.OrderItem',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='minimum_achieving_agents_item'
+    )
     def __str__(self):
         return self.full_name
     

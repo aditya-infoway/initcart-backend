@@ -1,5 +1,4 @@
 # mlm/views/commission_report_views.py
-
 from decimal import Decimal
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
@@ -19,7 +18,7 @@ class AgentCommissionReportAPIView(APIView):
         transactions_qs = (
             MLMTransaction.objects
             .filter(user=request.user)
-            .select_related("order", "pos_sale")  # pos_sale bhi select karo
+            .select_related("order", "order_item", "pos_sale")
             .order_by("-created_at")
         )
 
@@ -36,39 +35,48 @@ class AgentCommissionReportAPIView(APIView):
         for tx in transactions_qs:
             amount = Decimal(str(tx.amount))
             tx_type = tx.transaction_type
+            is_reversal = amount < 0   # ✅ NAYA — refund se aayi negative entry
 
-            #  Order ya pos_sale dono handle karo
             ref = None
             ref_type = None
             source_name = None
-            
+            product_name = None
+
             if tx.order:
                 ref = tx.order.order_number
                 ref_type = "website"
                 source_name = "Website Order"
+                if tx.order_item_id:
+                    product_name = getattr(tx.order_item, 'product_name', None)
             elif tx.pos_sale:
                 ref = tx.pos_sale.bill_no
                 ref_type = "pos"
-                if tx.pos_sale.branch:
-                    source_name = f"POS ({tx.pos_sale.branch.branch_name})"
-                else:
-                    source_name = "POS Sale"
+                source_name = (
+                    f"POS ({tx.pos_sale.branch.branch_name})"
+                    if tx.pos_sale.branch else "POS Sale"
+                )
+
+            base_label = {
+                "pos_profit": "POS Profit",
+                "service_profit": "Society Profit",
+                "upline": "MLM Commission",
+            }.get(tx_type, tx_type)
 
             tx_data = {
                 "id": tx.id,
                 "order": ref,
+                "product_name": product_name,      # ✅ NAYA
                 "source": ref_type,
                 "source_name": source_name,
                 "amount": float(amount),
                 "level": tx.level,
                 "percentage": float(tx.percentage),
                 "type": tx_type,
+                "is_reversal": is_reversal,         # ✅ NAYA
                 "date": tx.created_at.isoformat(),
-                "type_label": {
-                    "pos_profit": "POS Profit",
-                    "service_profit": "Society Profit",
-                    "upline": "MLM Commission",
-                }.get(tx_type, tx_type),
+                # ✅ Refund se aayi negative entry ab clearly "Refund
+                # Reversal" dikhti hai, generic type-label ki jagah
+                "type_label": "Refund Reversal" if is_reversal else base_label,
             }
 
             if tx_type == "pos_profit":
@@ -88,7 +96,9 @@ class AgentCommissionReportAPIView(APIView):
                 level_summary[lvl]["count"] += 1
 
         total_all = total_mlm_commission + total_pos_profit + total_society_profit
-        mlm_count = len(mlm_transactions)
+        # ✅ average sirf positive (genuine) commissions pe — reversal
+        # entries average ko galat direction mein khींch deti thin
+        positive_mlm_count = len([t for t in mlm_transactions if t["amount"] > 0])
         settings = MLMSettings.objects.first()
 
         return Response({
@@ -101,18 +111,17 @@ class AgentCommissionReportAPIView(APIView):
                 "total_pos_profit": float(total_pos_profit),
                 "total_society_profit": float(total_society_profit),
                 "total_transactions": len(mlm_transactions) + len(pos_transactions) + len(society_transactions),
-                "average_commission": float(total_mlm_commission / mlm_count) if mlm_count else 0,
+                "average_commission": (
+                    float(sum(t["amount"] for t in mlm_transactions if t["amount"] > 0) / positive_mlm_count)
+                    if positive_mlm_count else 0
+                ),
                 "agent_total_sales": float(agent.total_sales) if agent else 0,
                 "is_active": agent.is_active_agent if agent else False,
                 "minimum_required": float(settings.minimum_sale_amount) if settings else 0,
             },
 
             "level_breakdown": [
-                {
-                    "level": v["level"],
-                    "total": float(v["total"]),
-                    "count": v["count"],
-                }
+                {"level": v["level"], "total": float(v["total"]), "count": v["count"]}
                 for v in sorted(level_summary.values(), key=lambda x: x["level"])
             ],
 
@@ -120,7 +129,3 @@ class AgentCommissionReportAPIView(APIView):
             "pos_transactions": pos_transactions,
             "society_transactions": society_transactions,
         })
-        
-        
-        
-        

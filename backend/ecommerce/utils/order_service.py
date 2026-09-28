@@ -115,18 +115,12 @@ def process_order_from_pending(pending, payment_data=None):
 
 # ecommerce/utils/order_service.py
 
-def update_agent_sales(user, amount, from_delivery=False, add_sales=True, order=None):
+def update_agent_sales(user, amount, from_delivery=False, add_sales=True, order=None, item=None):
     """
-    add_sales=False lets a caller check/apply the activation threshold
-    (is_active_agent / minimum_achieved_at) WITHOUT incrementing total_sales
-    again — used when total_sales for this order was already accounted for
-    by another path (see the self-purchase note in ecommerce/signals.py).
-
-    order: the Order instance whose delivery is triggering this call —
-    passed through so, if this call is what crosses the threshold, we can
-    record EXACTLY which order did it (minimum_achieved_order). That's what
-    is_agent_active() later uses to skip commission only on that exact
-    order — ID-based, no timestamp race.
+    item: ✅ NAYA — jis item ki delivery is call ko trigger kar rahi hai.
+    Agar isi call se threshold cross hota hai, minimum_achieved_item
+    isi item pe set hoga (order pe nahi) — taaki isi order ke doosre
+    (baad wale) items galti se skip na hon.
     """
     from mlm.models.agent import Agent
     from mlm.models.mlm_settings import MLMSettings
@@ -143,10 +137,10 @@ def update_agent_sales(user, amount, from_delivery=False, add_sales=True, order=
             total_sales=F("total_sales") + amount
         )
         agent.refresh_from_db()
-        print(f"📊 Sales | {user.username} | +₹{amount} | Total: ₹{agent.total_sales}")
+        print(f" Sales | {user.username} | +₹{amount} | Total: ₹{agent.total_sales}")
     elif not add_sales:
         agent.refresh_from_db()
-        print(f"📊 Sales | {user.username} | skipped increment (already accounted for) | Total: ₹{agent.total_sales}")
+        print(f" Sales | {user.username} | skipped increment (already accounted for) | Total: ₹{agent.total_sales}")
 
     settings = MLMSettings.objects.first()
     if not settings:
@@ -157,16 +151,13 @@ def update_agent_sales(user, amount, from_delivery=False, add_sales=True, order=
         if not agent.is_active_agent:
             agent.is_active_agent = True
             changed.append("is_active_agent")
-            print(f" ACTIVATED: {user.username}")
         if not agent.minimum_achieved_at:
             agent.minimum_achieved_at = timezone.now()
             changed.append("minimum_achieved_at")
-            print(f" minimum_achieved_at set: {user.username}")
-            # ✅ NAYA: exact achieving order record karo
-            if order is not None:
-                agent.minimum_achieved_order = order
-                changed.append("minimum_achieved_order")
-                print(f" minimum_achieved_order set: {user.username} → {order.order_number}")
+            if item is not None:
+                agent.minimum_achieved_item = item
+                changed.append("minimum_achieved_item")
+                print(f"🎯 minimum_achieved_item set: {user.username} → item {item.id}")
         if changed:
             agent.save(update_fields=changed)
         return True
@@ -226,15 +217,6 @@ def process_mlm_commission(order):
     
     
 def process_item_mlm_commission(order, item, referral_agent):
-    """
-    ✅ FIX: ab yeh function True/False return karta hai — True sirf jab
-    kam se kam EK transaction actually create hui ho. Caller
-    (_handle_item_commission in signals.py) ab isi return value ke basis
-    par item.mlm_commission_processed set karega — "nothing to distribute"
-    (missing config, no eligible upline) aur "successfully paid" ab alag
-    dikhte hain, taaki pehla case future mein retry ho sake jab config
-    aa jaye, aur dusra case kabhi dobara na chale.
-    """
     from utils.profit_engine import calculate_profit_distribution
     from utils.commision_engine import distribute_commission
 
@@ -243,18 +225,17 @@ def process_item_mlm_commission(order, item, referral_agent):
     item_profit = Decimal(str(item.platform_profit or 0))
     if item_profit <= Decimal("0"):
         print(f"⚠️ Zero platform_profit — no commission for item {item.id}")
-        return True  # ✅ genuinely nothing will ever be owed here — safe to mark processed
+        return True
 
     result = calculate_profit_distribution(
         total_profit=item_profit,
         seller_user=referral_agent.user,
-        current_order=order,
+        current_item=item,        # ✅ ITEM pass ho raha hai, order nahi
     )
 
     if not result.get("upline_payouts") and not result.get("seller_extra"):
-        print(f"⏭️ Nothing to distribute for item {item.id} — "
-              f"NOT marking processed (will retry on next relevant save)")
-        return False  # ✅ do NOT lock this in — could be missing config, retry later
+        print(f"⏭️ Nothing to distribute for item {item.id} — NOT marking processed")
+        return False
 
     distribute_commission(order, result, order_item=item)
     print(f"✅ Commission distributed for item {item.id}")

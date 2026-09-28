@@ -4,8 +4,7 @@ from mlm.models.profit_distribution import ProfitDistribution
 from mlm.models.mlm_level import MLMLevel
 from utils.upline_engine import get_upline_agents
 
-
-def calculate_profit_distribution(total_profit, seller_user, current_order=None, root_user=None):
+def calculate_profit_distribution(total_profit, seller_user, current_item=None, root_user=None):
     """
     Split total_profit per ProfitDistribution config, then distribute
     the MLM slice to upline agents level by level.
@@ -23,7 +22,7 @@ def calculate_profit_distribution(total_profit, seller_user, current_order=None,
             "mlm_profit":     Decimal("0"),
             "company_profit": Decimal(str(total_profit)),
             "upline_payouts": [],
-            "seller_extra":   None,           
+            "seller_extra":   None,
         }
 
     total_profit = Decimal(str(total_profit))
@@ -36,9 +35,6 @@ def calculate_profit_distribution(total_profit, seller_user, current_order=None,
     print(f"\n💹 Profit split: total={total_profit} pos={pos_profit} "
           f"service={service_profit} mlm={mlm_profit} company={company_profit}")
 
-    # ── POS/Society seller extra profit ─────────────────────────────────
-    # SAME condition jo MLM commission ke liye hai:
-    # is_agent_active(seller, current_order) = True hona chahiye
     seller_extra = None
 
     try:
@@ -48,9 +44,7 @@ def calculate_profit_distribution(total_profit, seller_user, current_order=None,
         seller_agent = Agent.objects.get(user=seller_user, status="approved")
 
         if seller_agent.agent_type in ("pos", "society"):
-            # ✅ Same check jo upline_engine mein seller ke liye hota hai
-            # Agar seller inactive hai ya jis order se minimum achieve hua → skip
-            seller_eligible = is_agent_active(seller_user, current_order=current_order)
+            seller_eligible = is_agent_active(seller_user, current_item=current_item)
 
             if seller_eligible:
                 if seller_agent.agent_type == "pos":
@@ -70,14 +64,13 @@ def calculate_profit_distribution(total_profit, seller_user, current_order=None,
                           f"{seller_user.username} → ₹{extra_amount} ({extra_type})")
             else:
                 print(f"    {seller_agent.agent_type.upper()} seller {seller_user.username} "
-                      f"— not eligible for extra profit on this order "
-                      f"(inactive or activation order)")
+                      f"— not eligible for extra profit on this item "
+                      f"(inactive or activation item)")
 
     except Agent.DoesNotExist:
         pass
 
-    # ── Build upline chain ───────────────────────────────────────────────
-    uplines = get_upline_agents(seller_user, current_order=current_order)
+    uplines = get_upline_agents(seller_user, current_item=current_item)
     levels  = MLMLevel.objects.all().order_by("level_number")
 
     upline_payouts  = []

@@ -3,7 +3,7 @@ from mlm.models.agent import Agent
 from utils.agent_status import is_agent_active
 
 
-def get_upline_agents(seller_user, current_order=None):
+def get_upline_agents(seller_user, current_item=None):
     """
     Build the upline commission chain for a given seller.
 
@@ -30,7 +30,6 @@ def get_upline_agents(seller_user, current_order=None):
     uplines = []
     level = 1
 
-    # Fresh fetch — stale object se bachao
     from users.models import User
     try:
         seller_user = User.objects.get(pk=seller_user.pk)
@@ -39,7 +38,6 @@ def get_upline_agents(seller_user, current_order=None):
 
     parent = seller_user.referred_by
 
-    # ── Step 1: Parent → L1 (no current_order check for parent) ─────────
     if parent:
         try:
             Agent.objects.get(user=parent, status="approved")
@@ -49,15 +47,12 @@ def get_upline_agents(seller_user, current_order=None):
         except Agent.DoesNotExist:
             pass
 
-    # ── Step 2: Seller → current_order check here ────────────────────────
-    # Agar seller inactive hai ya jis order se minimum achieve hua → skip
-    if is_agent_active(seller_user, current_order=current_order):
+    # ── Seller → current_item check yahan ─────────────────────────────
+    if is_agent_active(seller_user, current_item=current_item):
         uplines.append({"level": level, "user": seller_user})
         level += 1
 
-    # ── Step 3: Grandparent aur upar (no current_order check) ───────────
     ancestor = parent.referred_by if parent else None
-
     while ancestor:
         try:
             Agent.objects.get(user=ancestor, status="approved")
