@@ -33,7 +33,7 @@ def handle_order_status_change(sender, instance, created, update_fields, **kwarg
 @receiver(post_save, sender=OrderItem)
 def handle_order_item_delivered(sender, instance, created, **kwargs):
     """
-    ✅ NAYA: commission ab is signal se, PER ITEM, fire hota hai.
+    ✅ Commission ab is signal se, PER ITEM, fire hota hai.
     Jis vendor ka item 'delivered' hua, sirf USI item ka platform_profit
     commission mein jaata hai — poore order ka nahi. Doosre vendor ka
     item abhi bhi pending/processing ho sakta hai, usse koi farak nahi
@@ -56,6 +56,71 @@ def handle_order_item_delivered(sender, instance, created, **kwargs):
         import traceback; traceback.print_exc()
     finally:
         _PROCESSING_ITEMS.discard(instance.pk)
+
+
+def _sync_self_purchase_agent_sales(customer, activation_item=None):
+    """
+    ✅ SHARED helper — self-purchase agent ka total_sales ko "sum of all
+    their own DELIVERED order-items" se resync karta hai, aur agar
+    threshold cross ho gaya ho toh reactivate (is_active_agent + 
+    minimum_achieved_at + minimum_achieved_order) bhi karta hai.
+
+    ✅ BUG FIX: pehle yeh sync SIRF Order-level post_save
+    (_update_customer_stats) se hota tha. Naye item-level commission
+    flow mein OrderItem deliver hone pe Order ka post_save dobara fire
+    NAHI hota — isliye self-purchase agent ka total_sales kabhi resync
+    hi nahi hota tha jab tak koi unrelated Order-save na ho jaye. Isi
+    wajah se refund ke baad inactive hue self-purchase agent, naya
+    order place/deliver karne ke baad bhi reactivate nahi ho rahe the
+    (total_sales stale reh jata tha, refresh_from_db() sirf purani DB
+    value uthata, kabhi naya item count hi nahi hota).
+
+    Ab yeh function _update_customer_stats() (order-level) AUR
+    _handle_item_commission() (item-level, har item delivery pe)
+    dono jagah se call hota hai — jo bhi pehle trigger ho, sync ho
+    jayega. Idempotent hai, dono se baar-baar call hona safe hai.
+
+    Returns the Agent instance (refreshed) if customer is an approved
+    agent, else None.
+    """
+    from mlm.models.agent import Agent
+    from mlm.models.mlm_settings import MLMSettings
+    from django.utils import timezone
+
+    try:
+        agent = Agent.objects.get(user=customer, status="approved")
+    except Agent.DoesNotExist:
+        return None
+
+    delivered_total = OrderItem.objects.filter(
+        order__customer=customer,
+        item_status="delivered",
+    ).aggregate(total=Sum("total_price"))["total"] or Decimal("0.00")
+
+    changed = []
+    if delivered_total != agent.total_sales:
+        agent.total_sales = delivered_total
+        changed.append("total_sales")
+
+    mlm_settings = MLMSettings.objects.first()
+    if mlm_settings and agent.total_sales >= mlm_settings.minimum_sale_amount:
+        if not agent.is_active_agent:
+            agent.is_active_agent = True
+            changed.append("is_active_agent")
+            print(f"✅ Agent ACTIVATED (self-purchase sync): {customer.username}")
+        if not agent.minimum_achieved_at:
+            agent.minimum_achieved_at = timezone.now()
+            changed.append("minimum_achieved_at")
+            if activation_item is not None:
+                agent.minimum_achieved_item = activation_item
+                changed.append("minimum_achieved_item")
+
+    if changed:
+        agent.save(update_fields=changed)
+        print(f"✅ Agent sales synced: {customer.username} → ₹{agent.total_sales} "
+              f"(active={agent.is_active_agent})")
+
+    return agent
 
 
 def _handle_item_commission(item):
@@ -94,17 +159,26 @@ def _handle_item_commission(item):
         return
 
     is_self_purchase = referral_agent.user_id == order.customer_id
-    if is_self_purchase:
-        print(f"  Self-purchase item — total_sales synced by _update_customer_stats, "
-              f"skipping duplicate add")
 
-    update_agent_sales(
-        referral_agent.user,
-        fresh_item.total_price,
-        from_delivery=True,
-        add_sales=not is_self_purchase,
-        order=order,
-    )
+    if is_self_purchase:
+        # ✅ FIX: ab yahin, ITEM DELIVERY ke time hi, self-purchase agent
+        # ka total_sales resync + reactivation check chalta hai — Order
+        # ka post_save fire hone ka wait nahi karna padta.
+        print(f"  Self-purchase item — syncing total_sales directly from delivered items")
+        _sync_self_purchase_agent_sales(order.customer, activation_item=fresh_item)
+        # total_sales already sync ho chuka DB mein — update_agent_sales
+        # ko sirf refresh + threshold-check ke liye call karo, add_sales=False
+        update_agent_sales(referral_agent.user, fresh_item.total_price,
+                        from_delivery=True, add_sales=False, item=fresh_item)
+    else:
+        update_agent_sales(
+            referral_agent.user,
+            fresh_item.total_price,
+            from_delivery=True,
+            add_sales=True,
+            order=fresh_item,
+        )
+
     referral_agent.refresh_from_db()
     print(f"   Agent after sales update: is_active={referral_agent.is_active_agent} "
           f"total_sales={referral_agent.total_sales}")
@@ -146,48 +220,12 @@ def _update_customer_stats(instance):
         profile.save(update_fields=["total_spent", "total_orders", "updated_at"])
         profile.check_agent_eligibility()
 
-        try:
-            from mlm.models.agent import Agent
-            from mlm.models.mlm_settings import MLMSettings
-            from ecommerce.models.order import OrderItem
-
-            agent = Agent.objects.get(user=instance.customer, status="approved")
-
-            # ✅ FIX: order_status='delivered' ab sirf tab set hota hai jab
-            # SAARE items deliver ho chuke hon. Self-purchase agent ka
-            # total_sales isliye ab per-DELIVERED-ITEM total_price se
-            # sync hota hai, order-level final_amount se nahi — warna
-            # partial-delivery ke dauran total_sales galat rehta.
-            delivered_total = OrderItem.objects.filter(
-                order__customer=instance.customer,
-                item_status="delivered",
-            ).aggregate(total=Sum("total_price"))["total"] or Decimal("0.00")
-
-            if delivered_total != agent.total_sales:
-                agent.total_sales = delivered_total
-                changed = ["total_sales"]
-
-                mlm_settings = MLMSettings.objects.first()
-                if mlm_settings and agent.total_sales >= mlm_settings.minimum_sale_amount:
-                    if not agent.is_active_agent:
-                        agent.is_active_agent = True
-                        changed.append("is_active_agent")
-                        print(f"✅ Agent ACTIVATED: {instance.customer.username}")
-                    if not agent.minimum_achieved_at:
-                        from django.utils import timezone
-                        agent.minimum_achieved_at = timezone.now()
-                        changed.append("minimum_achieved_at")
-                        agent.minimum_achieved_order = instance
-                        changed.append("minimum_achieved_order")
-
-                agent.save(update_fields=changed)
-                print(f"✅ Agent sales synced: {instance.customer.username} → ₹{agent.total_sales}")
-
-        except Agent.DoesNotExist:
-            pass
+        # Ab shared helper use ho raha hai — same logic jo item-level
+        # se bhi call hoti hai, taaki dono paths consistent rahein.
+        _sync_self_purchase_agent_sales(instance.customer, activation_item=instance)
 
     except Exception as e:
-        print(f"❌ Customer stats error: {e}")
+        print(f" Customer stats error: {e}")
         import traceback; traceback.print_exc()
 
 

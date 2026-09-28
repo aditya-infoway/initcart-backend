@@ -334,7 +334,7 @@ class VendorOrderStatusUpdateAPIView(APIView):
                     vendor=vendor
                 )
 
-                # ✅ FIX: .update() fires no signals — loop + .save() so that
+                #  FIX: .update() fires no signals — loop + .save() so that
                 # item-level delivery/commission handling actually triggers,
                 # exactly the same as the single-item branch above.
                 updated_count = 0

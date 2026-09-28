@@ -1,17 +1,17 @@
 # mlm/views/agent_sales_views.py
-
 from decimal import Decimal
+from datetime import datetime
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.db.models import Sum, Q
-from datetime import datetime
 
 from mlm.models.agent import Agent
 from mlm.models.mlm_settings import MLMSettings
-from ecommerce.models.order import Order
+from ecommerce.models.order import OrderItem
 from pos.models.salesentry import SalesMaster
 from pos.models.branch import Branch
+
 
 def get_pos_payment_status(sale):
     from decimal import Decimal
@@ -34,6 +34,28 @@ def get_pos_payment_status(sale):
 
 
 class AgentSalesAPIView(APIView):
+    """
+    ✅ REWRITE: sales ab PER-ITEM dikhti hain (order-level nahi) — kyunki
+    commission bhi ab item-level pe distribute hota hai (multi-vendor
+    orders mein alag-alag items alag time pe deliver/refund hote hain).
+
+    ✅ total_sales ab agent.total_sales (DB field) se aata hai — yehi
+    field commission engine (is_agent_active, update_agent_sales,
+    commission_reversal) use karta hai, isliye yeh page hamesha wahi
+    number dikhayega jo actual commission-eligibility decide karta hai.
+    Pehle yahan ek alag "running_total" loop se recompute hota tha jo
+    kabhi kabhi DB field se mismatch ho jata tha (aur ek bug ki wajah se
+    threshold cross hone ke baad freeze bhi ho jata tha) — ab woh poori
+    tarah hata diya, sirf cross-check ke liye computed_running_total
+    diya hai jo refunded/cancelled rows ko chhod ke non-refunded items
+    ka simple sum hai.
+
+    ✅ Refunded item apni row mein status='refunded' ke saath dikhta hai
+    aur running-total(delivered_sales/computed_running_total) mein uska
+    amount count NAHI hota — list mein dikhta hai taaki agent ko pata
+    chale kaunsa product refund hua, lekin sales count se apne aap bahar
+    hai.
+    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -46,116 +68,123 @@ class AgentSalesAPIView(APIView):
         min_required = float(settings.minimum_sale_amount) if settings else 0
         threshold_decimal = Decimal(str(min_required))
 
-        # ── WEBSITE ORDERS ──────────────────────────────────────────────
-        website_orders = Order.objects.filter(
-            Q(referral_agent=agent) | Q(customer=request.user)
-        ).distinct().order_by("-created_at")
+        # ── WEBSITE ORDER ITEMS (per-item) ──────────────────────────────
+        item_qs = (
+            OrderItem.objects
+            .filter(Q(order__referral_agent=agent) | Q(order__customer=request.user))
+            .select_related('order', 'product')
+            .distinct()
+            .order_by('-order__created_at')
+        )
 
-        # ── POS SALES ────────────────────────────────────────────────────
-        branches = Branch.objects.filter(user=request.user)
-        branch_ids = branches.values_list('id', flat=True)
-
-        pos_sales = SalesMaster.objects.filter(
-            Q(referral_agent=request.user) |
-            Q(branch__in=branch_ids)
-        ).distinct().order_by("-date", "-created_at")
-
-        # ── MERGE ──────────────────────────────────────────────────────
-        merged_orders = []
-
-        # Website orders
-        for order in website_orders:
-            merged_orders.append({
+        merged_rows = []
+        for item in item_qs:
+            order = item.order
+            is_refunded = item.item_status == 'refunded'
+            product_name = getattr(item, 'product_name', None) or (
+                item.product.name if item.product_id else "Item"
+            )
+            merged_rows.append({
                 "order_number": order.order_number,
+                "item_id": item.id,
+                "row_key": f"{order.order_number}#item{item.id}",
+                "product_name": product_name,
                 "customer": order.customer.email if order.customer else "Unknown",
-                "amount": float(order.final_amount),
-                "status": order.order_status,
+                "amount": float(item.total_price),
+                "status": item.item_status,               # delivered / pending / refunded / etc
                 "payment_status": order.payment_status,
                 "date": order.created_at.isoformat(),
                 "source": "website",
                 "type": "website_order",
                 "is_referral": order.referral_agent_id == agent.id,
                 "is_own": order.customer_id == request.user.id,
-                "commission_processed": order.mlm_commission_processed,
+                "commission_processed": item.mlm_commission_processed,
                 "order_id": order.id,
+                "is_refunded": is_refunded,
             })
 
-        # POS sales
+        # ── POS SALES (unchanged — POS abhi bhi sale-level hai) ──────────
+        branches = Branch.objects.filter(user=request.user)
+        branch_ids = branches.values_list('id', flat=True)
+
+        pos_sales = (
+            SalesMaster.objects
+            .filter(Q(referral_agent=request.user) | Q(branch__in=branch_ids))
+            .distinct()
+            .order_by("-date", "-created_at")
+        )
+
         for sale in pos_sales:
             is_referral = sale.referral_agent_id == request.user.id if sale.referral_agent_id else False
+            customer_name = sale.customer.account_name if sale.customer else "Walk-in"
+            total_amount = sale.items.aggregate(total=Sum('net_amount'))['total'] or sale.grand_total
+            is_cancelled = bool(sale.is_cancelled)
 
-            is_own = False
-            customer_name = "Walk-in"
-            if sale.customer:
-                customer_name = sale.customer.account_name
-
-            total_amount = sale.items.aggregate(
-                total=Sum('net_amount')
-            )['total'] or sale.grand_total
-
-            merged_orders.append({
+            merged_rows.append({
                 "order_number": sale.bill_no,
+                "item_id": None,
+                "row_key": sale.bill_no,
+                "product_name": None,
                 "customer": customer_name,
                 "amount": float(total_amount),
-                "status": "delivered" if not sale.is_cancelled else "cancelled",
+                "status": "cancelled" if is_cancelled else "delivered",
                 "payment_status": get_pos_payment_status(sale),
                 "date": sale.created_at.isoformat(),
                 "source": "pos",
                 "type": "pos_sale",
                 "is_referral": is_referral,
-                "is_own": is_own,
+                "is_own": False,
                 "commission_processed": sale.mlm_commission_processed,
                 "order_id": sale.id,
+                "is_refunded": is_cancelled,
             })
 
-        # Sort by date (newest first)
-        merged_orders.sort(key=lambda x: x["date"], reverse=True)
+        merged_rows.sort(key=lambda x: x["date"], reverse=True)
 
-        # ── Calculate total sales ──────────────────────────────────────
-        # ✅ FIX: pehle yahan amount sirf tab add hota tha jab running_total
-        # abhi threshold se neeche ho — matlab threshold cross hote hi
-        # future orders ka amount add hona hi band ho jata tha, isliye
-        # displayed total_sales kabhi badhta hi nahi tha uske baad.
-        # Ab amount hamesha add hota hai; "crossed" sirf ek baar mark hota hai.
-        all_orders_asc = sorted(merged_orders, key=lambda x: x["date"])
+        # ── Cross-check running total — refunded/cancelled rows excluded ──
+        all_rows_asc = sorted(merged_rows, key=lambda x: x["date"])
         running_total = Decimal("0")
-        crossed_order_id = None
+        crossed_row_key = None
         threshold_crossed = False
 
-        for order_data in all_orders_asc:
-            amount = Decimal(str(order_data["amount"]))
+        for row in all_rows_asc:
+            if row["is_refunded"]:
+                continue
+            amount = Decimal(str(row["amount"]))
             running_total += amount
             if not threshold_crossed and running_total >= threshold_decimal:
-                crossed_order_id = order_data["order_number"]
+                crossed_row_key = row["row_key"]
                 threshold_crossed = True
 
-        # ── Response ────────────────────────────────────────────────────
-        total_orders = len(merged_orders)
+        total_rows = len(merged_rows)
         delivered_sales = sum(
-            o["amount"] for o in merged_orders
-            if o["status"].lower() in ["delivered", "confirmed", "completed", "paid"]
+            r["amount"] for r in merged_rows
+            if not r["is_refunded"] and r["status"].lower() in
+            ["delivered", "confirmed", "completed", "paid"]
         )
+        refunded_total = sum(r["amount"] for r in merged_rows if r["is_refunded"])
 
         data = []
-        for order_data in merged_orders:
-            order_number = order_data["order_number"]
-
-            if crossed_order_id is None:
+        for row in merged_rows:
+            if row["is_refunded"]:
+                commission_eligible = False
+                reason = "refunded"
+            elif crossed_row_key is None:
                 commission_eligible = False
                 reason = "minimum_not_reached"
-            elif order_number == crossed_order_id:
+            elif row["row_key"] == crossed_row_key:
                 commission_eligible = False
                 reason = "threshold_crossing_order"
             elif agent.minimum_achieved_at:
                 try:
-                    order_date = datetime.fromisoformat(order_data["date"])
-                    if order_date > agent.minimum_achieved_at:
+                    row_date = datetime.fromisoformat(row["date"])
+                    if row_date > agent.minimum_achieved_at:
                         commission_eligible = True
                         reason = "eligible"
                     else:
                         commission_eligible = False
                         reason = "placed_before_activation"
-                except:
+                except Exception:
                     commission_eligible = False
                     reason = "date_error"
             else:
@@ -163,29 +192,36 @@ class AgentSalesAPIView(APIView):
                 reason = "not_active"
 
             data.append({
-                "order_number": order_number,
-                "customer": order_data["customer"],
-                "amount": order_data["amount"],
-                "status": order_data["status"],
-                "payment_status": order_data["payment_status"],
-                "date": order_data["date"],
-                "source": order_data["source"],
-                "type": order_data["type"],
-                "is_referral": order_data["is_referral"],
-                "is_own": order_data["is_own"],
+                "order_number": row["order_number"],
+                "product_name": row["product_name"],
+                "customer": row["customer"],
+                "amount": row["amount"],
+                "status": row["status"],
+                "payment_status": row["payment_status"],
+                "date": row["date"],
+                "source": row["source"],
+                "type": row["type"],
+                "is_referral": row["is_referral"],
+                "is_own": row["is_own"],
+                "is_refunded": row["is_refunded"],
                 "commission_eligible": commission_eligible,
                 "commission_reason": reason,
-                "commission_processed": order_data["commission_processed"],
+                "commission_processed": row["commission_processed"],
             })
 
         return Response({
             "agent": agent.full_name,
             "is_active": agent.is_active_agent,
-            "total_sales": float(running_total),
+            # ✅ DB truth — wahi field jo commission engine ke liye
+            # eligibility decide karta hai
+            "total_sales": float(agent.total_sales),
+            # cross-check ke liye — non-refunded rows ka simple sum
+            "computed_running_total": float(running_total),
             "delivered_sales": float(delivered_sales),
-            "total_orders": total_orders,
+            "refunded_total": float(refunded_total),
+            "total_orders": total_rows,
             "minimum_required": min_required,
-            "remaining_for_activation": max(0, min_required - float(running_total)),
+            "remaining_for_activation": max(0, min_required - float(agent.total_sales)),
             "minimum_achieved_at": agent.minimum_achieved_at.isoformat() if agent.minimum_achieved_at else None,
             "orders": data,
         })

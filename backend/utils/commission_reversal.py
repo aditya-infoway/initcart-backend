@@ -6,22 +6,26 @@ from mlm.models.mlm_transaction import MLMTransaction
 
 def reverse_commission_for_return(refund):
     """
-    ✅ FIX (this version): original_transactions ab order_item se filter
-    hota hai, order se nahi. Pehle `MLMTransaction.objects.filter(order=order)`
-    tha — multi-vendor order mein yeh DOOSRE vendor ke item ki commission
-    transactions bhi utha leta, aur unko bhi reverse kar deta jab sirf EK
-    item refund ho raha ho. Ab sirf usi order_item ki transactions match
-    hoti hain jiska refund ho raha hai.
+    ✅ FIX (this version): self-purchase agent ka total_sales ab yahin,
+    DIRECTLY, delivered order-items se RECOMPUTE hota hai — pehle sirf
+    agent.refresh_from_db() call hota tha, yeh maan ke ki total_sales
+    kahin aur (Order post_save / item post_save) se already sahi ho
+    chuka hoga. Lekin partial-item refund mein:
+      - order poora refund nahi hota (doosre items delivered rehte hain)
+        → order.order_status 'delivered' hi rehta hai → order.save()
+        kabhi nahi chalta → Order post_save fire hi nahi hota
+      - item ka post_save (jab item_status='refunded' set hota hai)
+        handle_order_item_delivered() sirf item_status=='delivered' pe
+        react karta hai, 'refunded' ko turant ignore kar deta hai
+    Isliye koi resync kabhi trigger hi nahi hota tha — agent.total_sales
+    stale (purana, refunded amount included) reh jata, threshold se upar
+    hi dikhta, aur agent kabhi deactivate nahi hota chahe delivered sales
+    actual mein threshold se neeche gir chuki ho.
 
-    total_platform_profit ab bhi order-wide hai kyunki `fraction` ka
-    matlab tha "is item ka profit / order ka poora profit" — lekin ab jab
-    commission khud item-level pe distribute hota hai, tx.amount pehle se
-    hi is item ke liye hai, poore order ke liye nahi. Isliye fraction
-    calculation ab REDUNDANT hai (fraction hamesha ~1.0 hoga agar sirf is
-    item ki transactions match ho rahi hain) — lekin partial-item-quantity
-    refunds ke liye (agar aap kabhi ek item ke andar ke quantity ka partial
-    refund support karte ho) yeh proportional scaling abhi bhi kaam ka hai,
-    isliye rakha hai as a safety multiplier.
+    Ab self-purchase case mein bhi total_sales ko "sum of currently
+    item_status='delivered' items for this customer" se directly
+    recompute kiya jata hai — bilkul waisi hi query jaisi
+    ecommerce/signals.py ke _sync_self_purchase_agent_sales() mein hai.
     """
     if refund.commission_reversed:
         return
@@ -41,15 +45,11 @@ def reverse_commission_for_return(refund):
         refund.save(update_fields=['commission_reversed'])
         return
 
-    # ✅ FIX: order_item se filter, order se nahi
     original_transactions = MLMTransaction.objects.filter(
         order_item=order_item, amount__gt=0
     )
 
     if not original_transactions.exists():
-        # order_item tag se pehle (migration se pehle) ki transactions ho
-        # sakti hain jinke paas order_item set nahi hai — un legacy cases
-        # ke liye yahan manually reconcile karna padega.
         print(f"    ⚠️ No order_item-tagged transactions found for item "
               f"{order_item.id} — may be pre-migration commission, "
               f"skipping automated reversal")
@@ -82,15 +82,27 @@ def reverse_commission_for_return(refund):
               f"L{tx.level} | -₹{reversal_amount}")
 
     if order.referral_agent:
+        from ecommerce.models.order import OrderItem  # local import — avoid circular import
+
         agent = order.referral_agent
         is_self_purchase = agent.user_id == order.customer_id
         update_fields = []
 
         if is_self_purchase:
-            agent.refresh_from_db()
-            print(f"    ℹ️ Self-purchase — total_sales already recalculated "
-                  f"by _update_customer_stats ({agent.total_sales}), "
-                  f"skipping duplicate reduction")
+            # ✅ FIX: refresh_from_db() ki jagah ab actual recompute —
+            # yeh item ka status DB mein already 'refunded' set ho chuka
+            # hai (refund_helpers.process_refund isko commission_reversal
+            # call karne se PEHLE set karta hai), isliye query mein yeh
+            # item khud-ba-khud exclude ho jayega.
+            delivered_total = OrderItem.objects.filter(
+                order__customer=agent.user,
+                item_status="delivered",
+            ).aggregate(total=Sum("total_price"))["total"] or Decimal("0.00")
+
+            agent.total_sales = delivered_total
+            update_fields.append('total_sales')
+            print(f"    ↩️ Self-purchase recompute — {agent.full_name} total_sales: "
+                  f"₹{agent.total_sales} (recalculated from currently-delivered items)")
         else:
             reduce_by = Decimal(str(refund.refund_amount))
             agent.total_sales = max(Decimal('0'), agent.total_sales - reduce_by)
@@ -108,10 +120,10 @@ def reverse_commission_for_return(refund):
                 update_fields.append('is_active_agent')
                 print(f"    ⚠️ Agent deactivated (sales fell below minimum): {agent.full_name}")
 
-            if agent.minimum_achieved_at is not None or agent.minimum_achieved_order_id is not None:
+            if agent.minimum_achieved_at is not None or agent.minimum_achieved_item_id is not None:
                 agent.minimum_achieved_at = None
-                agent.minimum_achieved_order = None
-                update_fields += ['minimum_achieved_at', 'minimum_achieved_order']
+                agent.minimum_achieved_item = None
+                update_fields += ['minimum_achieved_at', 'minimum_achieved_item']
                 print(f"    🔄 Cleared minimum_achieved_at/order for {agent.full_name} "
                       f"(will be re-set on next threshold crossing)")
 

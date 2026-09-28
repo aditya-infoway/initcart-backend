@@ -134,7 +134,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
             'product_name', 'sku', 'color', 'size', 'quantity',
             'unit_price', 'tax_rate', 'tax_amount', 'discount_amount',
             'total_price', 'item_status', 'product_details', 'created_at',
-            'variant_image', 'tax' ,
+            'variant_image', 'tax' ,'delivered_at',
         ]
     
     def get_tax(self, obj):

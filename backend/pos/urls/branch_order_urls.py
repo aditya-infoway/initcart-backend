@@ -31,3 +31,16 @@ urlpatterns = [
     path('branch-orders/<int:order_id>/cancel/', AdminCancelOrderView.as_view(), name='admin-cancel-order'),
 ]
 
+
+from pos.views.branch_return_views import (
+    BranchReturnListAPIView,
+    BranchReturnActionAPIView,
+    BranchRefundListAPIView,
+)
+
+urlpatterns += [
+    path('branch/returns/', BranchReturnListAPIView.as_view(), name='branch-return-list'),
+    path('branch/returns/<int:pk>/action/', BranchReturnActionAPIView.as_view(), name='branch-return-action'),
+    path('branch/refunds/', BranchRefundListAPIView.as_view(), name='branch-refund-list'),
+]
+
