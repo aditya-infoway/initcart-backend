@@ -342,7 +342,9 @@ class VendorOrderItemSerializer(serializers.ModelSerializer):
     order_info = serializers.SerializerMethodField()
     customer_info = serializers.SerializerMethodField()
     tax_percentage = serializers.FloatField(source="product_stock.tax", read_only=True)
-    
+    return_info = serializers.SerializerMethodField()   # ✅ NEW
+    refund_info = serializers.SerializerMethodField()   # ✅ NEW
+
     class Meta:
         model = OrderItem
         fields = [
@@ -350,23 +352,17 @@ class VendorOrderItemSerializer(serializers.ModelSerializer):
             'color', 'size', 'quantity', 'unit_price', 'tax_amount',
             'discount_amount', 'total_price', 'item_status',
             'product_details', 'order_info', 'customer_info', 'created_at',
-            'tax_percentage'
+            'tax_percentage', 'return_info', 'refund_info',   # ✅ NEW
         ]
 
-
     def get_product_details(self, obj):
-        """Return product details with variant image support"""
-        
-        # 👇 IMPORTANT: Check if product_stock exists and has variant_image
         variant_image = None
         if obj.product_stock and obj.product_stock.variant_image:
-            # Get the full URL
             if hasattr(obj.product_stock.variant_image, 'url'):
                 variant_image = obj.product_stock.variant_image.url
             else:
                 variant_image = obj.product_stock.variant_image
-        
-        # Get main image and thumbnail
+
         main_image = None
         thumbnail = None
         if obj.product:
@@ -374,22 +370,17 @@ class VendorOrderItemSerializer(serializers.ModelSerializer):
                 main_image = obj.product.main_image.url
             if obj.product.thumbnail_image and hasattr(obj.product.thumbnail_image, 'url'):
                 thumbnail = obj.product.thumbnail_image.url
-        
-        # Log for debugging
-        print(f"🔍 Product: {obj.product_name}")
-        print(f"  - Variant Image: {variant_image}")
-        print(f"  - Thumbnail: {thumbnail}")
-        print(f"  - Main Image: {main_image}")
-        
+
         return {
             'product_name': obj.product_name,
             'main_image': main_image,
             'thumbnail': thumbnail,
-            'variant_image': variant_image,  # Make sure this is included
+            'variant_image': variant_image,
             'sku': obj.sku,
             'color': obj.color,
             'size': obj.size
         }
+
     def get_order_info(self, obj):
         return {
             'order_id': obj.order.id,
@@ -402,7 +393,7 @@ class VendorOrderItemSerializer(serializers.ModelSerializer):
             'discount_amount': obj.order.discount_amount,
             'final_amount': obj.order.final_amount
         }
-    
+
     def get_customer_info(self, obj):
         return {
             'customer_name': obj.order.billing_name,
@@ -424,6 +415,49 @@ class VendorOrderItemSerializer(serializers.ModelSerializer):
                 'state': obj.order.billing_state,
                 'pincode': obj.order.billing_pincode
             }
+        }
+
+    def get_return_info(self, obj):
+        """
+        ✅ NEW — is item ka SABSE LATEST return request, agar koi hai.
+        Vendor ko yahin se pata chal jaye ki customer ne return maanga
+        hai, kis stage pe hai (requested/vendor_approved/re_requested/
+        admin_approved/rejected), koi action lena hai ya nahi.
+        """
+        rr = obj.return_requests.order_by('-requested_at').first()
+        if not rr:
+            return None
+        return {
+            'return_id': rr.return_id,
+            'status': rr.status,
+            'reason': rr.reason,
+            'description': rr.description,
+            'quantity': rr.quantity,
+            'requested_at': rr.requested_at.isoformat(),
+            'vendor_remarks': rr.vendor_remarks,
+            'admin_remarks': rr.admin_remarks,
+            'needs_vendor_action': rr.status == 'requested',   # ✅ quick flag for UI
+        }
+
+    def get_refund_info(self, obj):
+        """
+        ✅ NEW — is item ka refund record, agar return approve ho chuka
+        hai aur (online order hone ki wajah se) refund row bani hai.
+        COD/self-delivery returns ke liye yeh None rahega — vendor
+        cash khud handle karta hai us case mein.
+        """
+        refund = getattr(obj, 'refunds', None)
+        if refund is None:
+            return None
+        refund_obj = obj.refunds.order_by('-created_at').first()
+        if not refund_obj:
+            return None
+        return {
+            'refund_id': refund_obj.refund_id,
+            'refund_amount': float(refund_obj.refund_amount),
+            'status': refund_obj.status,
+            'failure_reason': refund_obj.failure_reason,
+            'processed_at': refund_obj.processed_at.isoformat() if refund_obj.processed_at else None,
         }
 class VendorOrderDetailSerializer(serializers.ModelSerializer):
     items = serializers.SerializerMethodField()
@@ -465,7 +499,9 @@ class VendorOrderListSerializer(serializers.ModelSerializer):
     vendor_item_status = serializers.SerializerMethodField()
     store = serializers.SerializerMethodField()
     totalAmount = serializers.SerializerMethodField()
- 
+    return_status = serializers.SerializerMethodField()   # ✅ NEW
+    has_pending_return = serializers.SerializerMethodField()  # ✅ NEW
+
     class Meta:
         model = Order
         fields = [
@@ -474,17 +510,11 @@ class VendorOrderListSerializer(serializers.ModelSerializer):
             'payment_method', 'payment_status',
             'order_status', 'vendor_items_count',
             'vendor_total', 'vendor_item_status',
-            'store', 'totalAmount'
+            'store', 'totalAmount',
+            'return_status', 'has_pending_return',   # ✅ NEW
         ]
- 
+
     def get_vendor(self):
-        """
-        🔑 Single source of truth for vendor resolution.
-        Context se vendor mile to wahi use karo (BranchOrderListAPIView isse
-        branch.user se resolve karke bhejta hai — superadmin AUR employee dono
-        ke liye sahi). Context me na mile to hi fallback request.user par jao
-        (yeh sirf non-branch / direct-vendor-login flows ke liye hai).
-        """
         vendor = self.context.get('vendor')
         if vendor:
             return vendor
@@ -495,42 +525,83 @@ class VendorOrderListSerializer(serializers.ModelSerializer):
             except Vendor.DoesNotExist:
                 return None
         return None
- 
+
     def get_store(self, obj):
-        """Get store/vendor name for this order"""
-        vendor = self.get_vendor()   # ✅ FIX — context-aware helper use kiya
+        vendor = self.get_vendor()
         if not vendor:
             return None
         return vendor.business_name
- 
+
     def get_totalAmount(self, obj):
-        vendor = self.get_vendor()   # ✅ FIX
+        vendor = self.get_vendor()
         if not vendor:
             return 0
         vendor_items = obj.items.filter(vendor=vendor)
         return sum(float(item.total_price) for item in vendor_items)
- 
+
     def get_vendor_items_count(self, obj):
-        vendor = self.get_vendor()   # ✅ FIX
+        vendor = self.get_vendor()
         if not vendor:
             return 0
         return obj.items.filter(vendor=vendor).count()
- 
+
     def get_vendor_total(self, obj):
-        vendor = self.get_vendor()   # ✅ FIX
+        vendor = self.get_vendor()
         if not vendor:
             return 0
         vendor_items = obj.items.filter(vendor=vendor)
         return sum(float(item.total_price) for item in vendor_items)
- 
+
     def get_vendor_item_status(self, obj):
-        vendor = self.get_vendor()   # ✅ FIX
+        vendor = self.get_vendor()
         if not vendor:
             return None
         vendor_items = obj.items.filter(vendor=vendor)
         if vendor_items.exists():
             return vendor_items.first().item_status
         return None
+
+    def get_return_status(self, obj):
+        """
+        ✅ NEW — order-level summary of return activity across ONLY this
+        vendor's items in the order. Values:
+        None                  -> no return ever requested
+        'requested'           -> at least one item awaiting vendor action
+        're_requested'        -> escalated to admin, awaiting admin
+        'vendor_approved'/'admin_approved' -> approved, refund in progress/done
+        'vendor_rejected'/'admin_rejected' -> rejected, no further action
+        Priority: an item still needing action outranks a resolved one.
+        """
+        vendor = self.get_vendor()
+        if not vendor:
+            return None
+
+        from ecommerce.models.return_request import ReturnRequest
+        returns = ReturnRequest.objects.filter(
+            order=obj, vendor=vendor
+        ).order_by('-requested_at')
+
+        if not returns.exists():
+            return None
+
+        # Priority: anything awaiting action beats anything resolved
+        priority = {
+            'requested': 5, 're_requested': 4,
+            'vendor_approved': 3, 'admin_approved': 3,
+            'vendor_rejected': 1, 'admin_rejected': 1,
+        }
+        top = max(returns, key=lambda r: priority.get(r.status, 0))
+        return top.status
+
+    def get_has_pending_return(self, obj):
+        """✅ NEW — quick boolean for a badge/highlight in the list row."""
+        vendor = self.get_vendor()
+        if not vendor:
+            return False
+        from ecommerce.models.return_request import ReturnRequest
+        return ReturnRequest.objects.filter(
+            order=obj, vendor=vendor, status='requested'
+        ).exists()
 
 class VendorOrderSerializer(serializers.ModelSerializer):
     """Serializer for vendor orders"""
