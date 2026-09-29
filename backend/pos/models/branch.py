@@ -34,7 +34,7 @@ def branch_idproof_path(instance, filename):
 def branch_licence_path(instance, filename):
     return os.path.join("branch-license", unique_filename(instance, filename, "branch-license"))
 
-# ✅ NEW — PAN card file ka upload path
+# NEW — PAN card file ka upload path
 def branch_pancard_path(instance, filename):
     return os.path.join("branch-pancard", unique_filename(instance, filename, "branch-pancard"))
 
