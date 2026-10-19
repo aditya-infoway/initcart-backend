@@ -7,15 +7,17 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from django.db import transaction
-from django.db.models import Sum, Q
+from django.db.models import Sum, Q, Count
 from rest_framework import status
+from django.db.models import Exists, OuterRef, Prefetch
+from pos.serializers.stock_transfer_serializers import variant_info_str
 
 from pos.models.account import Account
 from pos.models.b2b_sales import B2BSale, B2BSaleItem
 from pos.models.branch import Branch
 from pos.models.items import items as Items, itemvariants as ItemVariants
 from pos.serializers.b2b_sales_serializers import (
-    B2BSaleCreateSerializer,
+    B2BSaleCreateSerializer,    
     B2BSaleDetailSerializer,
     B2BSaleListSerializer,
 )
@@ -48,12 +50,32 @@ class B2BSaleViewSet(ModelViewSet):
     http_method_names = ['get', 'post', 'patch', 'delete']
 
     def get_queryset(self):
-        qs = B2BSale.objects.prefetch_related('items').all()
-        if to_branch := self.request.query_params.get('to_branch'):
+        qs = B2BSale.objects.select_related('from_branch', 'to_branch', 'created_by')
+
+        if self.action == 'list':
+            # list me items ki sirf count chahiye, poore items nahi
+            qs = qs.annotate(item_count=Count('items'))
+        else:
+            qs = qs.prefetch_related('items')
+
+        p = self.request.query_params
+
+        if to_branch := p.get('to_branch'):
             qs = qs.filter(to_branch_id=to_branch)
-        if st := self.request.query_params.get('status'):
+        if st := p.get('status'):
             qs = qs.filter(status=st)
-        return qs
+        if search := p.get('search'):
+            qs = qs.filter(
+                Q(sale_no__icontains=search) |
+                Q(from_branch__branch_name__icontains=search) |
+                Q(to_branch__branch_name__icontains=search)
+            )
+        if start_date := p.get('start_date'):
+            qs = qs.filter(sale_date__gte=start_date)
+        if end_date := p.get('end_date'):
+            qs = qs.filter(sale_date__lte=end_date)
+
+        return qs.order_by('-created_at', '-id')
 
     def get_serializer_class(self):
         if self.action == 'create':
@@ -623,3 +645,98 @@ class B2BSaleNextNumberView(APIView):
     def get(self, request):
         next_no = B2BSale.get_next_sale_no()
         return Response({'success': True, 'sale_no': next_no})
+
+class B2BMyBranchItemsView(APIView):
+    """
+    Superadmin ke branch ke in-stock items, 50-50 ke batch me (keyset pagination).
+    Params: query (search), barcode (exact), after_id (cursor), limit
+    """
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsSuperAdminOrPagePermittedEmployee]
+    page_key = "/b2bsales"
+
+    DEFAULT_LIMIT = 50
+    MAX_LIMIT = 50
+
+    def get(self, request):
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({'success': False, 'message': 'No branch assigned.'}, status=400)
+
+        p = request.query_params
+        try:
+            limit = min(int(p.get('limit', self.DEFAULT_LIMIT)), self.MAX_LIMIT)
+        except ValueError:
+            limit = self.DEFAULT_LIMIT
+        after_id = p.get('after_id')
+        search = (p.get('query') or '').strip()
+        barcode = (p.get('barcode') or '').strip()
+
+        stock_q = Q(current_stock__gt=0) | Q(opStock__gt=0)
+
+        qs = Items.objects.filter(branch=branch).select_related('unit').filter(
+            Exists(ItemVariants.objects.filter(item=OuterRef('pk')).filter(stock_q))
+        )
+
+        if barcode:
+            qs = qs.filter(Exists(
+                ItemVariants.objects.filter(item=OuterRef('pk'), barcode__iexact=barcode)
+            ))
+        elif search:
+            qs = qs.filter(
+                Q(itemName__icontains=search) |
+                Q(hsnCode__icontains=search) |
+                Exists(ItemVariants.objects.filter(
+                    item=OuterRef('pk'), barcode__icontains=search
+                ))
+            )
+
+        if after_id and after_id.isdigit():
+            qs = qs.filter(id__gt=int(after_id))
+
+        qs = qs.order_by('id').prefetch_related(
+            Prefetch(
+                'variants',
+                queryset=ItemVariants.objects.filter(stock_q).order_by('id'),
+                to_attr='stock_variants',
+            )
+        )
+
+        rows = list(qs[:limit + 1])          # 1 extra row = has_more check, COUNT query nahi
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+
+        data = []
+        for it in rows:
+            unit = getattr(it, 'unit', None)
+            variants = []
+            for v in it.stock_variants:
+                stock = v.current_stock or 0
+                if stock <= 0:
+                    stock = v.opStock or 0
+                variants.append({
+                    'variant_id': v.id,
+                    'display': variant_info_str(v),
+                    'size': getattr(v, 'size', '') or '',
+                    'color': getattr(v, 'color', '') or '',
+                    'barcode': v.barcode or '',
+                    'taxSlab': it.taxSlab or '0',
+                    'current_stock': float(stock),
+                    'branch_price': float(v.branchPrice or 0),
+                })
+            data.append({
+                'item_id': it.id,
+                'item_name': it.itemName,
+                'hsnCode': it.hsnCode or '',
+                'taxSlab': it.taxSlab or '0',
+                'unit': (getattr(unit, 'symbol', None) or getattr(unit, 'name', None) or 'pc'),
+                'unit_name': getattr(unit, 'name', '') or '',
+                'variants': variants,
+            })
+
+        return Response({
+            'success': True,
+            'data': data,
+            'has_more': has_more,
+            'next_cursor': rows[-1].id if rows and has_more else None,
+        })    

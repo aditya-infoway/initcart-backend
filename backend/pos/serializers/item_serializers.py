@@ -1,6 +1,6 @@
 # pos/serializers/item_serializers.py
 from rest_framework import serializers
-from pos.models.items import items, itemvariants
+from pos.models.items import items, itemvariants, VariantPurchasePriceHistory
 from ecommerce.models.category import Category, SubCategory, SubSubCategory
 from ecommerce.models.vendor import Brand
 from ecommerce.models.product import Product, ProductStock
@@ -34,7 +34,7 @@ class VariantSerializer(serializers.ModelSerializer):
             'opStock', 'basicAmount', 'discountAmount', 'taxAmount', 
             'netValue', 'current_stock', 'size', 'color', 'srno', 
             'warrantydate', 'variant_image', 'variant_image_url',
-            'branchPrice',
+            'branchPrice', 'location',
         ]
     
     def validate_barcode(self, value):
@@ -365,7 +365,17 @@ class itemSerializers(serializers.ModelSerializer):
                             }
                         )
                         if variant_serializer.is_valid():
+                            old_pp = variant.purchasePrice          # ✅ NEW
                             variant_serializer.save()
+                            variant.refresh_from_db(fields=['purchasePrice'])   # ✅ NEW
+                            if old_pp != variant.purchasePrice:     # ✅ NEW
+                                VariantPurchasePriceHistory.objects.create(
+                                    variant=variant,
+                                    old_price=old_pp,
+                                    new_price=variant.purchasePrice,
+                                    source="Item Edit",
+                                    reference=f"Item #{instance.id}",
+                                )
                         else:
                             raise serializers.ValidationError(variant_serializer.errors)
                     except itemvariants.DoesNotExist:

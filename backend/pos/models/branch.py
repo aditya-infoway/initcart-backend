@@ -241,3 +241,18 @@ def delete_branch_user(sender, instance, **kwargs):
             print(f" User already deleted for branch '{instance.branch_name}'")
         except Exception as e:
             print(f" Error deleting user for branch '{instance.branch_name}': {str(e)}")
+
+
+TAX_SYNC_FIELDS = {"state", "city", "country", "gst_number", "pan_number", "address", "pincode"}
+
+@receiver(post_save, sender=Branch)
+def create_default_tax_accounts_for_branch(sender, instance, created, update_fields=None, **kwargs):
+    """Branch create hote hi 6 default tax accounts; GST/PAN/address change par sync."""
+    # heartbeat / login (last_active, is_logged_in) pe kuch mat karo
+    if not created and update_fields is not None and not (set(update_fields) & TAX_SYNC_FIELDS):
+        return
+    from pos.utils.default_tax_accounts import ensure_default_tax_accounts
+    try:
+        ensure_default_tax_accounts(instance, created_by=getattr(instance, "created_by", None))
+    except Exception as e:
+        print(f"⚠ default tax accounts failed for branch {instance.id}: {e}")

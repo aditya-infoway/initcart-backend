@@ -5,24 +5,24 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.db.models import Q
 from decimal import Decimal
-from pos.models.salesentry import SalesMaster
 from pos.models.branch import Branch
 from pos.utils.pagination import StandardResultsSetPagination
 
 # ✅ ADD: Permission imports
 from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
+from pos.models.salesentry import SalesMaster, snapshot_purchase_price
 
 
 class SalesBillWiseProfitReportAPIView(APIView):
     """
     Bill-Wise Profit Report
     Sales Net = basic_amount (already correct from SalesItem.save())
+    Purchase Cost = SALE KE TIME ka purchase price (SalesItem.purchase_price snapshot) x qty
     Profit = Sales Net - Purchase Cost
     """
     
-    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
     permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
-    page_key = "/salesProfitReport"  # ✅ ADD: Frontend route
+    page_key = "/salesProfitReport"
 
     def get(self, request):
         user = request.user
@@ -34,7 +34,6 @@ class SalesBillWiseProfitReportAPIView(APIView):
         print(f"User: {user.username}, Role: {user.role}, Superadmin: {is_superadmin}")
         print(f"{'='*50}")
 
-        # ✅ CHANGE: Branch selection logic → get_effective_branch()
         branch = user.get_effective_branch()
         if not branch and not is_superadmin:
             return Response({
@@ -42,7 +41,6 @@ class SalesBillWiseProfitReportAPIView(APIView):
                 "error": "No branch linked to this user"
             }, status=400)
 
-        # ✅ FIX: Employee ko bhi branch_id override allow karo
         branch_id = request.GET.get('branch_id')
         
         # Superadmin: kisi bhi branch ka data
@@ -59,7 +57,7 @@ class SalesBillWiseProfitReportAPIView(APIView):
                 print("No branch_id - fetching ALL branches")
                 queryset = SalesMaster.objects.filter(is_cancelled=False)
         
-        # ✅ Employee: sirf apni branch, lekin agar branch_id diya hai toh wo bhi allow
+        # Employee: apni branch, ya branch_id diya ho to wo
         elif is_employee:
             if branch_id:
                 try:
@@ -68,14 +66,12 @@ class SalesBillWiseProfitReportAPIView(APIView):
                 except Branch.DoesNotExist:
                     return Response({'error': 'Branch not found'}, status=404)
             else:
-                # Employee ki default branch
                 branch = user.get_effective_branch()
                 if not branch:
                     return Response({'error': 'Branch not found'}, status=400)
             queryset = SalesMaster.objects.filter(branch=branch, is_cancelled=False)
         
         else:
-            # Normal user
             branch = user.get_effective_branch()
             if not branch:
                 return Response({'error': 'Branch not found'}, status=400)
@@ -107,7 +103,7 @@ class SalesBillWiseProfitReportAPIView(APIView):
         # Pagination
         paginator = StandardResultsSetPagination()
         page = paginator.paginate_queryset(queryset, request)
-        print(f"📊 Paginated records: {len(page) if page else 0}")
+        print(f" Paginated records: {len(page) if page else 0}")
 
         # Build report data
         report_data = []
@@ -116,6 +112,15 @@ class SalesBillWiseProfitReportAPIView(APIView):
         total_purchase_cost = Decimal('0.00')
         total_profit = Decimal('0.00')
         total_items_count = 0
+
+                # ✅ NEW — ek variant ka average ek hi baar nikalo, sab bills me wahi dikhe
+        avg_price_cache = {}
+
+        def get_avg_price(item_id, variant_id):
+            key = (item_id, variant_id)
+            if key not in avg_price_cache:
+                avg_price_cache[key] = snapshot_purchase_price(item_id, variant_id)
+            return avg_price_cache[key]
 
         for sale in page:
             items = sale.items.all()
@@ -129,12 +134,13 @@ class SalesBillWiseProfitReportAPIView(APIView):
             for item in items:
                 # Sales Net = basic_amount
                 sales_net = item.basic_amount
-                
-                # Purchase Cost
-                purchase_price = Decimal('0.00')
-                if item.variant and item.variant.purchasePrice:
-                    purchase_price = Decimal(str(item.variant.purchasePrice))
-                
+
+                # purani line:
+                # purchase_price = Decimal(str(item.effective_purchase_price or 0))
+
+                #  NEW — variant ke history ka average (same variant = same price, har bill me)
+                purchase_price = Decimal(str(get_avg_price(item.item_name_id, item.variant_id) or 0))
+
                 purchase_cost = (purchase_price * item.qty).quantize(Decimal('0.01'))
                 line_profit = sales_net - purchase_cost
 

@@ -74,6 +74,14 @@ class AccountAPIView(APIView):
 
 
 class AccountListAPIView(APIView):
+    """Account list: server-side search, group filter, pagination.
+
+    Query params (sab optional):
+      page, page_size -> pagination
+      search          -> name / mobile / email / city (icontains)
+      group           -> exact group, jaise Customer, Supplier
+    Response me extra key: groups (filter dropdown ke liye)
+    """
     permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
     page_key = "/addAccounts"
 
@@ -85,14 +93,33 @@ class AccountListAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        accounts = Account.objects.filter(branch=user_branch).order_by('-id')
+        base_qs = Account.objects.filter(branch=user_branch)
+        qs = base_qs
+
+        search = request.GET.get("search", "").strip()
+        if search:
+            qs = qs.filter(
+                Q(account_name__icontains=search) |
+                Q(mobile__icontains=search) |
+                Q(email__icontains=search) |
+                Q(city__icontains=search)
+            )
+    
+        group = request.GET.get("group", "").strip()
+        if group and group != "All":
+            qs = qs.filter(group=group)
+
+        qs = qs.select_related("branch", "created_by").order_by("-id")
 
         paginator = StandardResultsSetPagination()
-        paginated_accounts = paginator.paginate_queryset(accounts, request)
+        page = paginator.paginate_queryset(qs, request)
 
-        serializer = AccountviewSerializer(paginated_accounts, many=True)
-
-        return paginator.get_paginated_response(serializer.data)
+        serializer = AccountviewSerializer(page, many=True)
+        response = paginator.get_paginated_response(serializer.data)
+        response.data["groups"] = sorted(
+            set(base_qs.values_list("group", flat=True).distinct())
+        )
+        return response
 
 
 class AccountUpdateAPIView(generics.RetrieveUpdateAPIView):
@@ -231,3 +258,26 @@ class BranchLinkableAccountsAPIView(APIView):
                 {"id": a.id, "account_name": a.account_name, "group": a.group} for a in creditor_qs
             ],
         })
+
+
+from pos.utils.default_tax_accounts import ensure_default_tax_accounts, DEFAULT_TAX_ACCOUNTS
+
+class DefaultTaxAccountsAPIView(APIView):
+    """GET /api/default-tax-accounts/ — branch ke 6 tax accounts (purane branch me auto-create bhi)"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({"error": "No branch linked to this user"}, status=400)
+
+        keys = [k for k, _, _ in DEFAULT_TAX_ACCOUNTS]
+        qs = Account.objects.filter(branch=branch, system_key__in=keys)
+        if qs.count() < len(keys):
+            ensure_default_tax_accounts(branch, created_by=getattr(branch, "created_by", None))
+            qs = Account.objects.filter(branch=branch, system_key__in=keys)
+
+        return Response([
+            {"id": a.id, "system_key": a.system_key, "account_name": a.account_name, "side": a.drcr}
+            for a in qs.order_by("id")
+        ])    

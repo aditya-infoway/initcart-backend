@@ -4,12 +4,17 @@ from pos.models.account import Account
 from pos.serializers.mixins_serializers import CreatedByReadMixin
 import re
 
+LOCKED_FIELDS = ("account_name", "group", "country", "state", "city", "drcr", "branch")
+
 class AccountSerializer(serializers.ModelSerializer):
     class Meta:
         model = Account
         fields = '__all__'
     
     def validate(self, attrs):
+        if self.instance and getattr(self.instance, "is_system_default", False):
+            for f in LOCKED_FIELDS:
+                attrs.pop(f, None)
         group = attrs.get('group') or getattr(self.instance, 'group', None)
         branch = attrs.get('branch') or getattr(self.instance, 'branch', None)
 
@@ -62,7 +67,7 @@ class SupplierSerializer(serializers.ModelSerializer):
 
 
 class AccountviewSerializer(CreatedByReadMixin, serializers.ModelSerializer):
-    branch_name = serializers.CharField(source="branch.name", read_only=True)
+    branch_name = serializers.CharField(source="branch.branch_name", read_only=True)
 
     class Meta:
         model = Account
@@ -87,6 +92,10 @@ class AccountviewSerializer(CreatedByReadMixin, serializers.ModelSerializer):
             "current_drcr",
             "created_by",
             "created_by_name",
+            "created_by", 
+            "created_by_name",
+            "is_system_default",
+            "system_key",
         ]
 
 

@@ -8,6 +8,64 @@ from django.db import transaction
 from pos.models.settings import setting
 from pos.models.mixins import CreatedByMixin
 
+
+def snapshot_purchase_price(item_id, variant_id=None):
+    """
+    Variant ki purchase price HISTORY ka average return karta hai,
+    jisme har price me se pehle GST minus kiya jata hai:
+        price_excl_gst = price - (price * tax_percent / 100)
+    Phir un sab ka simple average (2 decimal).
+    Tax percent = item ka taxSlab ('18%', '5', 'Tax Free' -> 0).
+    """
+    from pos.models.items import VariantPurchasePriceHistory
+
+    variant = None
+    if variant_id:
+        variant = itemvariants.objects.select_related('item').filter(id=variant_id).first()
+    if variant is None and item_id:
+        variant = (
+            itemvariants.objects.select_related('item')
+            .filter(item_id=item_id).order_by('id').first()
+        )
+    if variant is None:
+        return Decimal("0.00")
+
+    # ── GST rate ──
+    try:
+        tax_percent = Decimal(str(variant.item.taxSlab or 0).replace('%', '').strip() or 0)
+    except Exception:
+        tax_percent = Decimal("0")
+
+    def minus_gst(price):
+        return price - (price * tax_percent / Decimal("100"))
+
+    current = Decimal(str(variant.purchasePrice or 0))
+
+    rows = list(
+        VariantPurchasePriceHistory.objects
+        .filter(variant_id=variant.id)
+        .order_by('changed_at', 'id')
+    )
+
+    prices = []
+    if rows and rows[0].old_price is not None:
+        prices.append(Decimal(str(rows[0].old_price)))
+    for r in rows:
+        prices.append(Decimal(str(r.new_price or 0)))
+
+    prices = [p for p in prices if p > 0]
+
+    if current > 0 and (not prices or prices[-1] != current):
+        prices.append(current)
+
+    if not prices:
+        return minus_gst(current).quantize(Decimal("0.01"))
+
+    # ✅ pehle har price se GST minus, fir average
+    net_prices = [minus_gst(p) for p in prices]
+    return (sum(net_prices) / Decimal(len(net_prices))).quantize(Decimal("0.01"))
+
+
 class SalesMaster(CreatedByMixin, models.Model):
     branch = models.ForeignKey(Branch, on_delete=models.CASCADE)
     bill_no = models.CharField(max_length=50, db_index=True)
@@ -190,6 +248,14 @@ class SalesItem(models.Model):
         null=True,
         blank=True
     )
+
+    # ✅ NEW — Sale ke time ka purchase price (snapshot).
+    # Variant ka purchasePrice baad me badle to bhi profit report isi se chalegi.
+    # NULL = purana record (snapshot se pehle ka) -> report live price par fallback karegi.
+    purchase_price = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+    )
+
     hsn_code = models.CharField(max_length=20)
     qty = models.DecimalField(max_digits=10, decimal_places=2)
     price = models.DecimalField(max_digits=10, decimal_places=2)
@@ -206,6 +272,14 @@ class SalesItem(models.Model):
     igst = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     gst_toggle_status = models.BooleanField(null=True, blank=True, default=None)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    # ✅ NEW — report/serializer yahi use karenge
+    @property
+    def effective_purchase_price(self):
+        """Snapshot ho to wahi; purane record ke liye live variant price."""
+        if self.purchase_price is not None:
+            return self.purchase_price
+        return snapshot_purchase_price(self.item_name_id, self.variant_id)
     
     def calculate_gst(taxable, tax_percent, branch_state, party_state):
         """

@@ -1,3 +1,4 @@
+#pos/admin.py
 from django.contrib import admin
 from pos.models.items import items
 from pos.models.branch import Branch

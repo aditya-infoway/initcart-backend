@@ -1,9 +1,11 @@
 # pos/serializers/franchise_branch_serializers.py
 from rest_framework import serializers
+from django.db import transaction
 from django.contrib.auth.hashers import make_password
 from django.contrib.auth import get_user_model
 from pos.models.branch import Branch
 from pos.models.account import Account
+from pos.utils.branch_accounts import create_main_creditor_account
 from users.models import ROLE_CHOICES
 
 User = get_user_model()
@@ -17,6 +19,8 @@ class FranchiseBranchCreateSerializer(serializers.ModelSerializer):
     Franchise (ya uske permitted employee) is serializer se apna
     2nd-level Branch create karta hai. GST/PAN edit nahi hote — create()
     ke andar parent Franchise se auto-copy ho jaate hain.
+    Saath hi naye branch ki books me 'Sundry Creditor(Main)' account
+    parent Franchise ke current data se auto-create hota hai.
     """
     password = serializers.CharField(write_only=True, required=True, min_length=6)
     confirm_password = serializers.CharField(write_only=True, required=True)
@@ -46,7 +50,7 @@ class FranchiseBranchCreateSerializer(serializers.ModelSerializer):
             "password", "confirm_password",
             "address", "country", "state", "city",
             "sundry_debitor_account", "sundry_creditor_account",
-            "role", 
+            "role",
         ]
 
     def validate(self, attrs):
@@ -62,11 +66,12 @@ class FranchiseBranchCreateSerializer(serializers.ModelSerializer):
 
         return attrs
 
+    @transaction.atomic
     def create(self, validated_data):
         request = self.context["request"]
         parent_franchise = self.context["parent_franchise"]
         raw_password = validated_data.pop("password")
-        role = validated_data.pop("role", "branch")   # ✅ NEW — franchise ne jo type choose kiya
+        role = validated_data.pop("role", "branch")   # franchise ne jo type choose kiya
 
         name_parts = validated_data.get("owner_name", "").split()
 
@@ -74,10 +79,12 @@ class FranchiseBranchCreateSerializer(serializers.ModelSerializer):
             username=validated_data["email"],
             email=validated_data["email"],
             password=raw_password,
-            role=role,                                  # ✅ hardcoded "branch" ki jagah dynamic
+            role=role,
             first_name=name_parts[0] if name_parts else "",
             last_name=" ".join(name_parts[1:]) if len(name_parts) > 1 else "",
         )
+
+        creator = request.user if request.user.is_authenticated else None
 
         branch = Branch.objects.create(
             user=user,
@@ -86,12 +93,20 @@ class FranchiseBranchCreateSerializer(serializers.ModelSerializer):
                                         # (2-level hierarchy ke liye). role alag cheez hai (User.role).
             branch_type=parent_franchise.branch_type,
             status="active",
-            created_by=request.user if request.user.is_authenticated else None,
+            created_by=creator,
             password=make_password(raw_password),
             **validated_data,
         )
 
         branch.copy_tax_details_from_franchise()
+
+        # ✅ NEW — Parent franchise ke current data se Sundry Creditor(Main) auto-create
+        create_main_creditor_account(
+            branch,
+            source_branch=parent_franchise,
+            created_by=creator,
+        )
+
         return branch
 
 

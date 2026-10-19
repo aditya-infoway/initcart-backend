@@ -177,7 +177,7 @@ class B2BSaleDetailSerializer(serializers.ModelSerializer):
 class B2BSaleListSerializer(serializers.ModelSerializer):
     from_branch_name = serializers.CharField(source='from_branch.branch_name', read_only=True)
     to_branch_name   = serializers.CharField(source='to_branch.branch_name', read_only=True)
-    item_count       = serializers.IntegerField(source='items.count', read_only=True)
+    item_count       = serializers.IntegerField(read_only=True)
     created_by_name  = serializers.SerializerMethodField()   
 
     class Meta:

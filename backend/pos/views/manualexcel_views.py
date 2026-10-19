@@ -83,7 +83,7 @@ class ManualDownloadExcelTemplate(APIView):
             price_columns.append("BRANCH_PRICE*")
         price_columns += ["SALES_PRICE*", "MRP*", "BARCODE", "OPENING_STOCK"]
 
-        variant_columns = branch_variant_fields.get(branch_type, []) + price_columns
+        variant_columns = branch_variant_fields.get(branch_type, []) + price_columns + ["LOCATION"]
 
         all_headers = main_columns + [{"header": col, "width": 20} for col in variant_columns]
 
@@ -452,6 +452,7 @@ class ManualImportItemsFromExcel(APIView):
                 "basicAmount":   basic,
                 "taxAmount":     tax_amt,
                 "netValue":      net,
+                "location":      clean(row.get('LOCATION')) or None,
             }
 
             # ===== VARIANT EXTRA FIELDS =====
@@ -534,6 +535,7 @@ class ManualImportItemsFromExcel(APIView):
                         color=v.get("color"),
                         srno=v.get("srno"),
                         warrantydate=v.get("warrantydate"),
+                        location=v.get("location"),
                     )
                     created_variants += 1
 
@@ -594,6 +596,7 @@ class ManualExportItemsToExcel(APIView):
                     "MRP":                   variant.mrp,
                     "BARCODE":               variant.barcode or "",
                     "OPENING_STOCK":         variant.opStock,
+                    "LOCATION":              variant.location or "",
                 }
                 # ✅ ADD: sirf superadmin/employee ke export me Branch Price column
                 if acts_as_admin:

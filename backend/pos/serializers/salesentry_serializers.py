@@ -51,19 +51,25 @@ class SalesItemSerializer(serializers.ModelSerializer):
             return obj.item_name.itemName 
         return None
     
+    # def get_purchase_price(self, obj):
+    #     """
+    #     Variant ki purchasePrice return karo.
+    #     Agar variant nahi hai toh item ki first variant ki price do,
+    #     ya 0 return karo.
+    #     """
+    #     if obj.variant:
+    #         return float(obj.variant.purchasePrice or 0)
+    #     # Fallback: item ke pehle variant ki price
+    #     first_variant = obj.item_name.variants.first() if obj.item_name else None
+    #     if first_variant:
+    #         return float(first_variant.purchasePrice or 0)
+    #     return 0.0  
+
     def get_purchase_price(self, obj):
-        """
-        Variant ki purchasePrice return karo.
-        Agar variant nahi hai toh item ki first variant ki price do,
-        ya 0 return karo.
-        """
-        if obj.variant:
-            return float(obj.variant.purchasePrice or 0)
-        # Fallback: item ke pehle variant ki price
-        first_variant = obj.item_name.variants.first() if obj.item_name else None
-        if first_variant:
-            return float(first_variant.purchasePrice or 0)
-        return 0.0    
+        if self.context.get("light"):
+            return None
+        return float(obj.effective_purchase_price or 0)
+
 class SalesMasterSerializer(CreatedByReadMixin, serializers.ModelSerializer):
     items = SalesItemSerializer(many=True)
     customer_name = serializers.SerializerMethodField(read_only=True)

@@ -1,5 +1,11 @@
 # pos/views/salesreturn_views.py
 
+import logging  # noqa: F401
+from collections import defaultdict
+from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP
+from urllib.parse import unquote
+
 from pos.models.bankreceipt import BankReceipt
 from pos.models.cashreceipt import CashReceipt
 from rest_framework.views import APIView
@@ -7,12 +13,13 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from django.db import transaction
-from django.db.models import Q, Sum
-from decimal import Decimal
-from urllib.parse import unquote
+from django.db.models import Q, Sum, F, Prefetch, Exists, OuterRef, DecimalField
+from django.db.models.functions import Coalesce
 
 from pos.models.salesreturn import SalesReturnMaster, SalesReturnItem
 from pos.models.items import items, itemvariants
+from pos.models.account import Account
+from pos.models.branch import Branch
 from pos.serializers.salesreturn_serializers import SalesReturnMasterSerializer
 from pos.models.salesentry import SalesItem, SalesMaster
 from pos.models.cashpayment import CashPayment
@@ -22,6 +29,61 @@ from pos.utils.pagination import StandardResultsSetPagination
 
 # ✅ ADD: Permission imports
 from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SMALL HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _parse_date_param(value):
+    """'YYYY-MM-DD' validate karta hai; galat ho to None (filter ignore)."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+
+def _to_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _next_voucher_no(model, branch, setting_attr, default_prefix, field="voucher_no"):
+    """
+    PREFIX/FY/0001 (FY April se). Duplicate se bachne ke liye exists() loop ke saath.
+    Settle cash/bank payment ke liye (pehle dono jagah same copy-paste tha).
+    """
+    settings_obj = setting.objects.filter(branch=branch).first()
+    prefix = getattr(settings_obj, setting_attr, default_prefix) if settings_obj else default_prefix
+
+    now = datetime.now()
+    fy_start = now.year if now.month >= 4 else now.year - 1
+    fy_end = fy_start + 1
+    fy = f"{str(fy_start)[2:]}-{str(fy_end)[2:]}"
+    pattern = f"{prefix}/{fy}/"
+
+    last = model.objects.filter(
+        branch=branch, **{f"{field}__startswith": pattern}
+    ).order_by("-id").first()
+
+    last_no = 0
+    last_value = getattr(last, field, None) if last else None
+    if last_value:
+        try:
+            last_no = int(last_value.split("/")[-1])
+        except (ValueError, IndexError):
+            last_no = 0
+
+    next_no = last_no + 1
+    voucher_no = f"{pattern}{str(next_no).zfill(4)}"
+    while model.objects.filter(branch=branch, **{field: voucher_no}).exists():
+        next_no += 1
+        voucher_no = f"{pattern}{str(next_no).zfill(4)}"
+    return voucher_no
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -35,6 +97,9 @@ class SalesReturnCreateAPIView(APIView):
     permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
     page_key = "/salesReturnList"  # ✅ ADD: Frontend route
     
+    # NOTE: ye dono generators jaan-bujh kar jaise the waise rakhe hain.
+    # Inka numbering logic (branch ka last voucher, FY filter ke bina) Settle wale
+    # generators se alag hai, merge karne se voucher numbers badal jaate.
     def generate_cash_payment_voucher(self, branch):
         """Generate voucher number for Sales Return Cash Payment (SRCP)"""
         from datetime import datetime
@@ -148,26 +213,52 @@ class SalesReturnCreateAPIView(APIView):
 
         #  CREDIT RETURN: Customer balance SIRF YAHAN update karo — ek hi baar
         if payment_terms == 'credit':
-            from pos.models.account import Account
-            from pos.models.salesentry import SalesMaster as SM
-
-            customer = Account.objects.select_for_update().get(pk=sales_return.customer.pk)
-            SM.update_balance(customer, sales_return.grand_total, "Cr")
+            customer = Account.objects.select_for_update().get(pk=sales_return.customer_id)
+            SalesMaster.update_balance(customer, sales_return.grand_total, "Cr")
 
         alert_messages = []
-        
+
+        # ── BULK PRELOAD (pehle har item par 3 queries chalti thi) ──
+        sales_item_ids, variant_ids = [], []
+        for it in items_data:
+            sid = _to_int(it.get('sales_item_id'))
+            if sid:
+                sales_item_ids.append(sid)
+            vraw = it.get('variant_id')
+            if vraw not in [None, "", "null"]:
+                vid = _to_int(vraw)
+                if vid is not None:
+                    variant_ids.append(vid)
+
+        sales_item_map = {}
+        already_map = defaultdict(lambda: Decimal('0'))
+        if sales_item_ids:
+            sales_item_map = {
+                s.id: s for s in SalesItem.objects
+                .select_related('item_name').filter(id__in=sales_item_ids)
+            }
+            for row in (SalesReturnItem.objects.filter(sales_item_id__in=sales_item_ids)
+                        .values('sales_item_id').annotate(t=Sum('return_quantity')).order_by()):
+                already_map[row['sales_item_id']] += row['t'] or Decimal('0')
+
+        variant_map = {}
+        if variant_ids:
+            variant_map = {
+                v.id: v for v in itemvariants.objects
+                .select_for_update().filter(id__in=variant_ids).order_by('id')
+            }
+
         # Process items and update stock (SALES RETURN = INCREASE STOCK)
         for it in items_data:
             qty = Decimal(str(it.get('return_quantity', 0)))
             variant_raw = it.get('variant_id')
             sales_item_id = it.get('sales_item_id')
+            sales_item = None
             
             if sales_item_id:
-                try:
-                    sales_item = SalesItem.objects.get(id=sales_item_id)
-                    already_returned = SalesReturnItem.objects.filter(
-                        sales_item=sales_item
-                    ).aggregate(total=Sum('return_quantity'))['total'] or Decimal('0')
+                sales_item = sales_item_map.get(_to_int(sales_item_id))
+                if sales_item is not None:
+                    already_returned = already_map[sales_item.id]
                     max_returnable = sales_item.qty - already_returned
                     
                     if qty > max_returnable:
@@ -176,17 +267,13 @@ class SalesReturnCreateAPIView(APIView):
                             f"Can only return {max_returnable} (already returned {already_returned})"
                         )
                         continue
-                except SalesItem.DoesNotExist:
-                    pass
             
             # Update stock - Sales Return INCREASES stock
             if variant_raw not in [None, "", "null"]:
-                try:
-                    variant = itemvariants.objects.select_for_update().get(id=int(variant_raw))
+                variant = variant_map.get(_to_int(variant_raw))
+                if variant is not None:
                     variant.current_stock += qty
                     variant.save()
-                except itemvariants.DoesNotExist:
-                    pass
             else:
                 try:
                     item_obj = items.objects.select_for_update().get(id=it['item_id'])
@@ -215,6 +302,10 @@ class SalesReturnCreateAPIView(APIView):
                 sgst=Decimal(str(it.get('sgst', 0))),
                 igst=Decimal(str(it.get('igst', 0))),
             )
+
+            # Same request me wahi sales item dobara aaye to "already returned" sahi rahe
+            if sales_item is not None:
+                already_map[sales_item.id] += qty.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
         
         # ✅ Create Payment for Cash or Bank (Money going OUT to customer)
         payment_error = None
@@ -223,7 +314,6 @@ class SalesReturnCreateAPIView(APIView):
             cash_account_id = data.get('cash_account')
             if cash_account_id and data.get('customer'):
                 try:
-                    from pos.models.account import Account
                     cash_account = Account.objects.get(id=cash_account_id, branch=branch)
                     
                     if cash_account.current_balance < sales_return.grand_total:
@@ -231,7 +321,7 @@ class SalesReturnCreateAPIView(APIView):
                     else:
                         srcp_voucher = self.generate_cash_payment_voucher(branch)
                         
-                        cash_payment = CashPayment.objects.create(
+                        CashPayment.objects.create(
                             date=data['date'],
                             voucher_no=srcp_voucher,
                             cash_account_id=cash_account_id,
@@ -253,7 +343,6 @@ class SalesReturnCreateAPIView(APIView):
             bank_account_id = data.get('bank_account')
             if bank_account_id and data.get('customer'):
                 try:
-                    from pos.models.account import Account
                     bank_account = Account.objects.get(id=bank_account_id, branch=branch)
                     
                     if bank_account.current_balance < sales_return.grand_total:
@@ -261,7 +350,7 @@ class SalesReturnCreateAPIView(APIView):
                     else:
                         srbp_voucher = self.generate_bank_payment_voucher(branch)
                         
-                        bank_payment = BankPayment.objects.create(
+                        BankPayment.objects.create(
                             date=data['date'],
                             voucher_no=srbp_voucher,
                             bank_account_id=bank_account_id,
@@ -299,7 +388,12 @@ class SalesReturnCreateAPIView(APIView):
 
 
 class SalesReturnListAPIView(APIView):
-    """List all sales returns"""
+    """List sales returns — server-side search / filter / pagination.
+
+    Query params (sab optional): page, page_size, search, return_type (Full/Partial),
+    date_from, date_to (YYYY-MM-DD).
+    Response me extra key: overall_total
+    """
     
     # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
     permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
@@ -324,21 +418,53 @@ class SalesReturnListAPIView(APIView):
         if branch_id_param:
             # Superadmin hamesha allow
             if is_superadmin or is_employee:
-                from pos.models.branch import Branch
                 try:
                     branch = Branch.objects.get(id=branch_id_param)
                 except Branch.DoesNotExist:
                     return Response({'error': 'Branch not found'}, status=404)
 
-        queryset = SalesReturnMaster.objects.filter(
-            branch=branch
-        ).order_by('-date', '-created_at', '-id')
+        queryset = SalesReturnMaster.objects.filter(branch=branch)
+
+        # ── Server-side search / filters (pehle browser me hote the) ──
+        search = request.GET.get('search', '').strip()
+        if search:
+            queryset = queryset.filter(
+                Q(return_no__icontains=search)
+                | Q(customer__account_name__icontains=search)
+                | Q(reason_for_return__icontains=search)
+            )
+
+        return_type = request.GET.get('return_type', '').strip()
+        if return_type:
+            queryset = queryset.filter(return_type__iexact=return_type)
+
+        date_from = _parse_date_param(request.GET.get('date_from'))
+        if date_from:
+            queryset = queryset.filter(date__gte=date_from)
+        date_to = _parse_date_param(request.GET.get('date_to'))
+        if date_to:
+            queryset = queryset.filter(date__lte=date_to)
+
+        # Grand total (saare filtered records), pagination se PEHLE
+        overall_total = queryset.aggregate(t=Sum('grand_total'))['t'] or Decimal('0')
+
+        queryset = (
+            queryset
+            .select_related('customer', 'created_by')
+            .prefetch_related(Prefetch(
+                'items',
+                queryset=SalesReturnItem.objects.select_related('item', 'variant'),
+            ))
+            .order_by('-date', '-created_at', '-id')
+        )
         
         paginator = StandardResultsSetPagination()
         paginated_salesreturn = paginator.paginate_queryset(queryset, request)
 
         serializer = SalesReturnMasterSerializer(paginated_salesreturn, many=True)
-        return paginator.get_paginated_response(serializer.data)
+        response = paginator.get_paginated_response(serializer.data)
+        response.data['overall_total'] = float(overall_total)
+        return response
     
 class SalesReturnDetailAPIView(APIView):
     """Get single sales return details"""
@@ -357,9 +483,14 @@ class SalesReturnDetailAPIView(APIView):
             }, status=status.HTTP_400_BAD_REQUEST)
             
         try:
-            sales_return = SalesReturnMaster.objects.get(
-                id=return_id,
-                branch=branch
+            sales_return = (
+                SalesReturnMaster.objects
+                .select_related('customer', 'created_by')
+                .prefetch_related(Prefetch(
+                    'items',
+                    queryset=SalesReturnItem.objects.select_related('item', 'variant'),
+                ))
+                .get(id=return_id, branch=branch)
             )
             serializer = SalesReturnMasterSerializer(sales_return)
             return Response(serializer.data)
@@ -391,7 +522,7 @@ class SalesReturnDeleteAPIView(APIView):
             )
             
             # Reverse stock updates (decrease stock back)
-            for item in sales_return.items.all():
+            for item in sales_return.items.select_related('variant', 'item'):
                 qty = item.return_quantity
                 if item.variant:
                     variant = item.variant
@@ -442,27 +573,28 @@ class OriginalBillSearchAPIView(APIView):
                     Q(bill_no__icontains=search) |
                     Q(customer__account_name__icontains=search)
                 )
-            
-            valid_bills = []
-            for bill in bills:
-                sales_items = SalesItem.objects.filter(sales=bill)
-                has_available_items = False
-                
-                for s_item in sales_items:
-                    already_returned = SalesReturnItem.objects.filter(
-                        sales_item=s_item
-                    ).aggregate(total_returned=Sum('return_quantity'))['total_returned'] or Decimal('0')
-                    
-                    available_quantity = s_item.qty - already_returned
-                    if available_quantity > Decimal('0'):
-                        has_available_items = True
-                        break
-                
-                if has_available_items:
-                    valid_bills.append(bill)
+
+            # Bill valid tab hai jab uska koi bhi item abhi return hone ko bacha ho
+            # (qty - already_returned > 0). Pehle ye bills × items queries se hota tha;
+            # ab ek hi query (Exists subquery).
+            returnable_items = (
+                SalesItem.objects.filter(sales=OuterRef('pk'))
+                .annotate(returned=Coalesce(
+                    Sum('returns__return_quantity'), Decimal('0'),
+                    output_field=DecimalField(max_digits=12, decimal_places=2),
+                ))
+                .filter(qty__gt=F('returned'))
+                .order_by()
+            )
+            valid_bills = (
+                bills.annotate(has_available=Exists(returnable_items))
+                .filter(has_available=True)
+                .select_related('customer')
+                .order_by('-date', '-id')[:100]
+            )
             
             bills_data = []
-            for bill in valid_bills[:100]:
+            for bill in valid_bills:
                 bills_data.append({
                     'id': bill.id,
                     'billNo': bill.bill_no,
@@ -484,13 +616,6 @@ class SalesBillDetailsAPIView(APIView):
     permission_classes = [IsAuthenticated]
  
     def get(self, request, bill_no):
-        from decimal import Decimal
-        from urllib.parse import unquote
-        from django.db.models import Sum
-        from pos.models.salesreturn import SalesReturnMaster
-        from pos.models.cashreceipt import CashReceipt
-        from pos.models.bankreceipt import BankReceipt
- 
         # ✅ CHANGE: request.user.branch → get_effective_branch()
         branch = request.user.get_effective_branch()
         if not branch:
@@ -503,20 +628,26 @@ class SalesBillDetailsAPIView(APIView):
         return_type = request.GET.get('return_type', 'Partial')
  
         try:
-            sales = SalesMaster.objects.get(
+            sales = SalesMaster.objects.select_related('customer').get(
                 bill_no=bill_no_decoded,
                 branch=branch
             )
  
-            sales_items = SalesItem.objects.filter(
-                sales=sales
-            ).select_related('item_name', 'variant')
+            sales_items = list(
+                SalesItem.objects.filter(sales=sales).select_related('item_name', 'variant')
+            )
+
+            # Har item ka already-returned ek hi grouped query me
+            returned_map = {
+                r['sales_item_id']: r['t']
+                for r in SalesReturnItem.objects.filter(
+                    sales_item_id__in=[s.id for s in sales_items]
+                ).values('sales_item_id').annotate(t=Sum('return_quantity')).order_by()
+            }
  
             items_data = []
             for s_item in sales_items:
-                already_returned = SalesReturnItem.objects.filter(
-                    sales_item=s_item
-                ).aggregate(total_returned=Sum('return_quantity'))['total_returned'] or Decimal('0')
+                already_returned = returned_map.get(s_item.id) or Decimal('0')
  
                 available_quantity = float(s_item.qty) - float(already_returned)
                 if available_quantity <= 0:
@@ -529,7 +660,7 @@ class SalesBillDetailsAPIView(APIView):
                     'item_id': s_item.item_name.id,
                     'sales_item_id': s_item.id,
                     'item_name': s_item.item_name.itemName,
-                    'variant_id': s_item.variant.id if s_item.variant else None,
+                    'variant_id': s_item.variant_id,
                     'hsn_code': s_item.hsn_code,
                     'quantity': float(s_item.qty),
                     'already_returned': float(already_returned),
@@ -694,15 +825,12 @@ class GenerateSalesReturnVoucherAPIView(APIView):
         
 
 class SalesReturnCreditBillsAPIView(APIView):
-    """Get Sales Return credit bills with pending payment."""
+    """Get Sales Return credit bills with pending payment. (money data -> never cached)"""
     
     # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from django.db.models import Q, Sum
-        from decimal import Decimal
-
         # ✅ CHANGE: request.user.branch → get_effective_branch()
         branch = request.user.get_effective_branch()
         if not branch:
@@ -713,50 +841,67 @@ class SalesReturnCreditBillsAPIView(APIView):
 
         search = request.GET.get('query', '').strip()
 
-        bills = SalesReturnMaster.objects.filter(
+        qs = SalesReturnMaster.objects.filter(
             branch=branch,
             payment_terms__iexact='credit'
         )
 
         if search:
-            bills = bills.filter(
+            qs = qs.filter(
                 Q(return_no__icontains=search) |
                 Q(customer__account_name__icontains=search) |
                 Q(original_bill_no__icontains=search)
             )
 
+        bills = list(qs.select_related('customer').order_by('id'))
+        if not bills:
+            return Response({'type': 'salesReturn', 'bills': []})
+
+        zero = Decimal('0')
+
+        # ── 1) Original bills ek hi query me (pehle har bill par 1 get) ──
+        originals = {
+            o.bill_no: o for o in SalesMaster.objects.filter(
+                branch=branch,
+                bill_no__in={b.original_bill_no for b in bills},
+            )
+        }
+
+        # ── 2) Original CREDIT bills par mile receipts (Cash + Bank) ──
+        credit_original_ids = [
+            o.id for o in originals.values()
+            if (o.payment_terms or '').lower() == 'credit'
+        ]
+        received_map = defaultdict(lambda: Decimal('0'))
+        if credit_original_ids:
+            for row in (CashReceipt.objects.filter(sales_entry_id__in=credit_original_ids)
+                        .values('sales_entry_id').annotate(t=Sum('amount')).order_by()):
+                received_map[row['sales_entry_id']] += row['t'] or zero
+            for row in (BankReceipt.objects.filter(sales_entry_id__in=credit_original_ids)
+                        .values('sales_entry_id').annotate(t=Sum('amount')).order_by()):
+                received_map[row['sales_entry_id']] += row['t'] or zero
+
+        # ── 3) Return par diye gaye payments (Cash + Bank) ──
+        bill_ids = [b.id for b in bills]
+        paid_map = defaultdict(lambda: Decimal('0'))
+        for row in (CashPayment.objects.filter(sales_return_id__in=bill_ids)
+                    .values('sales_return_id').annotate(t=Sum('amount')).order_by()):
+            paid_map[row['sales_return_id']] += row['t'] or zero
+        for row in (BankPayment.objects.filter(sales_return_id__in=bill_ids)
+                    .values('sales_return_id').annotate(t=Sum('amount')).order_by()):
+            paid_map[row['sales_return_id']] += row['t'] or zero
+
         bills_data = []
         for bill in bills:
             original_bill_terms = "unknown"
-            original_bill_received = Decimal('0')
-            try:
-                original_bill = SalesMaster.objects.get(
-                    bill_no=bill.original_bill_no,
-                    branch=branch
-                )
+            original_bill_received = zero
+            original_bill = originals.get(bill.original_bill_no)
+            if original_bill is not None:
                 original_bill_terms = original_bill.payment_terms.lower()
-                
                 if original_bill_terms == "credit":
-                    scr_received = CashReceipt.objects.filter(
-                        sales_entry=original_bill
-                    ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
-                    
-                    sbr_received = BankReceipt.objects.filter(
-                        sales_entry=original_bill
-                    ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
-                    
-                    original_bill_received = scr_received + sbr_received
-            except SalesMaster.DoesNotExist:
-                pass
-            
-            total_paid = CashPayment.objects.filter(
-                sales_return=bill
-            ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
-            
-            total_paid += BankPayment.objects.filter(
-                sales_return=bill
-            ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
-            
+                    original_bill_received = received_map.get(original_bill.id, zero)
+
+            total_paid = paid_map.get(bill.id, zero)
             pending_amount = bill.grand_total - total_paid
             
             show_bill = False
@@ -822,7 +967,7 @@ class SettleCreditBillAPIView(APIView):
                 date=data['date'],
                 voucher_no=srcp_voucher,
                 cash_account_id=cash_account_id,
-                op_account_id=credit_bill.customer.id,
+                op_account_id=credit_bill.customer_id,
                 branch=branch,
                 amount=amount,
                 mode="Cash",
@@ -847,37 +992,7 @@ class SettleCreditBillAPIView(APIView):
             return Response({'error': 'Credit bill not found'}, status=404)
     
     def generate_cash_payment_voucher(self, branch):
-        from datetime import datetime
-        settings_obj = setting.objects.filter(branch=branch).first()
-        prefix = getattr(settings_obj, "CP", "CP") if settings_obj else "CP"
-
-        now = datetime.now()
-        year = now.year
-        fy_start = year if now.month >= 4 else year - 1
-        fy_end = fy_start + 1
-        fy = f"{str(fy_start)[2:]}-{str(fy_end)[2:]}"
-        pattern = f"{prefix}/{fy}/"
-
-        last_voucher = CashPayment.objects.filter(
-            branch=branch,
-            voucher_no__startswith=pattern
-        ).order_by("-id").first()
-
-        last_no = 0
-        if last_voucher and last_voucher.voucher_no:
-            try:
-                last_no = int(last_voucher.voucher_no.split("/")[-1])
-            except (ValueError, IndexError):
-                last_no = 0
-
-        next_no = last_no + 1
-        voucher_no = f"{pattern}{str(next_no).zfill(4)}"
-
-        while CashPayment.objects.filter(branch=branch, voucher_no=voucher_no).exists():
-            next_no += 1
-            voucher_no = f"{pattern}{str(next_no).zfill(4)}"
-
-        return voucher_no
+        return _next_voucher_no(CashPayment, branch, "CP", "CP")
 
 
 class SettleCreditBillBankAPIView(APIView):
@@ -915,7 +1030,7 @@ class SettleCreditBillBankAPIView(APIView):
                 date=data['date'],
                 voucher_no=srbp_voucher,
                 bank_account_id=bank_account_id,
-                op_account_id=credit_bill.customer.id,
+                op_account_id=credit_bill.customer_id,
                 branch=branch,
                 amount=amount,
                 mode=mode,
@@ -943,34 +1058,4 @@ class SettleCreditBillBankAPIView(APIView):
             return Response({'error': 'Credit bill not found'}, status=404)
     
     def generate_bank_payment_voucher(self, branch):
-        from datetime import datetime
-        settings_obj = setting.objects.filter(branch=branch).first()
-        prefix = getattr(settings_obj, "BP", "BP") if settings_obj else "BP"
-
-        now = datetime.now()
-        year = now.year
-        fy_start = year if now.month >= 4 else year - 1
-        fy_end = fy_start + 1
-        fy = f"{str(fy_start)[2:]}-{str(fy_end)[2:]}"
-        pattern = f"{prefix}/{fy}/"
-
-        last_voucher = BankPayment.objects.filter(
-            branch=branch,
-            voucher_no__startswith=pattern
-        ).order_by("-id").first()
-
-        last_no = 0
-        if last_voucher and last_voucher.voucher_no:
-            try:
-                last_no = int(last_voucher.voucher_no.split("/")[-1])
-            except (ValueError, IndexError):
-                last_no = 0
-
-        next_no = last_no + 1
-        voucher_no = f"{pattern}{str(next_no).zfill(4)}"
-
-        while BankPayment.objects.filter(branch=branch, voucher_no=voucher_no).exists():
-            next_no += 1
-            voucher_no = f"{pattern}{str(next_no).zfill(4)}"
-
-        return voucher_no
+        return _next_voucher_no(BankPayment, branch, "BP", "BP")

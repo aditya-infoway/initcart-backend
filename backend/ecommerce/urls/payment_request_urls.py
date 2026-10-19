@@ -65,3 +65,33 @@ urlpatterns += [
     path('admin/refunds/', AdminRefundListAPIView.as_view(), name='admin-refund-list'),
     path('admin/refunds/<int:pk>/process/', AdminRefundProcessAPIView.as_view(), name='admin-refund-process'),
 ]
+
+
+from ecommerce.views.refund_views import (
+    AdminCODRefundPayableListAPIView,
+    AdminCODRefundDetailAPIView,
+    AdminCODRefundPayAPIView,
+    AdminRefundBankAccountListCreateAPIView,
+    AdminRefundBankAccountDetailAPIView,
+    AdminRefundBankLedgerAPIView,
+    CustomerReturnBankDetailsAPIView,
+)
+
+urlpatterns += [
+    # Customer — add/fix bank details for a COD return
+    path('public/returns/<int:pk>/bank-details/', CustomerReturnBankDetailsAPIView.as_view(),
+         name='customer-return-bank-details'),
+
+    # Superadmin — COD refunds
+    path('admin/cod-refunds/payable/', AdminCODRefundPayableListAPIView.as_view(), name='admin-cod-refund-payable'),
+    path('admin/cod-refunds/<int:pk>/', AdminCODRefundDetailAPIView.as_view(), name='admin-cod-refund-detail'),
+    path('admin/cod-refunds/<int:pk>/pay/', AdminCODRefundPayAPIView.as_view(), name='admin-cod-refund-pay'),
+
+    # Superadmin — refund bank accounts + ledger
+    path('admin/refund-bank-accounts/', AdminRefundBankAccountListCreateAPIView.as_view(),
+         name='admin-refund-bank-accounts'),
+    path('admin/refund-bank-accounts/<int:pk>/', AdminRefundBankAccountDetailAPIView.as_view(),
+         name='admin-refund-bank-account-detail'),
+    path('admin/refund-bank-accounts/<int:pk>/ledger/', AdminRefundBankLedgerAPIView.as_view(),
+         name='admin-refund-bank-ledger'),
+]

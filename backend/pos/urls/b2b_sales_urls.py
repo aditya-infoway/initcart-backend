@@ -8,6 +8,7 @@ from pos.views.b2b_sales_views import (
     VerifyB2BSaleItemView,
     VerifyAllB2BSaleItemsView,
     B2BSaleNextNumberView,
+    B2BMyBranchItemsView
 )
 
 from pos.views.b2b_sales_receipt_views import (
@@ -42,4 +43,5 @@ urlpatterns = [
     #excel import export endpoints
     path('b2b-sales-excel/template/', B2BSalesExcelTemplateView.as_view() ),
     path('b2b-sales-excel/import/', B2BSalesExcelImportView.as_view()),
+    path('b2b-sales/my-branch-items/', B2BMyBranchItemsView.as_view()),
 ]

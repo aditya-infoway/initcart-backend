@@ -1,8 +1,13 @@
-# ecommerce/utils/refund_helpers.py  (FULL FILE — replace your existing one with this)
+# ecommerce/utils/refund_helpers.py
+import logging
 from decimal import Decimal, ROUND_HALF_UP
+
 import razorpay
 from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
+
+logger = logging.getLogger(__name__)
 
 client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
 
@@ -20,22 +25,27 @@ def calculate_refund_amount(order_item, return_quantity):
     return amount
 
 
-def create_refund_if_online(return_request):
+def create_refund_for_return(return_request):
     """
-    Call this right after a ReturnRequest's status becomes 'vendor_approved'
-    or 'admin_approved'. Only online (razorpay) orders get a refund row —
-    COD orders are not touched here (vendor handles cash return directly).
+    Call right after a ReturnRequest becomes 'vendor_approved' / 'admin_approved'.
 
-    Idempotent: calling it twice for the same return_request never creates
-    a duplicate row.
+      - razorpay order -> OrderRefund(refund_type='online')  (admin triggers Razorpay)
+      - cod order      -> OrderRefund(refund_type='cod')     (admin pays manually from a
+                          refund bank account; customer's bank details are on
+                          return_request.bank_detail)
+
+    Idempotent: calling it twice for the same return_request never creates a duplicate.
     """
     from ecommerce.models.refund import OrderRefund
 
     order = return_request.order
-    if order.payment_method != 'razorpay':
+    if order.payment_method == 'razorpay':
+        refund_type = 'online'
+    elif order.payment_method == 'cod':
+        refund_type = 'cod'
+    else:
         return None
 
-    # already created earlier (e.g. re-triggered by mistake) — don't duplicate
     existing = OrderRefund.objects.filter(return_request=return_request).first()
     if existing:
         return existing
@@ -48,13 +58,12 @@ def create_refund_if_online(return_request):
         return_request=return_request,
         order=order,
         order_item=return_request.order_item,
+        refund_type=refund_type,
         refund_amount=amount,
         status='pending',
     )
 
-    # No razorpay_payment_id on the order → flag immediately instead of
-    # silently sitting in "pending" forever with no way to ever succeed.
-    if not order.razorpay_payment_id:
+    if refund_type == 'online' and not order.razorpay_payment_id:
         refund.status = 'failed'
         refund.failure_reason = "No Razorpay payment id found on this order"
         refund.save(update_fields=['status', 'failure_reason'])
@@ -62,18 +71,41 @@ def create_refund_if_online(return_request):
     return refund
 
 
+# Backward-compatible alias — return_views.py still imports this name.
+create_refund_if_online = create_refund_for_return
+
+
+def finalize_refund_success(refund):
+    """
+    Shared by ONLINE (after Razorpay success) and COD (after manual payout recorded).
+      - increments order_item.returned_quantity by the RETURNED quantity and flips
+        item_status to 'refunded' only once the FULL ordered quantity is returned
+      - reverses MLM commission (upline / pos / society) + referral agent's
+        total_sales — see utils/commission_reversal.py
+    Caller must already have set refund.status='processed'.
+    """
+    order_item = refund.order_item
+    returned_qty = refund.return_request.quantity
+    order_item.returned_quantity = (order_item.returned_quantity or 0) + returned_qty
+    update_fields = ['returned_quantity']
+    if order_item.returned_quantity >= order_item.quantity:
+        order_item.item_status = 'refunded'
+        update_fields.append('item_status')
+    order_item.save(update_fields=update_fields)
+
+    from utils.commission_reversal import reverse_commission_for_return
+    reverse_commission_for_return(refund)
+
+
 def process_refund(refund):
     """
-    Calls Razorpay's refund API for this OrderRefund and updates its status.
-    On success, also:
-      - marks the order_item as 'refunded'
-      - marks the whole order as 'refunded' if every item on it is now refunded
-      - reverses the MLM commission (upline / pos / society) + the referral
-        agent's total_sales that were credited for this item — see
-        mlm/utils/commission_reversal.py
-    Returns (success: bool, message: str). Never raises — all Razorpay/network
-    errors are caught and stored on the refund record so admin can retry.
+    ONLINE refunds only: calls Razorpay's refund API and updates status.
+    COD refunds are paid manually (AdminCODRefundPayAPIView).
+    Returns (success: bool, message: str). Never raises.
     """
+    if refund.refund_type == 'cod':
+        return False, "COD refunds are paid manually from the COD Refunds page"
+
     if refund.status == 'processed':
         return False, "This refund has already been processed"
 
@@ -86,6 +118,7 @@ def process_refund(refund):
 
     amount_paise = int(refund.refund_amount * 100)
 
+    # 1) Razorpay call — only THIS step may mark the refund as failed
     try:
         rp_response = client.payment.refund(order.razorpay_payment_id, {
             'amount': amount_paise,
@@ -96,32 +129,26 @@ def process_refund(refund):
                 'order_number': order.order_number,
             },
         })
-
-        refund.razorpay_refund_id = rp_response.get('id')
-        refund.status = 'processed'
-        refund.processed_at = timezone.now()
-        refund.failure_reason = None
-        refund.save()
-
-        # reflect on the order item so order pages can show "Refunded"
-        refund.order_item.item_status = 'refunded'
-        refund.order_item.save(update_fields=['item_status'])
-
-        # ✅ If every item on this order is now refunded, mark the whole
-        # order as refunded too — reports/order lists key off order_status.
-        if not order.items.exclude(item_status='refunded').exists():
-            if order.order_status != 'refunded':
-                order.order_status = 'refunded'
-                order.save(update_fields=['order_status'])
-
-        # ✅ Reverse MLM commission + agent total_sales for this returned item
-        from utils.commission_reversal import reverse_commission_for_return
-        reverse_commission_for_return(refund)
-
-        return True, "Refund processed successfully"
-
     except Exception as e:
         refund.status = 'failed'
         refund.failure_reason = str(e)
         refund.save(update_fields=['status', 'failure_reason'])
         return False, f"Razorpay refund failed: {str(e)}"
+
+    refund.razorpay_refund_id = rp_response.get('id')
+    refund.status = 'processed'
+    refund.processed_at = timezone.now()
+    refund.failure_reason = None
+    refund.save()
+
+    # 2) Post-processing — money already moved, so never flip back to 'failed'
+    try:
+        with transaction.atomic():
+            finalize_refund_success(refund)
+    except Exception as e:
+        logger.exception("Post-refund processing failed for %s", refund.refund_id)
+        refund.failure_reason = f"Refund sent via Razorpay but post-processing failed: {e}"
+        refund.save(update_fields=['failure_reason'])
+        return True, "Refund sent, but item/commission update failed — please check manually"
+
+    return True, "Refund processed successfully"

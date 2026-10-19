@@ -20,7 +20,7 @@ class VariantSerializer(serializers.ModelSerializer):
 # -----------------------
 class ItemSerializer(serializers.ModelSerializer):
     variants = VariantSerializer(many=True, read_only=True)
-
+ 
     class Meta:
         model = items
         fields = ['id', 'itemName', 'hsnCode','taxSlab','unit', 'variants']

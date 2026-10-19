@@ -4,7 +4,8 @@ from ecommerce.views.category_views import (
     SubCategoryListCreateAPIView, SubCategoryDetailAPIView,
     SubSubCategoryListCreateAPIView, SubSubCategoryDetailAPIView,
      PublicCategoryListAPIView, PublicSubCategoryListAPIView, PublicSubSubCategoryListAPIView,
-     FeaturedCategoryAPIView,
+     FeaturedCategoryAPIView, CategorySectionSettingAPIView, PublicCategorySectionSettingAPIView,
+     SubCategorySectionSettingAPIView, PublicSubCategorySectionSettingAPIView
 )
 
 urlpatterns = [
@@ -23,5 +24,11 @@ urlpatterns = [
     path("public/categories/", PublicCategoryListAPIView.as_view(), name="public-categories"),
     path("public/subcategories/", PublicSubCategoryListAPIView.as_view(), name="public-subcategories"),
     path("public/subsubcategories/", PublicSubSubCategoryListAPIView.as_view(), name="public-subsubcategories"),
+
+    path("category-section/", CategorySectionSettingAPIView.as_view()),
+    path("public/category-section/", PublicCategorySectionSettingAPIView.as_view()),
+
+    path("subcategory-section/", SubCategorySectionSettingAPIView.as_view()),
+    path("public/subcategory-section/", PublicSubCategorySectionSettingAPIView.as_view()), 
 
 ]   
