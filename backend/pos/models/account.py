@@ -18,6 +18,7 @@ class Account(CreatedByMixin, models.Model):
         ('Sundry Debitor(Internal)', 'Sundry Debitor(Internal)'),
         ('Sundry Creditor(Internal)', 'Sundry Creditor(Internal)'),
         ('Sundry Creditor(Main)', 'Sundry Creditor(Main)'),
+        ('Duties & Taxes', 'Duties & Taxes'), 
     )
 
     account_name = models.CharField(max_length=100)
@@ -41,9 +42,14 @@ class Account(CreatedByMixin, models.Model):
     gst_no = models.CharField(max_length=15, blank=True)
     pan_card = models.CharField(max_length=10, blank=True)
 
+    is_system_default = models.BooleanField(default=False, editable=False)
+    system_key = models.CharField(max_length=30, blank=True, null=True, editable=False, db_index=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    
+
+    class Meta:                                 
+        unique_together = ('branch', 'system_key') 
     def save(self, *args, **kwargs):
         # ✅ FIX: Current balance always equals opening balance for now
         # (Jab tak transactions implement nahi hote)

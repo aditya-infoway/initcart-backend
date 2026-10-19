@@ -6,9 +6,9 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from django.shortcuts import get_object_or_404
 from rest_framework import permissions
 
-from ecommerce.models.category import Category, SubCategory, SubSubCategory
+from ecommerce.models.category import Category, SubCategory, SubSubCategory, CategorySectionSetting, SubCategorySectionSetting
 from ecommerce.serializers.category_serializers import (
-    CategorySerializer, SubCategorySerializer, SubSubCategorySerializer
+    CategorySerializer, SubCategorySerializer, SubSubCategorySerializer, CategorySectionSettingSerializer, SubCategorySectionSettingSerializer
 )
 
 # ------------------ CATEGORY ---------------------
@@ -206,5 +206,58 @@ class FeaturedCategoryAPIView(APIView):
             "data": serializer.data
         })   
          
+# ------------------ HOMEPAGE SECTION HEADING ---------------------
 
+class CategorySectionSettingAPIView(APIView):
+    """Admin: heading dekhna aur update karna"""
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        obj = CategorySectionSetting.get_solo()
+        return Response(CategorySectionSettingSerializer(obj).data)
+
+    def put(self, request):
+        obj = CategorySectionSetting.get_solo()
+        serializer = CategorySectionSettingSerializer(obj, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response({"success": True, "message": "Heading updated", "data": serializer.data})
+        return Response(serializer.errors, status=400)
+
+
+class PublicCategorySectionSettingAPIView(APIView):
+    """Website: heading fetch karna"""
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        obj = CategorySectionSetting.get_solo()
+        return Response(CategorySectionSettingSerializer(obj).data)
+
+
+# ------------------ SUBCATEGORY SECTION COLOUR ---------------------
+
+class SubCategorySectionSettingAPIView(APIView):
+    """Admin: colour dekhna aur update karna"""
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        obj = SubCategorySectionSetting.get_solo()
+        return Response(SubCategorySectionSettingSerializer(obj).data)
+
+    def put(self, request):
+        obj = SubCategorySectionSetting.get_solo()
+        serializer = SubCategorySectionSettingSerializer(obj, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response({"success": True, "message": "Colour updated", "data": serializer.data})
+        return Response(serializer.errors, status=400)
+
+
+class PublicSubCategorySectionSettingAPIView(APIView):
+    """Website: colour fetch karna"""
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        obj = SubCategorySectionSetting.get_solo()
+        return Response(SubCategorySectionSettingSerializer(obj).data)    
         

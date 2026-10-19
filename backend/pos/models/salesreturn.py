@@ -88,6 +88,11 @@ class SalesReturnMaster(CreatedByMixin, models.Model):
                 name='unique_sr_per_branch'
             )
         ]
+        indexes = [
+            models.Index(fields=["branch", "-date", "-created_at", "-id"], name="sr_br_date_cr_id_idx"),
+            models.Index(fields=["branch", "original_bill_no"], name="sr_br_origbill_idx"),
+            models.Index(fields=["branch", "payment_terms"], name="sr_br_terms_idx"),
+        ]
 
 
 class SalesReturnItem(models.Model):
@@ -143,7 +148,10 @@ class SalesReturnItem(models.Model):
             except (InvalidOperation, ValueError):
                 return default
 
-        settings_obj = setting.objects.filter(branch=self.sales_return.branch).first()
+        _sr = self.sales_return
+        if not hasattr(_sr, "_settings_cache"):
+            _sr._settings_cache = setting.objects.filter(branch=_sr.branch).first()
+        settings_obj = _sr._settings_cache
         sales_gst_toggle = getattr(settings_obj, 'sales_gst_toggle', True)
 
         price            = safe_decimal(self.price)

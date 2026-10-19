@@ -36,6 +36,12 @@ class PurchaseMaster(CreatedByMixin, models.Model):
         blank=True,
         related_name='purchase_entry'                                                             
     )
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["branch", "-date", "-id"], name="pm_branch_date_idx"),
+            models.Index(fields=["branch", "terms"], name="pm_branch_terms_idx"),
+        ]
     
     def __str__(self):
         return self.billNo

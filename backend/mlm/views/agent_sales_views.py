@@ -90,7 +90,9 @@ class AgentSalesAPIView(APIView):
                 "row_key": f"{order.order_number}#item{item.id}",
                 "product_name": product_name,
                 "customer": order.customer.email if order.customer else "Unknown",
-                "amount": float(item.total_price),
+                # ✅ FIX: total_price nahi — net_amount. Partial return hua
+                # item apna proportional amount hi dikhayega, poora nahi.
+                "amount": float(item.net_amount),
                 "status": item.item_status,               # delivered / pending / refunded / etc
                 "payment_status": order.payment_status,
                 "date": order.created_at.isoformat(),

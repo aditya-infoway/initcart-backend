@@ -25,11 +25,16 @@ class B2BSale(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['status', '-created_at'], name='b2bsale_status_created_idx'),
+            models.Index(fields=['sale_date'], name='b2bsale_date_idx'),
+            models.Index(fields=['-created_at'], name='b2bsale_created_idx'),
+        ]
 
     def __str__(self):
         return f"{self.sale_no} | {self.from_branch} → {self.to_branch}"
 
-    # ✅ NEW — reusable, dono save() aur preview API isi ko call karenge
+    # NEW — reusable, dono save() aur preview API isi ko call karenge
     @classmethod
     def get_next_sale_no(cls):
         now = datetime.now()
@@ -95,6 +100,9 @@ class B2BSaleItem(models.Model):
 
     class Meta:
         ordering = ['id']
+        indexes = [
+            models.Index(fields=['sale', 'is_stock_updated'], name='b2bitem_sale_verified_idx'),
+        ]
 
     def __str__(self):
         return f"{self.sale.sale_no} | {self.from_item_name} × {self.quantity}"

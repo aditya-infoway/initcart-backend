@@ -8,3 +8,4 @@ class PosConfig(AppConfig):
     def ready(self):
         # Signal import karo — yahi se register hoga
         import pos.signals.branch_agent_signal  # noqa: F401
+        import pos.signals.item_cache_signal 

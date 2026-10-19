@@ -94,10 +94,15 @@ def reverse_commission_for_return(refund):
             # hai (refund_helpers.process_refund isko commission_reversal
             # call karne se PEHLE set karta hai), isliye query mein yeh
             # item khud-ba-khud exclude ho jayega.
-            delivered_total = OrderItem.objects.filter(
+            # ✅ FIX: total_price sum nahi — net_amount sum. Partial
+            # return ab sirf proportional amount hi minus karta hai.
+            delivered_items = OrderItem.objects.filter(
                 order__customer=agent.user,
                 item_status="delivered",
-            ).aggregate(total=Sum("total_price"))["total"] or Decimal("0.00")
+            )
+            delivered_total = sum(
+                (i.net_amount for i in delivered_items), Decimal("0.00")
+            )
 
             agent.total_sales = delivered_total
             update_fields.append('total_sales')

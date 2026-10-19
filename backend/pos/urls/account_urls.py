@@ -10,6 +10,7 @@ from pos.views.account_views import (
     AccountAPIView,
     CustomerCreateView,
     BranchLinkableAccountsAPIView,
+    DefaultTaxAccountsAPIView,
     
 )
 from pos.views.outstanding_views import OutstandingReportAPIView
@@ -31,4 +32,5 @@ urlpatterns = [
         name='due-payment-report'
     ),
     path('branch-linkable-accounts/', BranchLinkableAccountsAPIView.as_view()),
+    path("default-tax-accounts/", DefaultTaxAccountsAPIView.as_view(), name="default-tax-accounts"),
 ]

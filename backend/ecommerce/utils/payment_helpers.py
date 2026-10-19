@@ -125,9 +125,9 @@ def get_vendor_cod_platform_charge(vendor, date_from=None, date_to=None):
     """
     Total platform charge to recover from COD + self-delivery, delivered
     orders (vendor already collected this money directly) within the range,
-    excluding items already recovered in a previous non-rejected request.
+    excluding items already recovered in a previous non-rejected request AND
+    items that are returned/refunded (or have a return decision pending).
     Returns (total_charge: Decimal, item_charges: list[(OrderItem, Decimal)]).
-    (Unchanged — COD refund flow is a separate, later step.)
     """
     recovered_ids = VendorCODRecovery.objects.filter(
         order_item__vendor=vendor
@@ -137,12 +137,14 @@ def get_vendor_cod_platform_charge(vendor, date_from=None, date_to=None):
         vendor=vendor, delivery_service='self'
     ).values_list('order_id', flat=True)
 
+    non_payable_item_ids = _non_payable_item_ids(vendor)
+
     items = OrderItem.objects.filter(
         vendor=vendor,
         order__payment_method='cod',
         order__order_status='delivered',
         order_id__in=list(self_delivery_order_ids),
-    ).exclude(id__in=list(recovered_ids))
+    ).exclude(id__in=list(recovered_ids)).exclude(id__in=list(non_payable_item_ids))
 
     items = _apply_date_range(items, date_from, date_to)
     items = items.select_related('product_stock', 'product', 'order')
@@ -156,8 +158,6 @@ def get_vendor_cod_platform_charge(vendor, date_from=None, date_to=None):
             item_charges.append((item, charge))
 
     return total, item_charges
-
-
 def get_order_summaries(vendor, order_ids):
     """
     Per-order vendor_total + platform_charge for a specific set of order ids.

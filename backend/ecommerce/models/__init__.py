@@ -11,6 +11,7 @@ from .vendor_subscription import VendorSubscription
 
 from .product import Product, ProductStock, ProductGallery
 from .category import Category, SubCategory, SubSubCategory
+from ecommerce.models.top_seller import TopSellerRequest  # noqa: F401
 
 __all__ = [
     'Vendor', 

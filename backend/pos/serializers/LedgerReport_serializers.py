@@ -45,6 +45,8 @@ from pos.models.purchasereturn import PurchaseReturnMaster
 from pos.models.stock_transfer import StockTransfer
 from pos.models.stock_return import StockReturn
 from pos.models.b2b_sales import B2BSale
+from django.db.models import Sum
+from pos.utils.default_tax_accounts import TAX_LEDGER_MAP
 
 class LedgerAccountSerializer(serializers.ModelSerializer):
     class Meta:
@@ -887,7 +889,54 @@ class LedgerReportSerializer:
                         "debit": D(c.amount),
                         "credit": Decimal("0"),
                     })
+        # ═══════════════════════════════════════════════════════════════════
+        # DUTIES & TAXES (Purchase/Sales CGST, SGST, IGST)
+        #   Purchase tax → DEBIT   |   Sales tax → CREDIT
+        #   Sirf tax ki value, bill ki nahi.
+        # ═══════════════════════════════════════════════════════════════════
+        elif group == "Duties & Taxes":
+            key = getattr(account, "system_key", None)
+            if key in TAX_LEDGER_MAP:
+                kind, tax_field = TAX_LEDGER_MAP[key]
+                label = account.account_name
 
+                if kind == "purchase":
+                    qs = df(
+                        PurchaseMaster.objects.filter(branch=branch)
+                        .select_related("partyName")
+                        .annotate(tax_total=Sum(f"items__{tax_field}"))
+                    )
+                    for p in qs:
+                        amt = D(p.tax_total)
+                        if amt > 0:
+                            entries.append({
+                                "date": p.date,
+                                "created_at": p.created_at,
+                                "voucher": p.billNo,
+                                "type": "PI",
+                                "particulars": f"{label} – Purchase {p.billNo}"
+                                               + (f" ({p.partyName.account_name})" if p.partyName else ""),
+                                "debit": amt,
+                                "credit": Decimal("0"),
+                            })
+                else:
+                    qs = df(
+                        SalesMaster.objects.filter(branch=branch, is_cancelled=False)
+                        .select_related("customer")
+                        .annotate(tax_total=Sum(f"items__{tax_field}"))
+                    )
+                    for s in qs:
+                        amt = D(s.tax_total)
+                        if amt > 0:
+                            entries.append({
+                                "date": s.date,
+                                "created_at": s.created_at,
+                                "voucher": s.bill_no,
+                                "type": "SI",
+                                "particulars": f"{label} – Sale {s.bill_no} ({s.customer.account_name})",
+                                "debit": Decimal("0"),
+                                "credit": amt,
+                            })
         # ═══════════════════════════════════════════════════════════════════
         # JOURNAL ENTRIES (all groups)
         # ═══════════════════════════════════════════════════════════════════

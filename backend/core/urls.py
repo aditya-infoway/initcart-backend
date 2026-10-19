@@ -34,6 +34,9 @@ urlpatterns = [
     #category master urls for all category
     path("api/ecommerce/" , include("ecommerce.urls.category_urls")),
 
+    #top saller
+    path("api/ecommerce/", include("ecommerce.urls.top_seller_urls")),
+
     #campaign
     path("api/ecommerce/", include("ecommerce.urls.campaign_urls")),
 

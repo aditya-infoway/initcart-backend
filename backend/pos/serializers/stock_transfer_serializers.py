@@ -1,5 +1,4 @@
 # pos/serializers/stock_transfer_serializers.py
-# SIMPLIFIED - No matching logic
 #
 # CHANGES vs previous version (Excel import ke liye zaroori the):
 #   1) from_branch ab user.get_effective_branch() se aata hai (pehle
@@ -90,7 +89,7 @@ class StockTransferCreateSerializer(serializers.Serializer):
         items_data = validated_data.pop('items')
         transfer_type = validated_data.pop('transfer_type', 'manual')
 
-        # ✅ CHANGED — superadmin + employee dono ke liye sahi branch
+        #CHANGED — superadmin + employee dono ke liye sahi branch
         from_branch = user.get_effective_branch()
         if not from_branch:
             raise serializers.ValidationError("Your branch not found.")

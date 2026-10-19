@@ -8,11 +8,10 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
-from django.db.models import Q, Sum
+from django.db.models import Q, Sum, Prefetch
 from django.db import transaction
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-
-from pos.models.salesentry import SalesItem, SalesMaster
+from pos.models.salesentry import SalesItem, SalesMaster, snapshot_purchase_price
 from pos.models.branch import Branch
 from pos.models.items import items, itemvariants
 from pos.serializers.salesentry_serializers import SalesMasterSerializer
@@ -28,6 +27,7 @@ from pos.utils.sales_bill_display import get_display_branch_for_sale
 
 # ✅ ADD: Permission imports
 from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
+from pos.utils.default_tax_accounts import post_tax_to_accounts
 
 
 def calculate_gst(taxable, tax_percent, branch_state, party_state):
@@ -245,6 +245,7 @@ class SalesEntryCreateAPIView(APIView):
                     sales=sales,
                     item_name_id=it["item_id"],
                     variant_id=it.get("variant_id") or None,
+                    purchase_price=snapshot_purchase_price(it["item_id"], it.get("variant_id")),
                     hsn_code=it.get("hsn_code", ""),
                     qty=Decimal(str(it.get("qty", 0))),
                     price=Decimal(str(it.get("price", 0))),
@@ -260,7 +261,7 @@ class SalesEntryCreateAPIView(APIView):
                     igst=Decimal(str(it.get("igst", "0"))),
                     gst_toggle_status=sales_gst_toggle,
                 )
-
+            post_tax_to_accounts(branch, "sales", sales.items.all())
             # CREATE RECEIPT
             payment_terms = data["payment_terms"].lower()
             receipt_created = False
@@ -335,18 +336,20 @@ class SalesEntryCreateAPIView(APIView):
 
 
 class SalesEntryListAPIView(APIView):
-    """List all sales entries"""
-    
-    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    """List sales — server-side search/filter/pagination.
+
+    Query params (sab optional): page, page_size, search, terms (Cash/Bank/Credit),
+    date_from, date_to (YYYY-MM-DD), light=1 (items me purchase_price skip)
+    Response me extra key: overall_total
+    """
     permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
-    page_key = "/Addsalesitem"  # ✅ ADD: Frontend route
+    page_key = "/Addsalesitem"
 
     def get(self, request):
         user = request.user
         is_superadmin = user.role == 'superadmin'
         is_employee = user.role == 'employee'
 
-        # ✅ CHANGE: Branch selection logic → get_effective_branch()
         branch = user.get_effective_branch()
         if not branch:
             return Response({
@@ -354,35 +357,54 @@ class SalesEntryListAPIView(APIView):
                 "error": "No branch linked to this user"
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # ✅ FIX: Employee ko bhi branch_id override allow karo
-        # Employee = Mini Superadmin (superadmin branch ke under kaam kar raha hai)
         branch_id_param = request.GET.get('branch_id')
-        if branch_id_param:
-            # Superadmin hamesha allow
-            if is_superadmin:
-                from pos.models.branch import Branch
-                try:
-                    branch = Branch.objects.get(id=branch_id_param)
-                except Branch.DoesNotExist:
-                    return Response({'error': 'Branch not found'}, status=404)
-            # ✅ Employee allow karo (kyunki employee superadmin branch me kaam kar raha hai)
-            elif is_employee:
-                from pos.models.branch import Branch
-                try:
-                    branch = Branch.objects.get(id=branch_id_param)
-                except Branch.DoesNotExist:
-                    return Response({'error': 'Branch not found'}, status=404)
+        if branch_id_param and (is_superadmin or is_employee):
+            try:
+                branch = Branch.objects.get(id=branch_id_param)
+            except Branch.DoesNotExist:
+                return Response({'error': 'Branch not found'}, status=404)
 
-        queryset = SalesMaster.objects.filter(
-            branch=branch
-        ).order_by("-date", "-id")
+        qs = SalesMaster.objects.filter(branch=branch)
+
+        search = request.GET.get('search', '').strip()
+        if search:
+            qs = qs.filter(
+                Q(bill_no__icontains=search) |
+                Q(customer__account_name__icontains=search) |
+                Q(narration__icontains=search)
+            )
+
+        terms = request.GET.get('terms', '').strip()
+        if terms:
+            qs = qs.filter(payment_terms__iexact=terms)
+
+        date_from = request.GET.get('date_from', '').strip()
+        if date_from:
+            qs = qs.filter(date__gte=date_from)
+
+        date_to = request.GET.get('date_to', '').strip()
+        if date_to:
+            qs = qs.filter(date__lte=date_to)
+
+        overall_total = qs.aggregate(t=Sum('grand_total'))['t'] or Decimal('0')
+
+        qs = (
+            qs.select_related("customer", "created_by")
+            .prefetch_related(
+                Prefetch("items", queryset=SalesItem.objects.select_related("item_name", "variant"))
+            )
+            .order_by("-date", "-id")
+        )
 
         paginator = StandardResultsSetPagination()
-        paginated_sales = paginator.paginate_queryset(queryset, request)
-        serializer = SalesMasterSerializer(paginated_sales, many=True)
-        return paginator.get_paginated_response(serializer.data)
+        page = paginator.paginate_queryset(qs, request)
 
-
+        serializer = SalesMasterSerializer(
+            page, many=True, context={"light": request.GET.get("light") == "1"}
+        )
+        response = paginator.get_paginated_response(serializer.data)
+        response.data['overall_total'] = float(overall_total)
+        return response
 class SaleReceiptView(APIView):
     """Get sale receipt details"""
     
@@ -598,15 +620,14 @@ class SalesItemTaxAPIView(APIView):
 
 
 class SaleItemSearchAPIView(APIView):
-    """Search sale items for dropdown"""
-    
-    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
+    """Search sale variants.
+    ?query=red shirt   -> multi-word search (har word kisi bhi field me)
+    ?barcode=XXXX      -> exact barcode
+    ?limit=50          -> max rows (0/absent = sab, purane jaisa)
+    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        search = request.GET.get("query", "").strip()
-        
-        # ✅ CHANGE: request.user.branch → get_effective_branch()
         user_branch = request.user.get_effective_branch()
         if not user_branch:
             return Response({
@@ -614,65 +635,85 @@ class SaleItemSearchAPIView(APIView):
                 "error": "No branch linked to this user"
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        variants_qs = itemvariants.objects.filter(
-            item__branch=user_branch
-        ).select_related("item", "item__unit").distinct()
+        search = request.GET.get("query", "").strip()
+        barcode = request.GET.get("barcode", "").strip()
+        try:
+            limit = min(max(int(request.GET.get("limit", 50)), 1), 200)
+        except (TypeError, ValueError):
+            limit = 50
+        try:
+            offset = max(int(request.GET.get("offset", 0)), 0)
+        except (TypeError, ValueError):
+            offset = 0
+
+        qs = (
+            itemvariants.objects.filter(item__branch=user_branch)
+            .select_related("item", "item__unit", "item__c_category")
+            .order_by("id")
+        )
+
+        if barcode:
+            qs = qs.filter(barcode__iexact=barcode)
+        else:
+            for tok in search.split():
+                qs = qs.filter(
+                    Q(item__itemName__icontains=tok) |
+                    Q(item__hsnCode__icontains=tok) |
+                    Q(size__icontains=tok) |
+                    Q(color__icontains=tok) |
+                    Q(barcode__icontains=tok) |
+                    Q(srno__icontains=tok)
+                )
+
+        qs = qs[offset:offset + limit]
+
+        variants = list(qs)
+
+        # Jin variants ka current_stock 0 hai unka stock bulk me nikalo (2 queries, har variant pe nahi)
+        zero_ids = [v.id for v in variants if not (v.current_stock or 0)]
+        purchased, sold = {}, {}
+        if zero_ids:
+            purchased = {
+                r["variant"]: r["t"] or 0
+                for r in PurchaseItem.objects.filter(variant_id__in=zero_ids)
+                .values("variant").annotate(t=Sum("quantity")).order_by()
+            }
+            sold = {
+                r["variant"]: r["t"] or 0
+                for r in SalesItem.objects.filter(variant_id__in=zero_ids)
+                .values("variant").annotate(t=Sum("qty")).order_by()
+            }
 
         result = []
-        for variant in variants_qs:
+        for variant in variants:
             item = variant.item
-            
+
             unit_name = "-"
             unit_symbol = "pc"
             unit_supports_fractional = False
             if item.unit:
                 unit_name = item.unit.name
                 unit_symbol = item.unit.symbol or item.unit.name
-                unit_supports_fractional = getattr(item.unit, 'supports_fractional', False)
-            
-            current_stock = 0
-            if hasattr(variant, 'current_stock') and variant.current_stock is not None:
-                current_stock = variant.current_stock
-            elif hasattr(item, 'current_stock') and item.current_stock is not None:
-                current_stock = item.current_stock
-            
+                unit_supports_fractional = getattr(item.unit, "supports_fractional", False)
+
+            current_stock = variant.current_stock or 0
             if current_stock == 0:
-                total_purchased = PurchaseItem.objects.filter(
-                    variant=variant
-                ).aggregate(total=Sum('quantity'))['total'] or 0
-                total_sold = SalesItem.objects.filter(
-                    variant=variant
-                ).aggregate(total=Sum('qty'))['total'] or 0
-                opening_stock = variant.opStock if hasattr(variant, 'opStock') and variant.opStock else 0
-                current_stock = float(opening_stock) + float(total_purchased) - float(total_sold)
+                opening = variant.opStock or 0
+                current_stock = (
+                    float(opening)
+                    + float(purchased.get(variant.id, 0))
+                    - float(sold.get(variant.id, 0))
+                )
 
             sales_price = float(variant.salesPrice or variant.purchasePrice or 0)
-            per_unit_price = sales_price
 
-            if unit_supports_fractional:
-                per_unit_price = sales_price
-
-            if search:
-                search_lower = search.lower()
-                match = (
-                    search_lower in item.itemName.lower()
-                    or search_lower in (item.hsnCode or "").lower()
-                    or search_lower in str(sales_price)
-                    or search_lower in (variant.size or "").lower()
-                    or search_lower in (variant.color or "").lower()
-                    or search_lower in (variant.barcode or "").lower()
-                    or search_lower in (variant.srno or "").lower()
-                )
-                if not match:
-                    continue
-            
             result.append({
                 "id": variant.id,
                 "itemId": item.id,
                 "itemName": item.itemName,
                 "hsnCode": item.hsnCode or "",
-                "salesPrice": float(sales_price), 
-                "per_unit_price": float(per_unit_price), 
+                "salesPrice": sales_price,
+                "per_unit_price": sales_price,
                 "current_stock": float(current_stock),
                 "unit": unit_symbol,
                 "unit_name": unit_name,
@@ -687,8 +728,6 @@ class SaleItemSearchAPIView(APIView):
             })
 
         return Response(result)
-
-
 class ReceiveSalesCreditBillCashAPIView(APIView):
     """Receive payment for a sales credit bill via cash receipt (creates SCR)"""
     

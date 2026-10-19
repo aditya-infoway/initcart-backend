@@ -7,6 +7,7 @@ from ecommerce.models.customer import CustomerProfile
 from django.utils import timezone
 from datetime import timedelta
 from mlm.models.agent import Agent
+from decimal import Decimal
 
 class Order(models.Model):
     ORDER_STATUS = [
@@ -110,6 +111,8 @@ class OrderItem(models.Model):
     decimal_places=2,
     default=0
     )
+
+    returned_quantity = models.PositiveIntegerField(default=0)
     
     vendor_receivable = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     platform_profit = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -147,6 +150,25 @@ class OrderItem(models.Model):
         if self.item_status == 'delivered' and not self.delivered_at:
             self.delivered_at = timezone.now()
         super().save(*args, **kwargs)
+
+
+    @property
+    def net_quantity(self):
+        """Kitni quantity abhi bhi 'sold' maani jaati hai (return hui minus)."""
+        return max(0, self.quantity - (self.returned_quantity or 0))
+
+    @property
+    def net_amount(self):
+        """
+        ✅ Sales/commission ke liye ASLI amount — poora total_price nahi,
+        sirf jo quantity return NAHI hui uska proportion.
+        Full item return → 0. Partial return → proportional reduction.
+        No return → total_price (unchanged).
+        """
+        if not self.quantity:
+            return Decimal('0.00')
+        per_unit = Decimal(str(self.total_price)) / self.quantity
+        return (per_unit * self.net_quantity).quantize(Decimal('0.01'))
 
     def __str__(self):
         return f"{self.product_name} x {self.quantity} - {self.order.order_number}"

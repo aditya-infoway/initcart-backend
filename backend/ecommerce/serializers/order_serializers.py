@@ -124,17 +124,50 @@ class LoyaltyPointsSerializer(serializers.ModelSerializer):
 class OrderItemSerializer(serializers.ModelSerializer):
     product_details = serializers.SerializerMethodField()
     vendor_details = serializers.SerializerMethodField()
-    variant_image = serializers.SerializerMethodField() 
-    tax = serializers.SerializerMethodField() 
-    
+    variant_image = serializers.SerializerMethodField()
+    tax = serializers.SerializerMethodField()
+
+    # ADD THESE 3
+    returned_quantity = serializers.IntegerField(read_only=True)
+    net_quantity = serializers.IntegerField(read_only=True)
+    net_amount = serializers.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        read_only=True
+    )
+
     class Meta:
         model = OrderItem
         fields = [
-            'id', 'product', 'product_stock', 'vendor', 'vendor_details',
-            'product_name', 'sku', 'color', 'size', 'quantity',
-            'unit_price', 'tax_rate', 'tax_amount', 'discount_amount',
-            'total_price', 'item_status', 'product_details', 'created_at',
-            'variant_image', 'tax' ,'delivered_at',
+            'id',
+            'product',
+            'product_stock',
+            'vendor',
+            'vendor_details',
+            'product_name',
+            'sku',
+            'color',
+            'size',
+            'quantity',
+
+            # ORIGINAL
+            'unit_price',
+            'tax_rate',
+            'tax_amount',
+            'discount_amount',
+            'total_price',
+
+            # RETURN INFO
+            'returned_quantity',
+            'net_quantity',
+            'net_amount',
+
+            'item_status',
+            'product_details',
+            'created_at',
+            'variant_image',
+            'tax',
+            'delivered_at',
         ]
     
     def get_tax(self, obj):
@@ -344,6 +377,10 @@ class VendorOrderItemSerializer(serializers.ModelSerializer):
     tax_percentage = serializers.FloatField(source="product_stock.tax", read_only=True)
     return_info = serializers.SerializerMethodField()   # ✅ NEW
     refund_info = serializers.SerializerMethodField()   # ✅ NEW
+    # ✅ NEW — partial-return-aware amount. Vendor panel ab poora
+    # total_price nahi, asli bachi hui quantity ka amount dikhayega.
+    net_quantity = serializers.IntegerField(read_only=True)
+    net_amount = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
 
     class Meta:
         model = OrderItem
@@ -353,6 +390,7 @@ class VendorOrderItemSerializer(serializers.ModelSerializer):
             'discount_amount', 'total_price', 'item_status',
             'product_details', 'order_info', 'customer_info', 'created_at',
             'tax_percentage', 'return_info', 'refund_info',   # ✅ NEW
+            'returned_quantity', 'net_quantity', 'net_amount',  # ✅ NEW
         ]
 
     def get_product_details(self, obj):

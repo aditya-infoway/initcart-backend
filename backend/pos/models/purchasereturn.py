@@ -14,7 +14,7 @@ class PurchaseReturnMaster(CreatedByMixin, models.Model):
     branch = models.ForeignKey(Branch, on_delete=models.CASCADE, related_name='purchase_returns')
     return_no = models.CharField(max_length=50)
     date = models.DateField()
-    original_bill_no = models.CharField(max_length=50)
+    original_bill_no = models.CharField(max_length=50, db_index=True)
     party = models.ForeignKey(Account, on_delete=models.PROTECT, limit_choices_to={'group': 'Supplier'}, related_name='purchase_returns')
     reason_for_return = models.CharField(max_length=200)
     approved_by = models.CharField(max_length=100)
@@ -89,19 +89,19 @@ class PurchaseReturnMaster(CreatedByMixin, models.Model):
 
                 # ✅ Branch filter add kiya
                 while PurchaseReturnMaster.objects.filter(
-                    branch=self.branch,  # ✅ FIXED
+                    branch=self.branch, 
                     return_no=self.return_no
                 ).exists():
                     next_no += 1
                     self.return_no = f"{pattern}{str(next_no).zfill(4)}"
-
-                print(f"🔐 Branch: {self.branch.branch_name} (ID: {self.branch.id}) - PR No: {self.return_no} (last: {last_no})")
-
             super().save(*args, **kwargs)
 
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=['branch', 'return_no'], name='unique_pr_per_branch')
+        ]
+        indexes = [
+            models.Index(fields=["branch", "-date", "-created_at"], name="prm_branch_date_idx"),
         ]
 class PurchaseReturnItem(models.Model):
     """Individual items in Purchase Return"""

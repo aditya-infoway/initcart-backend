@@ -1,31 +1,39 @@
+from collections import defaultdict
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from datetime import datetime
+
 from django.db import transaction
-from pos.models.bankreceipt import BankReceipt
-from pos.models.cashreceipt import CashReceipt
+from django.db.models import Q, Sum, Prefetch
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 
-from django.db.models import Q, Sum
+from pos.models.bankreceipt import BankReceipt
+from pos.models.cashreceipt import CashReceipt
 from pos.models.branch import Branch
 from pos.models.settings import setting
 from pos.models.account import Account
-from pos.models.items import items, itemvariants
+from pos.models.items import items, itemvariants  # noqa: F401
 from pos.models.purchaseentry import PurchaseItem, PurchaseMaster
+from pos.models.purchasereturn import PurchaseReturnMaster
+from pos.models.cashpayment import CashPayment
+from pos.models.bankpayment import BankPayment
 from pos.serializers.account_serializer import AccountSerializer
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pos.serializers.settings_serializers import SettingSerializers
-from pos.serializers.purchaseentry_serializers import (
+from pos.serializers.purchaseentry_serializers import (  # noqa: F401
     ItemSerializer,
     PurchaseSerializer,
 )
-from pos.models.cashpayment import CashPayment
-from pos.models.bankpayment import BankPayment
 from pos.utils.pagination import StandardResultsSetPagination
-
-# ✅ ADD: Permission imports
+from pos.utils.item_cache import get_branch_variant_data, search_variants, find_by_barcode
 from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
+from pos.utils.default_tax_accounts import post_tax_to_accounts
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
 def to_decimal(value, default=Decimal("0.00")):
     try:
@@ -69,91 +77,50 @@ def sanitize_purchase_payload(data):
     return data
 
 
+def _next_voucher_no(model, branch, setting_attr, default_prefix):
+    """Voucher number: PREFIX/FY/0001 (financial year April se)"""
+    settings_obj = setting.objects.filter(branch=branch).first()
+    prefix = getattr(settings_obj, setting_attr, default_prefix) if settings_obj else default_prefix
+
+    last_voucher = model.objects.filter(branch=branch).order_by("-id").first()
+
+    last_no = 0
+    if last_voucher and last_voucher.voucher_no:
+        try:
+            parts = last_voucher.voucher_no.split("/")
+            if len(parts) >= 3:
+                last_no = int(parts[-1])
+        except (ValueError, IndexError):
+            last_no = 0
+
+    now = datetime.now()
+    if now.month >= 4:
+        fy_start, fy_end = now.year, now.year + 1
+    else:
+        fy_start, fy_end = now.year - 1, now.year
+
+    fy = f"{str(fy_start)[2:]}-{str(fy_end)[2:]}"
+    return f"{prefix}/{fy}/{str(last_no + 1).zfill(4)}"
+
+
+def generate_bank_payment_voucher(branch):
+    """Bank Payments (BP and PBP share same sequence)"""
+    return _next_voucher_no(BankPayment, branch, "BP", "BP")
+
+
+def generate_cash_payment_voucher(branch):
+    """Cash Payments (CP and PCP share same sequence)"""
+    return _next_voucher_no(CashPayment, branch, "CP", "CP")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN CRUD VIEWS (with permission check)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class PurchaseCreateView(APIView):
     """Create a new purchase entry"""
-    
-    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
     permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
     page_key = "/Addpurchaseitem"
-   
-
-    def generate_bank_payment_voucher(self, branch):
-        """Generate voucher number for Bank Payments (BP and PBP share same sequence)"""
-        from datetime import datetime
-        from pos.models.settings import setting
-        from pos.models.bankpayment import BankPayment
-        
-        settings_obj = setting.objects.filter(branch=branch).first()
-        prefix = getattr(settings_obj, "BP", "BP") if settings_obj else "BP"
-            
-        last_voucher = BankPayment.objects.filter(
-            branch=branch
-        ).order_by("-id").first()
-        
-        last_no = 0
-        if last_voucher and last_voucher.voucher_no:
-            try:
-                parts = last_voucher.voucher_no.split("/")
-                if len(parts) >= 3:
-                    last_no = int(parts[-1])
-            except (ValueError, IndexError):
-                last_no = 0
-        
-        now = datetime.now()
-        year = now.year
-        if now.month >= 4:
-            fy_start = year
-            fy_end = year + 1
-        else:
-            fy_start = year - 1
-            fy_end = year
-        
-        fy = f"{str(fy_start)[2:]}-{str(fy_end)[2:]}"
-        next_no = str(last_no + 1).zfill(4)
-        voucher_no = f"{prefix}/{fy}/{next_no}"
-        
-        return voucher_no
-
-    def generate_cash_payment_voucher(self, branch):
-        """Generate voucher number for Cash Payments (CP and PCP share same sequence)"""
-        from datetime import datetime
-        from pos.models.settings import setting
-        from pos.models.cashpayment import CashPayment
-        
-        settings_obj = setting.objects.filter(branch=branch).first()
-        prefix = getattr(settings_obj, "CP", "CP") if settings_obj else "CP"
-        
-        last_voucher = CashPayment.objects.filter(
-            branch=branch
-        ).order_by("-id").first()
-        
-        last_no = 0
-        if last_voucher and last_voucher.voucher_no:
-            try:
-                parts = last_voucher.voucher_no.split("/")
-                if len(parts) >= 3:
-                    last_no = int(parts[-1])
-            except (ValueError, IndexError):
-                last_no = 0
-        
-        now = datetime.now()
-        year = now.year
-        if now.month >= 4:
-            fy_start = year
-            fy_end = year + 1
-        else:
-            fy_start = year - 1
-            fy_end = year
-        
-        fy = f"{str(fy_start)[2:]}-{str(fy_end)[2:]}"
-        next_no = str(last_no + 1).zfill(4)
-        voucher_no = f"{prefix}/{fy}/{next_no}"
-        
-        return voucher_no
 
     def post(self, request):
         data = sanitize_purchase_payload(request.data.copy())
@@ -163,29 +130,25 @@ class PurchaseCreateView(APIView):
             serializer.is_valid(raise_exception=True)
             purchase = serializer.save()
 
+            post_tax_to_accounts(purchase.branch, "purchase", purchase.items.all())
+
             terms = purchase.terms.strip().lower() if purchase.terms else ""
 
-            # ✅ CREDIT PURCHASE - Supplier का Cr balance बढ़ाएं
+            # CREDIT PURCHASE - Supplier ka Cr balance badhao
             if terms == "credit":
                 if purchase.partyName:
                     purchase.update_balance(purchase.partyName, purchase.grand_total, "Cr")
-                else:
-                    print(f"   No party assigned to this purchase")
 
-            #  CASH PURCHASE - PCP बनाएं (Supplier balance नहीं बदलेगा)
+            # CASH PURCHASE - PCP banao (Supplier balance nahi badlega)
             elif terms == "cash":
-                print(" CASH PURCHASE - Creating PCP (Supplier balance unchanged)")
-
                 cash_account = purchase.case_account
 
                 if cash_account and purchase.partyName:
-                    # ✅ CHANGE: request.user.branch → get_effective_branch()
                     branch = request.user.get_effective_branch()
-                    pcp_voucher = self.generate_cash_payment_voucher(branch)
 
-                    cash = CashPayment.objects.create(
+                    CashPayment.objects.create(
                         date=purchase.date,
-                        voucher_no=pcp_voucher,
+                        voucher_no=generate_cash_payment_voucher(branch),
                         cash_account=cash_account,
                         op_account=purchase.partyName,
                         branch=branch,
@@ -196,20 +159,17 @@ class PurchaseCreateView(APIView):
                         purchase=purchase,
                         created_by=request.user,
                     )
-                else:
-                    pass
 
+            # BANK PURCHASE - PBP banao
             elif terms == "bank":
                 bank_account = purchase.bank_account
 
                 if bank_account and purchase.partyName:
-                    # ✅ CHANGE: request.user.branch → get_effective_branch()
                     branch = request.user.get_effective_branch()
-                    pbp_voucher = self.generate_bank_payment_voucher(branch)
 
-                    bank = BankPayment.objects.create(
+                    BankPayment.objects.create(
                         date=purchase.date,
-                        voucher_no=pbp_voucher,
+                        voucher_no=generate_bank_payment_voucher(branch),
                         bank_account=bank_account,
                         op_account=purchase.partyName,
                         branch=branch,
@@ -218,25 +178,30 @@ class PurchaseCreateView(APIView):
                         narration=f"Auto payment against Purchase {purchase.billNo}",
                         type="PBP",
                         purchase=purchase,
-                        created_by=request.user, 
+                        created_by=request.user,
                     )
 
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 class PurchaseItemListAPIView(APIView):
-    """List all purchase items with pagination"""
-    
-    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
+    """List purchase entries — server-side search/filter/pagination (N+1 fixed)
+
+    Query params (sab optional):
+      page, page_size    -> pagination
+      search             -> billNo / purchasebill_no / party name (icontains)
+      terms              -> Credit / Cash / Bank
+      date_from, date_to -> YYYY-MM-DD
+    Response me extra key: overall_total (filter ke baad ke saare records ka grand_total)
+    """
     permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
-    page_key = "/Addpurchaseitem"  # ✅ ADD: Frontend route
+    page_key = "/Addpurchaseitem"
 
     def get(self, request):
         user = request.user
         is_superadmin = user.role == 'superadmin'
         is_employee = user.role == 'employee'
 
-        # ✅ CHANGE: Branch selection logic → get_effective_branch()
         branch = user.get_effective_branch()
         if not branch:
             return Response({
@@ -244,36 +209,59 @@ class PurchaseItemListAPIView(APIView):
                 'message': 'No branch linked to this user'
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # ✅ FIX: Employee ko bhi branch_id override allow karo
-        # Employee = Mini Superadmin (superadmin branch ke under kaam kar raha hai)
         branch_id_param = request.GET.get('branch_id')
-        if branch_id_param:
-            # Superadmin hamesha allow
-            if is_superadmin or is_employee:
-                from pos.models.branch import Branch
-                try:
-                    branch = Branch.objects.get(id=branch_id_param)
-                except Branch.DoesNotExist:
-                    return Response({'error': 'Branch not found'}, status=404)
+        if branch_id_param and (is_superadmin or is_employee):
+            try:
+                branch = Branch.objects.get(id=branch_id_param)
+            except Branch.DoesNotExist:
+                return Response({'error': 'Branch not found'}, status=404)
 
-        purchases = PurchaseMaster.objects.prefetch_related("items", "partyName").filter(
-            branch=branch
-        ).order_by('-date', '-id')
+        qs = PurchaseMaster.objects.filter(branch=branch)
+
+        search = request.GET.get('search', '').strip()
+        if search:
+            qs = qs.filter(
+                Q(billNo__icontains=search) |
+                Q(purchasebill_no__icontains=search) |
+                Q(partyName__account_name__icontains=search)
+            )
+
+        terms = request.GET.get('terms', '').strip()
+        if terms:
+            qs = qs.filter(terms__iexact=terms)
+
+        date_from = request.GET.get('date_from', '').strip()
+        if date_from:
+            qs = qs.filter(date__gte=date_from)
+
+        date_to = request.GET.get('date_to', '').strip()
+        if date_to:
+            qs = qs.filter(date__lte=date_to)
+
+        overall_total = qs.aggregate(t=Sum('grand_total'))['t'] or Decimal('0')
+
+        qs = (
+            qs.select_related("partyName", "created_by")
+            .prefetch_related(
+                Prefetch(
+                    "items",
+                    queryset=PurchaseItem.objects.select_related("itemName", "variant"),
+                )
+            )
+            .order_by('-date', '-id')
+        )
 
         paginator = StandardResultsSetPagination()
-        paginated_purchases = paginator.paginate_queryset(purchases, request)
+        page = paginator.paginate_queryset(qs, request)
 
-        serializer = PurchaseSerializer(paginated_purchases, many=True)
-
-        return paginator.get_paginated_response(serializer.data)
-
-
+        serializer = PurchaseSerializer(page, many=True)
+        response = paginator.get_paginated_response(serializer.data)
+        response.data['overall_total'] = float(overall_total)
+        return response
 class PurchaseentryUpdate(APIView):
     """Update a purchase entry"""
-    
-    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
     permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
-    page_key = "/Addpurchaseitem"  # ✅ ADD: Frontend route
+    page_key = "/Addpurchaseitem"
 
     def put(self, request, id):
         try:
@@ -304,10 +292,8 @@ class PurchaseentryUpdate(APIView):
 
 class PurchaseItemDelete(APIView):
     """Delete a purchase item"""
-    
-    # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
     permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
-    page_key = "/Addpurchaseitem"  # ✅ ADD: Frontend route
+    page_key = "/Addpurchaseitem"
 
     def delete(self, request, id, *args, **kwargs):
         try:
@@ -319,33 +305,26 @@ class PurchaseItemDelete(APIView):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# HELPER/Lookup APIS — NO PERMISSION GATE (only IsAuthenticated)
+# HELPER / LOOKUP APIS — only IsAuthenticated
 # ─────────────────────────────────────────────────────────────────────────────
 
 class AccountCheckView(APIView):
     """Check account balance before purchase"""
-    
-    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk=None):
         if not pk:
-            return Response({
-                "show_alert": False,
-                "alert_message": ""
-            })
+            return Response({"show_alert": False, "alert_message": ""})
 
         try:
             account = Account.objects.get(pk=pk)
         except Account.DoesNotExist:
             return Response({"detail": "Account not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        serializer = AccountSerializer(account)
-        data = serializer.data
+        data = AccountSerializer(account).data
 
         show_alert = False
         alert_message = ""
-
         required_amount = to_decimal(request.GET.get("required_amount"))
 
         if account.group in ["Bank Account", "Case In Hand"]:
@@ -364,81 +343,32 @@ class AccountCheckView(APIView):
 
         data["show_alert"] = show_alert
         data["alert_message"] = alert_message
-
         return Response(data)
 
 
 class PurchaseItemListAllAPIView(APIView):
-    """Get all purchase items for dropdown"""
-    
-    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
+    """All variants for dropdown/modal — Redis cached"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        # ✅ CHANGE: request.user.branch → get_effective_branch()
         user_branch = request.user.get_effective_branch()
         if not user_branch:
             return Response({"error": "User branch not found"}, status=400)
 
-        variants = itemvariants.objects.filter(
-            item__branch=user_branch
-        ).select_related("item", "item__unit")
-
-        result = []
-        for variant in variants:
-            item = variant.item
-
-            unit_name = "-"
-            unit_symbol = "pc"
-            unit_supports_fractional = False
-            if item.unit:
-                unit_name = item.unit.name if hasattr(item.unit, 'name') else str(item.unit)
-                unit_symbol = item.unit.symbol if hasattr(item.unit, 'symbol') else item.unit.name
-                unit_supports_fractional = getattr(item.unit, 'supports_fractional', False)
-
-            purchase_price = variant.purchasePrice or 0
-
-            per_unit_price = purchase_price
-            if unit_supports_fractional and variant.opStock and variant.opStock > 0:
-                per_unit_price = purchase_price / variant.opStock
-
-            result.append({
-                "id": variant.id,
-                "itemId": item.id,
-                "itemName": item.itemName,
-                "hsnCode": item.hsnCode or "",
-                "purchasePrice": float(purchase_price),
-                "per_unit_price": float(per_unit_price),
-                "barcode": variant.barcode or "",
-                "size": variant.size or "-",
-                "color": variant.color or "-",
-                "srno": variant.srno or "-",
-                "warrantydate": variant.warrantydate or "-",
-                "unit": unit_symbol,
-                "unit_name": unit_name,
-                "unit_supports_fractional": unit_supports_fractional,
-                "taxSlab": item.taxSlab or "0",
-                "opStock": float(variant.opStock or 0),
-            })
-
-        return Response(result)
+        data = get_branch_variant_data(user_branch)
+        return Response(data["rows"])
 
 
 class BranchItemsAPIView(APIView):
     """Get all items for a branch (dropdown)"""
-    
-    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        # ✅ CHANGE: request.user.branch → get_effective_branch()
         user_branch = request.user.get_effective_branch()
         if not user_branch:
             return Response({"detail": "User branch not found"}, status=404)
 
-        items_list = items.objects.filter(
-            branch=user_branch
-        ).select_related("unit")
+        items_list = items.objects.filter(branch=user_branch).select_related("unit")
 
         result = []
         for item in items_list:
@@ -463,8 +393,6 @@ class BranchItemsAPIView(APIView):
 
 class PurchaseItemTaxAPIView(APIView):
     """Calculate GST for purchase item"""
-    
-    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -474,7 +402,6 @@ class PurchaseItemTaxAPIView(APIView):
         qty = to_decimal(request.data.get("qty"), Decimal('1'))
         discount_percent = to_decimal(request.data.get("discount_percent"), Decimal('0'))
 
-        # ✅ CHANGE: request.user.branch → get_effective_branch()
         branch = request.user.get_effective_branch()
         if not branch:
             return Response({"error": "No branch linked to this user"}, status=400)
@@ -556,201 +483,150 @@ class PurchaseItemTaxAPIView(APIView):
 
 class GstToggleAPIView(APIView):
     """Get/Update GST toggle setting"""
-    
-    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        # ✅ CHANGE: request.user.branch → get_effective_branch()
         branch = request.user.get_effective_branch()
         if not branch:
             return Response({"error": "No branch linked to this user"}, status=400)
 
         settings_obj = setting.objects.filter(branch=branch).first()
-        serializer = SettingSerializers(settings_obj)
-        return Response(serializer.data)
+        return Response(SettingSerializers(settings_obj).data)
 
     def post(self, request):
         gst_toggle = request.data.get("gst_toggle")
 
         if gst_toggle is None:
-            return Response(
-                {"error": "gst_toggle is required"},
-                status=400
-            )
+            return Response({"error": "gst_toggle is required"}, status=400)
 
-        # ✅ CHANGE: request.user.branch → get_effective_branch()
         branch = request.user.get_effective_branch()
         if not branch:
             return Response({"error": "No branch linked to this user"}, status=400)
 
-        setting_obj = (
-            setting.objects
-            .filter(branch=branch)
-            .order_by("-id")
-            .first()
-        )
+        setting_obj = setting.objects.filter(branch=branch).order_by("-id").first()
 
         if not setting_obj:
-            setting_obj = setting.objects.create(
-                branch=branch,
-                gst_toggle=gst_toggle
-            )
+            setting.objects.create(branch=branch, gst_toggle=gst_toggle)
         else:
             setting_obj.gst_toggle = gst_toggle
             setting_obj.save()
 
-        return Response({
-            "gst_toggle": gst_toggle
-        }, status=200)
+        return Response({"gst_toggle": gst_toggle}, status=200)
 
 
 class PurchaseItemSearchAPIView(APIView):
-    """Search purchase items"""
-    
-    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
+    """Search variants — process-memory/Redis cached, DB hit nahi.
+    ?query=...&limit=50   -> text search
+    ?barcode=XXXX         -> exact barcode lookup (scanner), [row] ya []
+    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        search = request.GET.get("query", "").strip()
-        
-        # ✅ CHANGE: request.user.branch → get_effective_branch()
         user_branch = request.user.get_effective_branch()
         if not user_branch:
             return Response({"error": "User branch not found"}, status=400)
 
-        variants_qs = itemvariants.objects.filter(
-            item__branch=user_branch
-        ).select_related("item", "item__unit").distinct()
+        barcode = request.GET.get("barcode", "").strip()
+        if barcode:
+            row = find_by_barcode(user_branch, barcode)
+            return Response([row] if row else [])
 
-        if search:
-            variants_qs = variants_qs.filter(
-                Q(item__itemName__icontains=search) |
-                Q(item__hsnCode__icontains=search) |
-                Q(purchasePrice__icontains=search) |
-                Q(size__icontains=search) |
-                Q(color__icontains=search) |
-                Q(barcode__icontains=search) |
-                Q(srno__icontains=search)
-            ).distinct()
+        search = request.GET.get("query", "").strip()
 
-        result = []
-        for variant in variants_qs:
-            item = variant.item
+        try:
+            limit = int(request.GET.get("limit", 50))   # ?limit=0 = sab results
+        except (TypeError, ValueError):
+            limit = 50
 
-            unit_name = "-"
-            unit_symbol = "pc"
-            unit_supports_fractional = False
-            if item.unit:
-                unit_name = item.unit.name if hasattr(item.unit, 'name') else str(item.unit)
-                unit_symbol = item.unit.symbol if hasattr(item.unit, 'symbol') else item.unit.name
-                unit_supports_fractional = getattr(item.unit, 'supports_fractional', False)
-
-            purchase_price = variant.purchasePrice or 0
-
-            per_unit_price = purchase_price
-            if unit_supports_fractional and variant.opStock and variant.opStock > 0:
-                per_unit_price = purchase_price / variant.opStock
-
-            result.append({
-                "id": variant.id,
-                "itemId": item.id,
-                "itemName": item.itemName,
-                "hsnCode": item.hsnCode or "",
-                "purchasePrice": float(purchase_price),
-                "per_unit_price": float(per_unit_price),
-                "barcode": variant.barcode or "",
-                "size": variant.size or "-",
-                "color": variant.color or "-",
-                "srno": variant.srno or "-",
-                "warrantydate": variant.warrantydate or "-",
-                "unit": unit_symbol,
-                "unit_name": unit_name,
-                "unit_supports_fractional": unit_supports_fractional,
-                "taxSlab": item.taxSlab or "0",
-                "opStock": float(variant.opStock or 0),
-            })
-
-        return Response(result)
+        return Response(search_variants(user_branch, search, limit))
 
 
 class PurchaseCreditBillsAPIView(APIView):
-    """Get purchase credit bills with pending amount"""
-    
-    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
+    """Purchase credit bills with pending amount — fixed ~7 queries (pehle har bill pe 4-5)"""
     permission_classes = [IsAuthenticated]
 
-    def get(self, request):
-        from django.db.models import Q, Sum
-        from decimal import Decimal
-        from pos.models.purchasereturn import PurchaseReturnMaster
-
-        # ✅ CHANGE: request.user.branch → get_effective_branch()
+    def get(self, request): 
         branch = request.user.get_effective_branch()
         if not branch:
             return Response({"error": "No branch linked to this user"}, status=400)
 
         search = request.GET.get('query', '').strip()
 
-        bills = PurchaseMaster.objects.filter(
-            branch=branch,
-            terms__iexact='credit'
-        )
+        bills_qs = PurchaseMaster.objects.filter(
+            branch=branch, terms__iexact='credit'
+        ).select_related("partyName")
 
         if search:
-            bills = bills.filter(
+            bills_qs = bills_qs.filter(
                 Q(billNo__icontains=search) |
                 Q(partyName__account_name__icontains=search)
             )
 
-        bills_data = []
+        bills = list(bills_qs)
+        if not bills:
+            return Response({'type': 'purchase', 'bills': []})
 
-        for bill in bills:
-            total_paid = CashPayment.objects.filter(
-                purchase=bill
-            ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+        bill_ids = [b.id for b in bills]
+        bill_nos = [b.billNo for b in bills]
+        ZERO = Decimal('0')
 
-            total_paid += BankPayment.objects.filter(
-                purchase=bill
-            ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
-
-            all_returns = PurchaseReturnMaster.objects.filter(
-                branch=branch,
-                original_bill_no=bill.billNo,
+        # 1) Payments (cash + bank) — bill-wise total, 2 queries
+        paid = defaultdict(lambda: ZERO)
+        for Model in (CashPayment, BankPayment):
+            rows = (
+                Model.objects.filter(purchase_id__in=bill_ids)
+                .values("purchase")
+                .annotate(t=Sum("amount"))
+                .order_by()
             )
-            total_all_returned = all_returns.aggregate(
-                total=Sum('grand_total')
-            )['total'] or Decimal('0')
+            for r in rows:
+                paid[r["purchase"]] += r["t"] or ZERO
 
-            credit_returns_unsettled = Decimal('0')
+        # 2) Returns — 1 query
+        returns_by_bill = defaultdict(list)
+        for pr in PurchaseReturnMaster.objects.filter(branch=branch, original_bill_no__in=bill_nos):
+            returns_by_bill[pr.original_bill_no].append(pr)
 
-            for pr in all_returns.filter(payment_terms__iexact='credit'):
-                pr_receipts = CashReceipt.objects.filter(
-                    purchase_return=pr
-                ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+        # 3) Credit returns ki receipts — 2 queries
+        credit_return_ids = [
+            pr.id for lst in returns_by_bill.values() for pr in lst
+            if (pr.payment_terms or "").lower() == "credit"
+        ]
+        received = defaultdict(lambda: ZERO)
+        if credit_return_ids:
+            for Model in (CashReceipt, BankReceipt):
+                rows = (
+                    Model.objects.filter(purchase_return_id__in=credit_return_ids)
+                    .values("purchase_return")
+                    .annotate(t=Sum("amount"))
+                    .order_by()
+                )
+                for r in rows:
+                    received[r["purchase_return"]] += r["t"] or ZERO
 
-                pr_receipts += BankReceipt.objects.filter(
-                    purchase_return=pr
-                ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+        bills_data = []
+        for bill in bills:
+            total_paid = paid[bill.id]
+            bill_returns = returns_by_bill.get(bill.billNo, [])
+            total_all_returned = sum((pr.grand_total for pr in bill_returns), ZERO)
 
-                if pr_receipts >= pr.grand_total:
-                    print(f"  PR {pr.return_no}: Fully received ₹{pr_receipts} → Won't reduce pending")
-                else:
-                    unsettled = pr.grand_total - pr_receipts
-                    credit_returns_unsettled += unsettled
-                    print(f"  PR {pr.return_no}: Unsettled ₹{unsettled} (Grand: ₹{pr.grand_total}, Received: ₹{pr_receipts})")
+            credit_returns_unsettled = ZERO
+            for pr in bill_returns:
+                if (pr.payment_terms or "").lower() != "credit":
+                    continue
+                got = received[pr.id]
+                if got < pr.grand_total:
+                    credit_returns_unsettled += pr.grand_total - got
 
             pending_amount = bill.grand_total - total_paid - credit_returns_unsettled
-
-            print(f" PI {bill.billNo}: Grand={bill.grand_total}, Paid={total_paid}, UnsettledCreditReturns={credit_returns_unsettled}, Pending={pending_amount}")
 
             if pending_amount > Decimal('0.005'):
                 bills_data.append({
                     'id': bill.id,
                     'billNo': bill.billNo,
                     'originalBillNo': bill.billNo,
-                    'partyName__account_name': bill.partyName.account_name,
-                    'party_id': bill.partyName.id,
+                    'partyName__account_name': bill.partyName.account_name if bill.partyName else "",
+                    'party_id': bill.partyName.id if bill.partyName else None,
                     'date': bill.date.strftime('%Y-%m-%d'),
                     'grand_total': float(bill.grand_total),
                     'paid_amount': float(total_paid),
@@ -766,8 +642,6 @@ class PurchaseCreditBillsAPIView(APIView):
 
 class PayPurchaseCreditBillCashAPIView(APIView):
     """Pay a purchase credit bill via cash payment (creates PCP)"""
-    
-    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
     permission_classes = [IsAuthenticated]
 
     @transaction.atomic
@@ -777,7 +651,6 @@ class PayPurchaseCreditBillCashAPIView(APIView):
         cash_account_id = data.get('cash_account')
         amount = Decimal(str(data.get('amount', 0)))
 
-        # ✅ CHANGE: request.user.branch → get_effective_branch()
         branch = request.user.get_effective_branch()
         if not branch:
             return Response({"error": "No branch linked to this user"}, status=400)
@@ -791,11 +664,9 @@ class PayPurchaseCreditBillCashAPIView(APIView):
             if purchase_bill.terms.lower() != 'credit':
                 return Response({'error': 'This bill is not a credit bill'}, status=400)
 
-            pcp_voucher = self.generate_cash_payment_voucher(branch)
-
             cash_payment = CashPayment.objects.create(
                 date=data['date'],
-                voucher_no=pcp_voucher,
+                voucher_no=generate_cash_payment_voucher(branch),
                 cash_account_id=cash_account_id,
                 op_account_id=purchase_bill.partyName.id,
                 branch=branch,
@@ -806,8 +677,6 @@ class PayPurchaseCreditBillCashAPIView(APIView):
                 purchase=purchase_bill,
                 created_by=request.user,
             )
-
-            print(f"✅ PCP CREATED: {cash_payment.id} - Voucher: {pcp_voucher}")
 
             return Response({
                 'success': True,
@@ -825,44 +694,9 @@ class PayPurchaseCreditBillCashAPIView(APIView):
         except Exception as e:
             return Response({'error': str(e)}, status=400)
 
-    def generate_cash_payment_voucher(self, branch):
-        from datetime import datetime
-        from pos.models.settings import setting
-
-        settings_obj = setting.objects.filter(branch=branch).first()
-        prefix = getattr(settings_obj, "CP", "CP") if settings_obj else "CP"
-
-        last_voucher = CashPayment.objects.filter(branch=branch).order_by("-id").first()
-
-        last_no = 0
-        if last_voucher and last_voucher.voucher_no:
-            try:
-                parts = last_voucher.voucher_no.split("/")
-                if len(parts) >= 3:
-                    last_no = int(parts[-1])
-            except (ValueError, IndexError):
-                last_no = 0
-
-        now = datetime.now()
-        year = now.year
-        if now.month >= 4:
-            fy_start = year
-            fy_end = year + 1
-        else:
-            fy_start = year - 1
-            fy_end = year
-
-        fy = f"{str(fy_start)[2:]}-{str(fy_end)[2:]}"
-        next_no = str(last_no + 1).zfill(4)
-        voucher_no = f"{prefix}/{fy}/{next_no}"
-
-        return voucher_no
-
 
 class PayPurchaseCreditBillBankAPIView(APIView):
     """Pay a purchase credit bill via bank payment (creates PBP)"""
-    
-    # ✅ KEEP: IsAuthenticated (helper API, no page_key needed)
     permission_classes = [IsAuthenticated]
 
     @transaction.atomic
@@ -873,7 +707,6 @@ class PayPurchaseCreditBillBankAPIView(APIView):
         amount = Decimal(str(data.get('amount', 0)))
         mode = data.get('mode', 'UPI')
 
-        # ✅ CHANGE: request.user.branch → get_effective_branch()
         branch = request.user.get_effective_branch()
         if not branch:
             return Response({"error": "No branch linked to this user"}, status=400)
@@ -887,11 +720,9 @@ class PayPurchaseCreditBillBankAPIView(APIView):
             if purchase_bill.terms.lower() != 'credit':
                 return Response({'error': 'This bill is not a credit bill'}, status=400)
 
-            pbp_voucher = self.generate_bank_payment_voucher(branch)
-
             bank_payment = BankPayment.objects.create(
                 date=data['date'],
-                voucher_no=pbp_voucher,
+                voucher_no=generate_bank_payment_voucher(branch),
                 bank_account_id=bank_account_id,
                 op_account_id=purchase_bill.partyName.id,
                 branch=branch,
@@ -905,8 +736,6 @@ class PayPurchaseCreditBillBankAPIView(APIView):
                 purchase=purchase_bill,
                 created_by=request.user,
             )
-
-            print(f" PBP CREATED: {bank_payment.id} - Voucher: {pbp_voucher} - Type: {bank_payment.type}")
 
             return Response({
                 'success': True,
@@ -923,40 +752,3 @@ class PayPurchaseCreditBillBankAPIView(APIView):
             return Response({'error': 'Purchase bill not found'}, status=404)
         except Exception as e:
             return Response({'error': str(e)}, status=400)
-
-    def generate_cash_payment_voucher(self, branch):
-        """Generate voucher number for Cash Payments (CP and PCP share same sequence)"""
-        from datetime import datetime
-        from pos.models.settings import setting
-        from pos.models.cashpayment import CashPayment
-        
-        settings_obj = setting.objects.filter(branch=branch).first()
-        prefix = getattr(settings_obj, "CP", "CP") if settings_obj else "CP"
-        
-        last_voucher = CashPayment.objects.filter(
-            branch=branch
-        ).order_by("-id").first()
-        
-        last_no = 0
-        if last_voucher and last_voucher.voucher_no:
-            try:
-                parts = last_voucher.voucher_no.split("/")
-                if len(parts) >= 3:
-                    last_no = int(parts[-1])
-            except (ValueError, IndexError):
-                last_no = 0
-        
-        now = datetime.now()
-        year = now.year
-        if now.month >= 4:
-            fy_start = year
-            fy_end = year + 1
-        else:
-            fy_start = year - 1
-            fy_end = year
-        
-        fy = f"{str(fy_start)[2:]}-{str(fy_end)[2:]}"
-        next_no = str(last_no + 1).zfill(4)
-        voucher_no = f"{prefix}/{fy}/{next_no}"
-        
-        return voucher_no

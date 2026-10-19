@@ -117,6 +117,7 @@ class itemvariants(models.Model):
     netValue = models.FloatField(default=0)
     current_stock = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     branchPrice = models.FloatField(default=0)
+    location = models.CharField(max_length=100, blank=True, null=True)      
     
     # Dynamic fields like size, color, etc.
     size = models.CharField(max_length=20, blank=True, null=True)
