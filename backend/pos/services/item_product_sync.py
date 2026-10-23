@@ -78,6 +78,7 @@ class ItemToProductSyncService:
                 full_description=item.full_description or '',
                 product_condition=item.product_condition or 'New',
                 return_policy=item.return_policy or '',
+                return_days=item.return_days,                 # NEW
                 estimated_delivery_time=item.estimated_delivery_time or '',
                 free_shipping=item.free_shipping,
                 description_features=description_features or [],
@@ -233,6 +234,7 @@ class ItemToProductSyncService:
             product.full_description = item.full_description or ''
             product.product_condition = item.product_condition or 'New'
             product.return_policy = item.return_policy or ''
+            product.return_days = item.return_days            # NEW
             product.estimated_delivery_time = item.estimated_delivery_time or ''
             product.free_shipping = item.free_shipping
             product.description_features = description_features or []

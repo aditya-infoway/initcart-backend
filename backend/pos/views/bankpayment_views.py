@@ -96,6 +96,24 @@ class BankPaymentCreateView(APIView):
                     return Response({'error': 'Branch not found'}, status=404)
 
         payments = BankPayment.objects.filter(branch=branch).order_by("-date", "-created_at")
+
+        # ✅ NEW: Server-side search (voucher_no, bank_account name, party name, mode, narration)
+        search = request.GET.get('search', '').strip()
+        if search:
+            from django.db.models import Q
+            payments = payments.filter(
+                Q(voucher_no__icontains=search) |
+                Q(bank_account__account_name__icontains=search) |
+                Q(op_account__account_name__icontains=search) |
+                Q(mode__icontains=search) |
+                Q(narration__icontains=search)
+            )
+
+        # ✅ NEW: Server-side type filter (BP / PBP / SRBP / STBP / STRBP)
+        type_param = request.GET.get('type', '').strip()
+        if type_param:
+            payments = payments.filter(type=type_param)
+
         paginator = StandardResultsSetPagination()
         paginated_payments = paginator.paginate_queryset(payments, request)
         serializer = BankPaymentSerializer(paginated_payments, many=True)

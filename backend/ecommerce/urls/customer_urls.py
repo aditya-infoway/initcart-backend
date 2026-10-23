@@ -11,7 +11,8 @@ from ecommerce.views.customer_views import (
     ChangePasswordView,
     VerifyResetTokenView,
     TestEmailView,
-    ApplyForAgentView
+    ApplyForAgentView,
+    DeleteAccountView,
 )
 
 urlpatterns = [
@@ -30,6 +31,9 @@ urlpatterns = [
     path('customer/reset-password/', ResetPasswordView.as_view(), name='reset-password'),
     path('customer/change-password/', ChangePasswordView.as_view(), name='change-password'),
     path('customer/verify-reset-token/', VerifyResetTokenView.as_view(), name='verify-reset-token'),
+
+    #account deletion 
+    path("customer/delete-account/", DeleteAccountView.as_view(), name="customer-delete-account"),
     
     path(
         "customer/activate-branch-customer/",

@@ -37,6 +37,8 @@ from pos.serializers.branch_serializers import (
 # Permissions
 from ecommerce.permissions import IsSuperAdmin, IsSuperAdminOrPagePermittedEmployee
 
+from pos.utils.pagination import StandardReportPagination
+
 User = get_user_model()
 
 #  BRANCH VIEWSET (CRUD + Admin Create)
@@ -52,6 +54,8 @@ class BranchViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     search_fields = ["branch_name", "owner_name", "email", "phone", "city", "state"]
     filterset_fields = ["branch_type", "status"]
+
+    pagination_class = StandardReportPagination 
 
     def get_serializer_class(self):
         if self.action == "create":
@@ -86,28 +90,32 @@ class BranchViewSet(viewsets.ModelViewSet):
 
         return Response(serializer.errors, status=400)
 
-    #List Branches 
+        #List Branches 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
         
         ownership_type = request.query_params.get('ownership_type')
         if ownership_type:
             queryset = queryset.filter(ownership_type=ownership_type)
-        # Pagination
+        
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response({
-                "success": True,
-                "data": serializer.data,
-                "count": queryset.count()
-            })
+            return self.get_paginated_response(serializer.data)
         
+        # fallback (agar pagination_class hataya to) — same shape maintain karo
         serializer = self.get_serializer(queryset, many=True)
         return Response({
             "success": True,
             "data": serializer.data,
-            "count": queryset.count()
+            "pagination": {
+                "count": queryset.count(),
+                "total_pages": 1,
+                "current_page": 1,
+                "page_size": queryset.count(),
+                "has_next": False,
+                "has_previous": False,
+            }
         })
 
     #  Retrieve Branch

@@ -93,6 +93,23 @@ class CashReceiptCreateView(APIView):
                     return Response({'error': 'Branch not found'}, status=404)
 
         receipts = CashReceipt.objects.filter(branch=branch).order_by("-date", "-created_at")
+
+        # ✅ NEW: Server-side search
+        search = request.GET.get('search', '').strip()
+        if search:
+            from django.db.models import Q
+            receipts = receipts.filter(
+                Q(voucher_no__icontains=search) |
+                Q(cash_account__account_name__icontains=search) |
+                Q(op_account__account_name__icontains=search) |
+                Q(narration__icontains=search)
+            )
+
+        # ✅ NEW: Server-side type filter (CR / SCR / PRCR / STCR / STRCR / B2BSCR)
+        type_param = request.GET.get('type', '').strip()
+        if type_param:
+            receipts = receipts.filter(type=type_param)
+
         paginator = StandardResultsSetPagination()
         paginated_receipts = paginator.paginate_queryset(receipts, request)
         serializer = CashReceiptSerializer(paginated_receipts, many=True)

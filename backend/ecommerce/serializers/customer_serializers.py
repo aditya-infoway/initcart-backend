@@ -154,6 +154,9 @@ class CustomerLoginSerializer(serializers.Serializer):
         if user.role == "superadmin" or user.user_type == "superadmin":
             raise serializers.ValidationError("Invalid username/email/phone or password.")
 
+        if CustomerProfile.objects.filter(user=user, is_deleted=True).exists():
+            raise serializers.ValidationError("This account has been deleted.")
+
         # ── Role check ────────────────────────────────────────────────────
         if not user.is_customer():
             if user.is_branch():

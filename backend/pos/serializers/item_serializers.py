@@ -451,7 +451,7 @@ class ItemWithVariantsSerializer(CreatedByReadMixin, serializers.ModelSerializer
             "thumbnail_image",
             "gallery",
             "product_condition",
-            "return_policy",
+            "return_policy", "return_days",
             "estimated_delivery_time",
             "free_shipping",
             "warranty_available",
@@ -467,6 +467,7 @@ class ItemWithVariantsSerializer(CreatedByReadMixin, serializers.ModelSerializer
             "updated_at",
             "created_by",
             "created_by_name",
+
         ]
 
 
@@ -524,6 +525,7 @@ class AdminWebsiteItemListSerializer(CreatedByReadMixin, serializers.ModelSerial
     final_price = serializers.SerializerMethodField()
     original_price = serializers.SerializerMethodField()
     
+    
     # Category fields as strings
     category = serializers.SerializerMethodField()
     subCategory = serializers.SerializerMethodField()
@@ -542,6 +544,7 @@ class AdminWebsiteItemListSerializer(CreatedByReadMixin, serializers.ModelSerial
     
     # Shipping fields
     return_policy = serializers.CharField(read_only=True)
+    return_days = serializers.IntegerField(read_only=True)
     estimated_delivery_time = serializers.CharField(read_only=True)
     free_shipping = serializers.BooleanField(read_only=True)
     product_condition = serializers.CharField(read_only=True)
@@ -787,6 +790,7 @@ class ApproveItemToProductSerializer(serializers.ModelSerializer):
                         full_description=instance.full_description or '',
                         product_condition=instance.product_condition or 'New',
                         return_policy=instance.return_policy or '',
+                        return_days=instance.return_days, 
                         estimated_delivery_time=instance.estimated_delivery_time or '',
                         free_shipping=instance.free_shipping,
                         description_features=description_features,
@@ -868,6 +872,7 @@ class ApproveItemToProductSerializer(serializers.ModelSerializer):
                 product.full_description = instance.full_description or ''
                 product.product_condition = instance.product_condition or 'New'
                 product.return_policy = instance.return_policy or ''
+                product.return_days = instance.return_days
                 product.estimated_delivery_time = instance.estimated_delivery_time or ''
                 product.free_shipping = instance.free_shipping
                 product.description_features = description_features

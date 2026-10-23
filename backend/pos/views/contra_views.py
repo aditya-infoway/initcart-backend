@@ -24,16 +24,51 @@ class ContraCreateView(APIView):
         return user.get_effective_branch()
 
     def get(self, request):
-        branch = request.user.get_effective_branch()
+        user = request.user
+        is_superadmin = user.role == 'superadmin'
+        is_employee = user.role == 'employee'
+
+        branch = user.get_effective_branch()
         if not branch:
             return Response({
                 "success": False,
                 "error": "No branch linked to this user"
             }, status=status.HTTP_400_BAD_REQUEST)
-            
+
+        # ✅ Employee ko bhi branch_id override allow (jaise baki modules me)
+        branch_id_param = request.GET.get('branch_id')
+        if branch_id_param:
+            if is_superadmin or is_employee:
+                from pos.models.branch import Branch
+                try:
+                    branch = Branch.objects.get(id=branch_id_param)
+                except Branch.DoesNotExist:
+                    return Response({'error': 'Branch not found'}, status=404)
+
         payments = Contra.objects.filter(branch=branch).order_by('-created_at')
-        serializer = ContraSerializer(payments, many=True)
-        return Response(serializer.data)
+
+        # ✅ NEW: Server-side search
+        search = request.GET.get('search', '').strip()
+        if search:
+            from django.db.models import Q
+            payments = payments.filter(
+                Q(voucher_no__icontains=search) |
+                Q(cash_account__account_name__icontains=search) |
+                Q(op_account__account_name__icontains=search) |
+                Q(narration__icontains=search)
+            )
+
+        # ✅ NEW: Server-side type filter
+        type_param = request.GET.get('type', '').strip()
+        if type_param:
+            payments = payments.filter(type=type_param)
+
+        # ✅ NEW: Pagination
+        from pos.utils.pagination import StandardResultsSetPagination
+        paginator = StandardResultsSetPagination()
+        page = paginator.paginate_queryset(payments, request)
+        serializer = ContraSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
 
     @transaction.atomic
     def post(self, request):

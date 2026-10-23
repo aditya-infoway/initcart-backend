@@ -77,7 +77,6 @@ class CashPaymentCreateView(APIView):
         is_superadmin = user.role == 'superadmin'
         is_employee = user.role == 'employee'  # ✅ ADD
 
-        # ✅ CHANGE: Branch selection logic → get_effective_branch()
         branch = user.get_effective_branch()
         if not branch:
             return Response({
@@ -85,10 +84,9 @@ class CashPaymentCreateView(APIView):
                 "error": "No branch linked to this user"
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # ✅ FIX: Employee ko bhi branch_id override allow karo
         branch_id_param = request.GET.get('branch_id')
         if branch_id_param:
-            if is_superadmin or is_employee:  # ✅ Employee allow
+            if is_superadmin or is_employee:
                 from pos.models.branch import Branch
                 try:
                     branch = Branch.objects.get(id=branch_id_param)
@@ -96,6 +94,23 @@ class CashPaymentCreateView(APIView):
                     return Response({'error': 'Branch not found'}, status=404)
 
         payments = CashPayment.objects.filter(branch=branch).order_by("-date", "-created_at")
+
+        # ✅ NEW: Server-side search
+        search = request.GET.get('search', '').strip()
+        if search:
+            from django.db.models import Q
+            payments = payments.filter(
+                Q(voucher_no__icontains=search) |
+                Q(cash_account__account_name__icontains=search) |
+                Q(op_account__account_name__icontains=search) |
+                Q(narration__icontains=search)
+            )
+
+        # ✅ NEW: Server-side type filter (CP / PCP / SRCP / STCP / STRCP)
+        type_param = request.GET.get('type', '').strip()
+        if type_param:
+            payments = payments.filter(type=type_param)
+
         paginator = StandardResultsSetPagination()
         paginated_payments = paginator.paginate_queryset(payments, request)
         serializer = CashPaymentSerializer(paginated_payments, many=True)

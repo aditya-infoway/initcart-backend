@@ -126,6 +126,8 @@ class OrderItemSerializer(serializers.ModelSerializer):
     vendor_details = serializers.SerializerMethodField()
     variant_image = serializers.SerializerMethodField()
     tax = serializers.SerializerMethodField()
+    return_days = serializers.SerializerMethodField()
+    return_deadline = serializers.SerializerMethodField()
 
     # ADD THESE 3
     returned_quantity = serializers.IntegerField(read_only=True)
@@ -168,8 +170,21 @@ class OrderItemSerializer(serializers.ModelSerializer):
             'variant_image',
             'tax',
             'delivered_at',
+
+            # RETURN POLICY
+            'return_days',
+            'return_deadline',
         ]
-    
+
+
+    def get_return_days(self, obj):
+        from ecommerce.utils.return_helpers import get_return_days
+        return get_return_days(obj)
+
+    def get_return_deadline(self, obj):
+        from ecommerce.utils.return_helpers import get_return_deadline
+        d = get_return_deadline(obj)
+        return d.isoformat() if d else None
     def get_tax(self, obj):
         if obj.product_stock:
             return obj.product_stock.tax

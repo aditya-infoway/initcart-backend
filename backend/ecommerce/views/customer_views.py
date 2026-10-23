@@ -24,14 +24,17 @@ from ecommerce.serializers.customer_serializers import (
     ChangePasswordSerializer,
 )
 from ecommerce.models.customer import CustomerProfile
+from django.db.models import Q
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
+from django.utils import timezone
 from django.contrib.auth.tokens import default_token_generator
 from mlm.models.agent import Agent
 from mlm.models.mlm_settings import MLMSettings
 from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
+from ecommerce.models.order import Order
 
 
 # ─── helpers ────────────────────────────────────────────────────────────────
@@ -696,4 +699,67 @@ class TestEmailView(APIView):
             return Response({"success": True, "message": f"Test email sent to {email}", "email": email})
         except Exception as e:
             return Response({"success": False, "message": f"Error: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+class DeleteAccountView(APIView):
+    """
+    POST /ecommerce/customer/delete-account/
+    Replace the old DeleteAccountView in customer_views.py with this one.
+
+    Delete tab block hoga jab koi "live" order ho:
+      - order delivered nahi hua  (cancelled / refunded / failed-payment orders ignore)
+      - ya Razorpay order ka payment pending hai (delivered hone ke baad bhi)
+    COD order delivered ho gaya to uska payment_status 'pending' hone par bhi block NAHI hoga.
+    Response me batata hai kaun sa order kyun block kar raha hai.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+
+        if not user.is_customer():
+            return Response({"success": False, "message": "Access denied."},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        profile, _ = _ensure_customer_profile(user)
+        if profile.is_deleted:
+            return Response({"success": False, "message": "This account is already deleted."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        blocking_orders = (
+            Order.objects.filter(customer=user)
+            .exclude(order_status__in=["cancelled", "refunded"])
+            .exclude(payment_status="failed")
+            .filter(
+                ~Q(order_status="delivered")
+                | Q(payment_method="razorpay", payment_status="pending")
+            )
+        )
+
+        if blocking_orders.exists():
+            details = [
+                {
+                    "order_number": o.order_number,
+                    "order_status": o.order_status,
+                    "payment_status": o.payment_status,
+                    "payment_method": o.payment_method,
+                }
+                for o in blocking_orders[:10]
+            ]
+            numbers = ", ".join(d["order_number"] for d in details)
+            return Response(
+                {
+                    "success": False,
+                    "message": f"Account delete nahi ho sakta. Ye orders abhi pending hain: {numbers}",
+                    "blocking_orders": details,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        profile.is_deleted = True
+        profile.deleted_at = timezone.now()
+        profile.save(update_fields=["is_deleted", "deleted_at"])
+
+        return Response({"success": True, "message": "Your account has been deleted."})    
 

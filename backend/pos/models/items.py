@@ -56,6 +56,7 @@ class items(CreatedByMixin, models.Model):
     # Product meta
     product_condition = models.CharField(max_length=120, blank=True, null=True, default='New')
     return_policy = models.CharField(max_length=300, blank=True, null=True)
+    return_days = models.PositiveIntegerField(default=7) 
     estimated_delivery_time = models.CharField(max_length=120, blank=True, null=True)
     free_shipping = models.BooleanField(default=False)   
     

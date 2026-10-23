@@ -43,6 +43,10 @@ class CustomerProfile(models.Model):
     agent_documents_uploaded    = models.BooleanField(default=False)
     agent_documents_uploaded_at = models.DateTimeField(null=True, blank=True)
 
+    #account deletion
+    is_deleted = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+
     # Temp document storage
     passport_photo_temp = models.ImageField(upload_to="temp/agents/photos/", null=True, blank=True)
     id_proof_temp       = models.FileField(upload_to="temp/agents/idproof/",  null=True, blank=True)

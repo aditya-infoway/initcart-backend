@@ -105,7 +105,9 @@ class OrderItem(models.Model):
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='items')
     vendor = models.ForeignKey(Vendor, on_delete=models.CASCADE, related_name='order_items')
     product = models.ForeignKey(Product, on_delete=models.CASCADE)
-    product_stock = models.ForeignKey(ProductStock, on_delete=models.CASCADE, null=True, blank=True)
+    product_stock = models.ForeignKey(
+    ProductStock, on_delete=models.SET_NULL, null=True, blank=True
+)
     final_price = models.DecimalField(
     max_digits=10,
     decimal_places=2,
@@ -113,6 +115,7 @@ class OrderItem(models.Model):
     )
 
     returned_quantity = models.PositiveIntegerField(default=0)
+    return_days = models.PositiveIntegerField(default=7)
     
     vendor_receivable = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     platform_profit = models.DecimalField(max_digits=10, decimal_places=2, default=0)

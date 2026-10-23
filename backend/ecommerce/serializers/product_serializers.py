@@ -91,7 +91,9 @@ class ProductSerializer(serializers.ModelSerializer):
             #   NEW FIELDS ADDED - description, specs, warranty, platform
             "description_features", "specifications", 
             "warranty_available", "warranty_period", "warranty_type", "warranty_description",
-            "platform_charge_info"  #   NEW
+            "platform_charge_info",  #   NEW
+
+            "manufacturing_date", "expiry_date", "return_policy", "return_days",
         ]
         read_only_fields = ["vendor", "status", "created_at", "updated_at"]
 
@@ -242,9 +244,9 @@ class ProductSerializer(serializers.ModelSerializer):
                 manufacturing_date=validated_data.get('manufacturing_date'),
                 expiry_date=validated_data.get('expiry_date'),
                 return_policy=validated_data.get('return_policy', ''),
+                return_days=validated_data.get('return_days', 7),
                 estimated_delivery_time=validated_data.get('estimated_delivery_time', ''),
                 free_shipping=validated_data.get('free_shipping', False),
-            
                 description_features=validated_data.get('description_features', []),
                 specifications=validated_data.get('specifications', []),
                 warranty_available=validated_data.get('warranty_available', False),

@@ -67,7 +67,12 @@ class Product(models.Model):
     product_condition = models.CharField(max_length=120, blank=True, null=True)
     manufacturing_date = models.DateField(blank=True, null=True)
     expiry_date = models.DateField(blank=True, null=True)
-    return_policy = models.CharField(max_length=300, blank=True, null=True)
+    return_policy = models.CharField(max_length=300, blank=True, null=True)  # text description
+
+    return_days = models.PositiveIntegerField(
+        default=7,
+        help_text="Delivered ke baad kitne din return allowed. 0 = No return."
+    )
     estimated_delivery_time = models.CharField(max_length=120, blank=True, null=True)
     
     # NEW FIELDS
