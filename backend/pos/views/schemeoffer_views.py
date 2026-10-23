@@ -68,7 +68,6 @@ class SchemeOfferListCreateAPIView(APIView):
         if is_main_branch_accessible(user):
             schemes = SchemeOffer.objects.all()
         else:
-            # ✅ CHANGE: _get_user_branch() → get_effective_branch()
             branch = user.get_effective_branch()
             if not branch:
                 return Response({
@@ -79,7 +78,30 @@ class SchemeOfferListCreateAPIView(APIView):
                 Q(availability="all") | Q(branches=branch)
             ).distinct()
 
-        return Response(SchemeOfferSerializer(schemes, many=True).data)
+        # ✅ NEW: Server-side search (offer_name, branch_names approx)
+        search = request.GET.get('search', '').strip()
+        if search:
+            schemes = schemes.filter(
+                Q(offer_name__icontains=search)
+                | Q(branches__branch_name__icontains=search)
+            ).distinct()
+
+        # ✅ NEW: Server-side status filter
+        status_param = request.GET.get('status', '').strip()
+        if status_param:
+            schemes = schemes.filter(status=status_param)
+
+        # ✅ NEW: Server-side availability filter
+        availability_param = request.GET.get('availability', '').strip()
+        if availability_param:
+            schemes = schemes.filter(availability=availability_param)
+
+        # ✅ NEW: Pagination
+        from pos.utils.pagination import StandardResultsSetPagination
+        paginator = StandardResultsSetPagination()
+        page = paginator.paginate_queryset(schemes, request)
+        serializer = SchemeOfferSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
 
     def post(self, request):
         user = request.user
@@ -295,16 +317,42 @@ class BranchSchemeListAPIView(APIView):
     page_key = "/SchemeOffer"  # ✅ ADD: Frontend route
 
     def get(self, request):
-        # ✅ CHANGE: _get_user_branch() → get_effective_branch()
-        branch = request.user.get_effective_branch()
-        if not branch:
-            return Response({
-                "success": False,
-                "error": "No branch linked to this user"
-            }, status=400)
+        user = request.user
+        
+        if is_main_branch_accessible(user):
+            schemes = SchemeOffer.objects.all()
+        else:
+            branch = user.get_effective_branch()
+            if not branch:
+                return Response({
+                    "success": False,
+                    "error": "No branch linked to this user"
+                }, status=400)
+            schemes = SchemeOffer.objects.filter(
+                Q(availability="all") | Q(branches=branch)
+            ).distinct()
 
-        schemes = SchemeOffer.objects.filter(
-            Q(availability="all") | Q(branches=branch)
-        ).distinct()
+        # ✅ NEW: Server-side search (offer_name, branch_names approx)
+        search = request.GET.get('search', '').strip()
+        if search:
+            schemes = schemes.filter(
+                Q(offer_name__icontains=search)
+                | Q(branches__branch_name__icontains=search)
+            ).distinct()
 
-        return Response(SchemeOfferSerializer(schemes, many=True).data)
+        # ✅ NEW: Server-side status filter
+        status_param = request.GET.get('status', '').strip()
+        if status_param:
+            schemes = schemes.filter(status=status_param)
+
+        # ✅ NEW: Server-side availability filter
+        availability_param = request.GET.get('availability', '').strip()    
+        if availability_param:
+            schemes = schemes.filter(availability=availability_param)
+
+        # ✅ NEW: Pagination
+        from pos.utils.pagination import StandardResultsSetPagination
+        paginator = StandardResultsSetPagination()
+        page = paginator.paginate_queryset(schemes, request)
+        serializer = SchemeOfferSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)

@@ -637,6 +637,7 @@ class CheckoutAPIView(APIView):
 
                             vendor_receivable=vendor_receivable,
                             platform_profit=platform_profit * cart_item.quantity,
+                            return_days=product_stock.product.return_days,
                         )
                         from django.db.models import Sum
 
@@ -1040,7 +1041,8 @@ class CheckoutAPIView(APIView):
                             total_price=item_subtotal,
 
                             vendor_receivable=vendor_receivable,
-                            platform_profit=platform_profit * cart_item.quantity
+                            platform_profit=platform_profit * cart_item.quantity,
+                            return_days=product_stock.product.return_days,
                         )
                         
                         if campaign_data and hasattr(order_item, 'original_price'):

@@ -117,7 +117,7 @@ def distribute_pos_profit(
                 from mlm.models.agent import Agent
                 agent = Agent.objects.get(user=purchaser_user, status="approved")
                 agent.add_sales(total_sale_amount)  # ✅ Grand total
-                print(f"  ✅ Purchaser {agent.full_name} total_sales: +₹{total_sale_amount}")
+                print(f"  Purchaser {agent.full_name} total_sales: +₹{total_sale_amount}")
             except Agent.DoesNotExist:
                 pass
         
@@ -126,10 +126,10 @@ def distribute_pos_profit(
     # ── CASE 2: Walk-in (no referral code) ──────────────────────────────
     # ⚠️ Walk-in mein total_sales UPDATE NAHI HOGI
     if walk_in_toggle:
-        print("\n  🚶 Mode: Walk-in Simple 90/10 (toggle ON)")
+     
         return _walkin_simple_split(pos_sale, branch_user, total_profit)
     else:
-        print("\n  🚶 Mode: Walk-in Config % (toggle OFF)")
+       
         return _walkin_config_split(pos_sale, branch_user, total_profit)
 
 

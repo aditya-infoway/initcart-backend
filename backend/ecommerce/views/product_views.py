@@ -82,22 +82,26 @@ class AdminProductListAPI(generics.ListAPIView):
 class AdminApproveProductAPI(generics.UpdateAPIView):
     queryset = Product.objects.all()
     serializer_class = ProductSerializer
-    permission_classes = [permissions.IsAuthenticated, IsSuperAdmin] 
+    permission_classes = [permissions.IsAuthenticated, IsSuperAdmin]
     authentication_classes = [JWTAuthentication, SessionAuthentication]
 
     def patch(self, request, *args, **kwargs):
         product = self.get_object()
         status_val = request.data.get("status")
-        
+
         if status_val not in ["approved", "rejected"]:
             return Response(
-                {"error": "Invalid status. Use 'approved' or 'rejected'."}, 
+                {"error": "Invalid status. Use 'approved' or 'rejected'."},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         product.status = status_val
         product.save()
-        
+
+        # POS item ka website_status bhi sync karo (Website Items page yehi dikhata hai)
+        from pos.models.items import items as PosItem
+        PosItem.objects.filter(linked_product=product).update(website_status=status_val)
+
         return Response({
             "message": f"Product {status_val} successfully",
             "product_id": product.id,

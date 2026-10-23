@@ -22,7 +22,8 @@ from ecommerce.permissions import IsSuperAdminOrBranchOrPagePermittedEmployee
 # ─────────────────────────────────────────────────────────────────────────────
 
 class BankReceiptCreateView(APIView):
-    """Create and list bank receipts (BR, SBR, PRBR, STBR, STRBR, B2BSBR)"""
+    """Create and list bank receipts (BR, SBR, PRBR, STBR, STRBR, B2BSBR)
+    """
     
     # ✅ CHANGE: IsAuthenticated → IsSuperAdminOrBranchOrPagePermittedEmployee
     permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]

@@ -22,7 +22,10 @@ class EmployeeViewSet(viewsets.ModelViewSet):
     parser_classes = [JSONParser, FormParser, MultiPartParser]
 
     def get_queryset(self):
-        branch = getattr(self.request.user, 'branch', None)
+        # ✅ get_effective_branch() use karo (employee/employee-branch support ke liye)
+        branch = self.request.user.get_effective_branch() if hasattr(self.request.user, 'get_effective_branch') else getattr(self.request.user, 'branch', None)
+        if not branch:
+            return Employee.objects.none()
         return Employee.objects.filter(branch=branch).order_by('-created_at')
 
     def get_serializer_class(self):
@@ -51,8 +54,25 @@ class EmployeeViewSet(viewsets.ModelViewSet):
 
     def list(self, request, *args, **kwargs):
         qs = self.get_queryset()
-        serializer = self.get_serializer(qs, many=True)
-        return Response({"success": True, "data": serializer.data})
+
+        # ✅ Server-side search (name, mobile, email, city, department)
+        search = request.query_params.get('search', '').strip()
+        if search:
+            from django.db.models import Q
+            qs = qs.filter(
+                Q(full_name__icontains=search)
+                | Q(mobile__icontains=search)
+                | Q(email__icontains=search)
+                | Q(city__icontains=search)
+                | Q(department__icontains=search)
+            )
+
+        # ✅ Pagination
+        from pos.utils.pagination import StandardResultsSetPagination
+        paginator = StandardResultsSetPagination()
+        page = paginator.paginate_queryset(qs, request)
+        serializer = self.get_serializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
 
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()

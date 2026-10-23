@@ -115,8 +115,6 @@ class WebsiteItemDetailAPI(APIView):
             ).prefetch_related('variants').get(id=pk, branch=branch)
             serializer = ItemWithVariantsSerializer(item)
             
-            # Log for debugging
-            print(f"🔍 Item data for {pk}: {serializer.data}")
             
             # Return data in the format frontend expects
             return Response({
@@ -166,30 +164,19 @@ class UpdateWebsiteItemAPI(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
         
-        print(f"\n{'='*60}")
-        print(f"📥 UPDATING ITEM {pk}: {item.itemName}")
-        print(f"{'='*60}")
-        
-        # Debug: Print all incoming data
-        print("📋 REQUEST DATA:")
-        for key, value in request.data.items():
-            print(f"  {key}: {str(value)[:100]}...")
-        
         # If item was approved and now being edited, set status to pending
         original_status = item.website_status
         if original_status == 'approved':
             item.website_status = 'pending'
-            print(f"🔄 Status changed to pending")
         
         # ========== HANDLE IMAGES ==========
         
         if 'main_image' in request.FILES:
             item.main_image = request.FILES['main_image']
-            print(f"✅ Updated main_image")
-        
+          
         if 'thumbnail_image' in request.FILES:
             item.thumbnail_image = request.FILES['thumbnail_image']
-            print(f"✅ Updated thumbnail_image")
+            
         
         # Handle variant images
         for key in request.FILES:
@@ -201,7 +188,7 @@ class UpdateWebsiteItemAPI(APIView):
                         variant = variants[variant_index]
                         variant.variant_image = request.FILES[key]
                         variant.save()
-                        print(f"✅ Updated variant {variant_index} image")
+                        
                 except (ValueError, IndexError):
                     pass
         
@@ -218,7 +205,7 @@ class UpdateWebsiteItemAPI(APIView):
                 filename = f"items/gallery/{item.id}_{timestamp}_{img.name}"
                 saved_path = default_storage.save(filename, ContentFile(img.read()))
                 existing_gallery.append(saved_path)
-                print(f"✅ Saved gallery image: {saved_path}")
+                
             
             item.gallery = existing_gallery
         
@@ -239,7 +226,7 @@ class UpdateWebsiteItemAPI(APIView):
                     item.gallery = cleaned_urls
                     print(f"📸 Keeping {len(cleaned_urls)} existing gallery images")
                 except json.JSONDecodeError as e:
-                    print(f"⚠️ Error parsing existing_gallery_urls: {e}")
+                    print(f" {e}")
         
         # ========== HANDLE TEXT FIELDS (CRITICAL) ==========
         
@@ -272,6 +259,14 @@ class UpdateWebsiteItemAPI(APIView):
             value = request.data['return_policy']
             item.return_policy = str(value).strip() if value and value != 'null' else ''
             print(f"✅ return_policy: '{item.return_policy[:50] if item.return_policy else 'EMPTY'}'")
+
+        # Return Days
+        if 'return_days' in request.data:
+            try:
+                days = int(request.data['return_days'])
+                item.return_days = max(0, days)
+            except (ValueError, TypeError):
+                pass
         
         # Estimated Delivery Time
         if 'estimated_delivery_time' in request.data:
