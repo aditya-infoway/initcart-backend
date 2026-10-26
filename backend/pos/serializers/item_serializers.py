@@ -562,6 +562,7 @@ class AdminWebsiteItemListSerializer(CreatedByReadMixin, serializers.ModelSerial
             'short_description', 'full_description', 'description_features',
             'specifications', 'warranty_available', 'warranty_period',
             'warranty_type', 'warranty_description', 'return_policy',
+            'return_days', 
             'estimated_delivery_time', 'free_shipping', 'product_condition',
             'variants', "created_by", "created_by_name",
         ]
