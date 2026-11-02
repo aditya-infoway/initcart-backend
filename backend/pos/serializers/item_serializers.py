@@ -599,7 +599,36 @@ class AdminWebsiteItemListSerializer(CreatedByReadMixin, serializers.ModelSerial
         if obj.c_subCategory:
             return obj.c_subCategory.name
         return obj.subCategory or None
-    
+
+
+class ItemListLiteSerializer(ItemWithVariantsSerializer):
+    """
+    Items list page ke liye halka serializer.
+    Variants aur heavy fields (descriptions, gallery, specifications) nahi bhejta,
+    kyunki list page unhe use nahi karta. Variants "View" par alag API se aate hain.
+    """
+    class Meta(ItemWithVariantsSerializer.Meta):
+        fields = [
+            "id",
+            "entry_type",
+            "itemName",
+            "branch_name",
+            "group",
+            "unit",
+            "hsnCode",
+            "taxSlab",
+            "brand",
+            "category",
+            "subCategory",
+            "subsubCategory",
+            "website_display",
+            "website_status",
+            "created_at",
+            "updated_at",
+            "created_by",
+            "created_by_name",
+        ]
+
 class WebsiteItemListSerializer(CreatedByReadMixin, serializers.ModelSerializer):
     branch_name = serializers.CharField(source='branch.branch_name', read_only=True)
     variants_count = serializers.SerializerMethodField()
@@ -733,10 +762,6 @@ class ApproveItemToProductSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         new_status = validated_data.get('website_status', instance.website_status)
         
-        print(f"🔄 === APPROVAL PROCESS STARTED ===")
-        print(f"Item: {instance.id} - {instance.itemName}")
-        print(f"Current status: {instance.website_status} -> New status: {new_status}")
-        print(f"Has linked product: {instance.linked_product is not None}")
         
         if new_status == 'approved':
             # Case 1: First time approval - no product exists

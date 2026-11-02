@@ -110,7 +110,7 @@ class itemvariants(models.Model):
     purchasePrice = models.FloatField(default=0, validators=[MinValueValidator])
     salesPrice = models.FloatField(default=0, validators=[MinValueValidator])
     mrp = models.FloatField(default=0, validators=[MinValueValidator])
-    barcode = models.CharField(max_length=100, blank=True, null=True)
+    barcode = models.CharField(max_length=100, blank=True, null=True, db_index=True)
     opStock = models.IntegerField(default=0,validators=[MinValueValidator(0)])
     basicAmount = models.FloatField(default=0)
     discountAmount = models.FloatField(default=0)
