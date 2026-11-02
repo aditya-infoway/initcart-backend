@@ -86,9 +86,9 @@ class SalesMaster(CreatedByMixin, models.Model):
         Account, on_delete=models.SET_NULL, null=True, blank=True, related_name="case_sales"
     )
     dueDate = models.DateField(blank=True, null=True)
-    frightcharge = models.DecimalField(default=0, max_digits=5, decimal_places=2)
-    otherexpnse = models.DecimalField(default=0, max_digits=5, decimal_places=2)    
-    roundamount = models.DecimalField(default=0, max_digits=5, decimal_places=2)
+    frightcharge = models.DecimalField(default=0, max_digits=12, decimal_places=2)
+    otherexpnse = models.DecimalField(default=0, max_digits=12, decimal_places=2)    
+    roundamount = models.DecimalField(default=0, max_digits=12, decimal_places=2)
     is_cancelled = models.BooleanField(default=False)
     cancelled_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -122,12 +122,6 @@ class SalesMaster(CreatedByMixin, models.Model):
         if amount == 0:
             return
 
-        print(f"\n{'='*50}")
-        print(f" UPDATE BALANCE CALLED")
-        print(f"Account: {account.account_name} (ID: {account.id})")
-        print(f"Current Balance: {account.current_balance} {account.current_drcr}")
-        print(f"Transaction: {transaction_type} of ₹{amount}")
-        print(f"{'='*50}")
 
         if transaction_type == "Dr":
             if account.current_drcr == "Dr":
@@ -141,38 +135,35 @@ class SalesMaster(CreatedByMixin, models.Model):
                 if account.current_balance > amount:
                     old_balance = account.current_balance
                     account.current_balance -= amount
-                    print(f" Cr reduction: {old_balance} - {amount} = {account.current_balance} Cr")
                 elif account.current_balance < amount:
                     # Flip from Cr to Dr
                     old_balance = account.current_balance
                     account.current_balance = amount - account.current_balance
                     account.current_drcr = "Dr"
-                    print(f"✅ Cr→Dr flip: {old_balance} Cr → {account.current_balance} Dr")
+                   
                 else:  # Equal
                     account.current_balance = Decimal("0.00")
-                    print(f"✅ Settled to 0")
+                    
         
         elif transaction_type == "Cr":
             if account.current_drcr == "Cr":
                 old_balance = account.current_balance
                 account.current_balance += amount
-                print(f"✅ Cr + Cr: {old_balance} + {amount} = {account.current_balance} Cr")
+                
             elif account.current_drcr == "Dr":
                 if account.current_balance > amount:
                     old_balance = account.current_balance
                     account.current_balance -= amount
-                    print(f"✅ Dr reduction: {old_balance} - {amount} = {account.current_balance} Dr")
+                    
                 elif account.current_balance < amount:
                     old_balance = account.current_balance
                     account.current_balance = amount - account.current_balance
                     account.current_drcr = "Cr"
-                    print(f"✅ Dr→Cr flip: {old_balance} Dr → {account.current_balance} Cr")
                 else:
                     account.current_balance = Decimal("0.00")
-                    print(f"✅ Settled to 0")
 
         account.save(update_fields=["current_balance", "current_drcr"])
-        print(f"🏁 Final Balance: {account.current_balance} {account.current_drcr}\n")
+        
     class Meta:
         unique_together = ('branch', 'bill_no')
         constraints = [

@@ -13,6 +13,9 @@
 #   4) Variant na mile to 500 ki jagah clean ValidationError.
 #   5) quantity ab DECIMAL (max 2 places) — Excel import me 2.5 jaisi qty ke liye.
 #      StockTransferItem.quantity bhi DecimalField hona chahiye (model updated).
+#   6) create_full_item_in_destination ab dest item NAAM se nahi dhoondhta —
+#      get_or_create_dest_variant ne jo variant/mapping diya, usi ka item return
+#      karta hai (franchise item structure fix: naam-lookup se merge/split hota tha).
 
 from decimal import Decimal
 
@@ -42,14 +45,20 @@ def create_full_item_in_destination(source_item, destination_branch):
     """
     Item ke saare variants ke liye mapping ensure karo (0 stock ke saath),
     lekin fields sync mat karo — wo sirf actual transfer/verify ke time hoga.
-    """
-    for source_variant in source_item.variants.all():
-        get_or_create_dest_variant(source_variant, destination_branch, sync_fields=False)
 
-    # dest_item return karna ho toh:
-    return Items.objects.filter(
-        branch=destination_branch, itemName=source_item.itemName, created_by_superadmin=True
-    ).first()
+    Destination item wahi return hota hai jo mapping se mila/bana (naam se
+    dobara dhoondhne par galat item mil sakta tha).
+    """
+    dest_item = None
+    for source_variant in source_item.variants.all():
+        dest_variant, _created = get_or_create_dest_variant(
+            source_variant, destination_branch, sync_fields=False
+        )
+        if dest_item is None:
+            dest_item = dest_variant.item
+
+    return dest_item
+
 
 class TransferItemCreateSerializer(serializers.Serializer):
     from_variant_id   = serializers.IntegerField()
@@ -210,7 +219,7 @@ class StockTransferDetailSerializer(serializers.ModelSerializer):
     def get_created_by_name(self, obj):
         return obj.created_by.username if obj.created_by else None
 
-    
+
 class StockTransferListSerializer(serializers.ModelSerializer):
     from_branch_name = serializers.CharField(source='from_branch.branch_name', read_only=True)
     to_branch_name   = serializers.CharField(source='to_branch.branch_name', read_only=True)

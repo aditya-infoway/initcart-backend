@@ -12,6 +12,7 @@ from pos.views.salesentry_views import (
     SalesCreditBillsAPIView,
     ReceiveSalesCreditBillCashAPIView,
     ReceiveSalesCreditBillBankAPIView,
+    SalesPosConfigAPIView,
     
 )
 
@@ -27,4 +28,5 @@ urlpatterns = [
     path('sales-credit-bills/', SalesCreditBillsAPIView.as_view(), name='sales-credit-bills'),
     path('receive-sales-credit-bill-cash/', ReceiveSalesCreditBillCashAPIView.as_view(), name='receive-sales-credit-bill-cash'),
     path('receive-sales-credit-bill-bank/', ReceiveSalesCreditBillBankAPIView.as_view(), name='receive-sales-credit-bill-bank'),
+    path("sale-pos-config/", SalesPosConfigAPIView.as_view()),
 ]   

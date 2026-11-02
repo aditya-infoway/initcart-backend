@@ -15,6 +15,7 @@ from pos.models.branch import Branch
 from pos.serializers.item_serializers import (
     itemSerializers,
     ItemWithVariantsSerializer,
+    ItemListLiteSerializer,
     VariantSerializer,
     CategorySerializer,
     SubCategorySerializer,
@@ -205,12 +206,15 @@ class Itemview(APIView):
     """
     Item list - tab support ke saath:
     - tab=company: sirf company items
-    - tab=manual: sirf manual items  
+    - tab=manual: sirf manual items
     - tab=all (default): sab items
-    
+
     Normal branch ke liye:
     - superadmin ke created items bhi dikhenge (read-only)
     - apne manual items bhi dikhenge
+
+    Optional: ?lite=1  -> variants / heavy fields ke bagair halka response
+    (sirf AddItems list page ye bhejta hai; baaki consumers ka response same rehta hai)
     """
     permission_classes = [IsSuperAdminOrBranchOrPagePermittedEmployee]
     page_key = "/AddItems"
@@ -219,60 +223,64 @@ class Itemview(APIView):
     def get(self, request):
         user = request.user
         is_superadmin = user.role == 'superadmin'
-        acts_as_admin = is_superadmin or user.role == 'employee'   # 👈 naya add kiya
+        acts_as_admin = is_superadmin or user.role == 'employee'
 
-        # Tab filter
+        # Tab + filters
         tab = request.GET.get('tab', 'all')
         search_term = request.GET.get('search', '').strip()
         category_filter = request.GET.get('category', '').strip()
         brand_filter = request.GET.get('brand', '').strip()
         group_filter = request.GET.get('group', '').strip()
         entry_type_filter = request.GET.get('entry_type', '').strip()
+        barcode_filter = request.GET.get('barcode', '').strip()
+        lite = request.GET.get('lite', '').strip().lower() in ('1', 'true', 'yes')
 
         branch = user.get_effective_branch()
         if not branch:
             return Response({"success": False, "message": "No branch linked to this user"}, status=400)
 
-        if acts_as_admin:   # 👈 is_superadmin se acts_as_admin kiya
+        base_qs = items.objects.filter(branch=branch)
 
+        if acts_as_admin:
             # Superadmin/Employee dono apne saare items dekh sakte hain
-            qs = items.objects.filter(branch=branch).select_related(
-                "c_brand", "c_category", "c_subCategory", "c_subSubCategory", "group", "unit"
-            )
-
-            # Tab filtering
+            qs = base_qs
             if tab == 'company':
                 qs = qs.filter(entry_type='company')
             elif tab == 'manual':
                 qs = qs.filter(entry_type='manual')
             # 'all' = kuch filter nahi
-
         else:
             if tab == 'superadmin_items':
-                qs = items.objects.filter(
-                    branch=branch,
-                    created_by_superadmin=True
-                ).select_related("c_brand", "c_category", "c_subCategory", "c_subSubCategory", "group", "unit")
-
+                qs = base_qs.filter(created_by_superadmin=True)
             elif tab == 'my_items':
-                qs = items.objects.filter(
-                    branch=branch,
-                    created_by_superadmin=False
-                ).select_related("c_brand", "c_category", "c_subCategory", "c_subSubCategory", "group", "unit")
-
+                qs = base_qs.filter(created_by_superadmin=False)
             else:  # all
-                qs = items.objects.filter(
-                    branch=branch
-                ).select_related("c_brand", "c_category", "c_subCategory", "c_subSubCategory", "group", "unit")
+                qs = base_qs
+
+        # N+1 queries se bachne ke liye related objects ek hi query me
+        qs = qs.select_related(
+            "branch", "created_by",
+            "c_brand", "c_category", "c_subCategory", "c_subSubCategory",
+            "group", "unit",
+        )
+        if not lite:
+            # Purana (full) response chahiye to variants ek extra query me prefetch
+            qs = qs.prefetch_related("variants")
 
         # Search
         if search_term:
+            # Barcode match ke liye join ki jagah subquery:
+            # na duplicate rows, na slow join/count
+            barcode_item_ids = itemvariants.objects.filter(
+                barcode__iexact=search_term
+            ).values("item_id")
             qs = qs.filter(
                 Q(itemName__icontains=search_term) |
                 Q(hsnCode__icontains=search_term) |
                 Q(c_brand__brand_name__icontains=search_term) |
                 Q(c_category__name__icontains=search_term) |
-                Q(group__name__icontains=search_term)
+                Q(group__name__icontains=search_term) |
+                Q(id__in=barcode_item_ids)
             )
 
         # Filters
@@ -291,13 +299,23 @@ class Itemview(APIView):
         if entry_type_filter and entry_type_filter != "All":
             qs = qs.filter(entry_type=entry_type_filter)
 
+        # Barcode filter (scanner / manual search) - join + distinct ki jagah subquery
+        if barcode_filter:
+            qs = qs.filter(
+                id__in=itemvariants.objects.filter(
+                    barcode__iexact=barcode_filter
+                ).values("item_id")
+            )
+
         qs = qs.order_by('-id')
 
         paginator = StandardResultsSetPagination()
         paginated_items = paginator.paginate_queryset(qs, request)
-        serializer = ItemWithVariantsSerializer(
+
+        serializer_class = ItemListLiteSerializer if lite else ItemWithVariantsSerializer
+        serializer = serializer_class(
             paginated_items, many=True,
-            context={"request": request, "branch": branch if not is_superadmin else None}   # 👈 ye line waisi hi, is_superadmin (change nahi)
+            context={"request": request, "branch": branch if not is_superadmin else None}
         )
 
         return paginator.get_paginated_response({

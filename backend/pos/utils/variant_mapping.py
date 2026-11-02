@@ -1,3 +1,18 @@
+#variant_mapping.py
+#
+# CHANGES vs previous version (franchise item structure fix):
+#   1) Destination item ab sirf NAAM se nahi dhoondha jata. Pehle source item ke
+#      kisi aur variant ka mapping dekha jata hai (_find_dest_item) — isse source
+#      item ka naam badalne par bhi franchise me wahi item milta hai, aur naya
+#      duplicate item nahi banta (SPLIT bug).
+#   2) Naam se dhoondhte waqt wo franchise item skip hote hain jo pehle se kisi
+#      doosre source item se linked hain — isse same/case-only naam wale do
+#      alag superadmin items ek franchise item me nahi mil jate (MERGE bug).
+#   3) (Optional) Jab sync_fields=True ho (actual transfer/verify), franchise
+#      item ka naam superadmin item ke naam se match kar diya jata hai
+#      (_sync_item_name). Ye nahi chahiye to file me _sync_item_name ki 2 calls hata do.
+from django.utils import timezone
+
 from pos.models.items import items as Items, itemvariants as ItemVariants, VariantPurchasePriceHistory
 from pos.models.stock_transfer import VariantBranchMapping
 
@@ -19,6 +34,41 @@ def _log_price_change(variant, old_price, new_price, source, reference):
         source=source,
         reference=reference,
     )
+
+
+def _find_dest_item(from_item, to_branch):
+    """
+    from_item (source/superadmin item) ke liye to_branch me uska item dhoondo.
+
+    1) Isi source item ke kisi aur variant ka mapping ho to usi ka dest item
+       (naam badla ho tab bhi sahi item milta hai).
+    2) Warna naam se dhoondo, par wo franchise item kisi aur source item se
+       pehle se linked na ho (purane pre-mapping items abhi bhi mil jayenge,
+       kyunki unka koi mapping nahi hota).
+    """
+    sibling = VariantBranchMapping.objects.filter(
+        source_variant__item=from_item, to_branch=to_branch
+    ).select_related('dest_variant__item').first()
+    if sibling:
+        return sibling.dest_variant.item
+
+    already_linked = VariantBranchMapping.objects.filter(
+        to_branch=to_branch
+    ).values_list('dest_variant__item_id', flat=True)
+
+    return Items.objects.filter(
+        branch=to_branch, itemName=from_item.itemName, created_by_superadmin=True
+    ).exclude(id__in=already_linked).first()
+
+
+def _sync_item_name(dest_item, from_item):
+    """Franchise item ka naam superadmin item jaisa rakho (sirf naam, aur kuch nahi)."""
+    if dest_item is None or dest_item.itemName == from_item.itemName:
+        return
+    Items.objects.filter(id=dest_item.id).update(
+        itemName=from_item.itemName, updated_at=timezone.now()
+    )
+    dest_item.itemName = from_item.itemName
 
 
 def get_or_create_dest_variant(from_variant, to_branch, sync_fields=False, price_override=None,
@@ -74,6 +124,8 @@ def get_or_create_dest_variant(from_variant, to_branch, sync_fields=False, price
             ])
             # ✅ History — sirf tab jab price genuinely badli ho
             _log_price_change(dest_variant, old_purchase_price, branch_price, source, reference)
+            # ✅ Item ka naam bhi superadmin jaisa
+            _sync_item_name(dest_variant.item, from_variant.item)
         return dest_variant, False
 
     # ── Mapping nahi mili — pehle check karo ki destination branch me is item ka
@@ -81,9 +133,8 @@ def get_or_create_dest_variant(from_variant, to_branch, sync_fields=False, price
     # Agar mil jaaye, toh USI se link kar do (naya duplicate mat banao). ──
     from_item = from_variant.item
 
-    dest_item = Items.objects.filter(
-        branch=to_branch, itemName=from_item.itemName, created_by_superadmin=True
-    ).first()
+    # ✅ CHANGED: naam ke bajay pehle source-item ka link, phir (unlinked) naam
+    dest_item = _find_dest_item(from_item, to_branch)
 
     legacy_dest_variant = None
     if dest_item:
@@ -127,6 +178,8 @@ def get_or_create_dest_variant(from_variant, to_branch, sync_fields=False, price
             ])
             # ✅ History
             _log_price_change(legacy_dest_variant, old_purchase_price, branch_price, source, reference)
+            # ✅ Item ka naam bhi superadmin jaisa
+            _sync_item_name(dest_item, from_item)
         return legacy_dest_variant, False
 
     # ── Genuinely pehli baar — naya item/variant banao ──

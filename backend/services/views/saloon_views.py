@@ -98,7 +98,7 @@ class SaloonServiceListCreateView(APIView):
         except ServiceSubcategory.DoesNotExist:
             raise ValidationError({
                 "subcategory": "Invalid Subcategory ID"
-            })
+            })  
 
 
         # country = get_object_or_404(Country, id=country_id) if country_id else None

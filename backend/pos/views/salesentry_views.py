@@ -220,6 +220,13 @@ class SalesEntryCreateAPIView(APIView):
             sales_gst_toggle = getattr(settings_obj, 'sales_gst_toggle', True)
 
             # CREATE SALES MASTER
+            referral_code = (data.get("referral_code") or "").strip() or None
+            referral_agent_id = data.get("referral_agent_id") or None
+            freight = Decimal(str(data.get("frightcharge") or 0))
+            other   = Decimal(str(data.get("otherexpnse") or 0))
+            rnd     = Decimal(str(data.get("roundamount") or 0))
+
+            # grand_total 0 se banao -> credit balance abhi update nahi hoga (final total baad me)
             sales = SalesMaster.objects.create(
                 branch=branch,
                 date=data["date"],
@@ -227,19 +234,21 @@ class SalesEntryCreateAPIView(APIView):
                 customer_id=data["customer"],
                 payment_terms=data["payment_terms"],
                 narration=data.get("narration", ""),
-                total_basic=Decimal(str(data.get("total_basic", 0))),
-                total_discount=Decimal(str(data.get("total_discount", 0))),
-                total_tax=Decimal(str(data.get("total_tax", 0))),
-                grand_total=Decimal(str(data.get("grand_total", 0))),
+                total_basic=Decimal("0"),
+                total_discount=Decimal("0"),
+                total_tax=Decimal("0"),
+                grand_total=Decimal("0"),
                 bank_account_id=data.get("bank_account"),
                 case_account_id=data.get("cash_account"),
-                otherexpnse=Decimal(str(data.get("otherexpnse", 0))),
-                frightcharge=Decimal(str(data.get("frightcharge", 0))),
-                roundamount=Decimal(str(data.get("roundamount", 0))),
+                otherexpnse=other,
+                frightcharge=freight,
+                roundamount=rnd,
+                referral_code=referral_code,
+                referral_agent_id=referral_agent_id,
                 created_by=request.user,
             )
 
-            # CREATE ITEMS
+            # CREATE ITEMS  (tumhara purana for-loop jaisa tha waisa hi rehne do)
             for it in items_data:
                 SalesItem.objects.create(
                     sales=sales,
@@ -261,6 +270,22 @@ class SalesEntryCreateAPIView(APIView):
                     igst=Decimal(str(it.get("igst", "0"))),
                     gst_toggle_status=sales_gst_toggle,
                 )
+
+            # ✅ Totals SERVER se (SalesItem.save() ne jo final amounts banaye unse)
+            agg = sales.items.aggregate(
+                b=Sum("basic_amount"), d=Sum("discount_amount"),
+                t=Sum("tax_amount"), n=Sum("net_amount"),
+            )
+            sales.total_basic    = agg["b"] or Decimal("0")
+            sales.total_discount = agg["d"] or Decimal("0")
+            sales.total_tax      = agg["t"] or Decimal("0")
+            sales.grand_total    = (agg["n"] or Decimal("0")) + freight + other + rnd
+            sales.save(update_fields=["total_basic", "total_discount", "total_tax", "grand_total"])
+
+            # ✅ Credit sale: customer Dr ab final amount par
+            if sales.payment_terms.lower() == "credit":
+                SalesMaster.update_balance(sales.customer, sales.grand_total, "Dr")
+
             post_tax_to_accounts(branch, "sales", sales.items.all())
             # CREATE RECEIPT
             payment_terms = data["payment_terms"].lower()
@@ -1073,3 +1098,17 @@ class ReceiveSalesCreditBillBankAPIView(APIView):
         voucher_no = f"{pattern}{next_no}"
 
         return voucher_no
+
+
+class SalesPosConfigAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        branch = request.user.get_effective_branch()
+        if not branch:
+            return Response({"success": False, "error": "No branch linked to this user"}, status=400)
+        s = setting.objects.filter(branch=branch).first()
+        return Response({
+            "sales_gst_toggle": getattr(s, "sales_gst_toggle", True),
+            "branch_state": branch.state or "",
+        })    
