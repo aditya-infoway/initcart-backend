@@ -146,6 +146,22 @@ class TechIndustryServiceUpdateAPIView(generics.RetrieveUpdateAPIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
+    def delete(self, request, *args, **kwargs):
+        vendor = request.user.vendor
+
+        service = get_object_or_404(
+            TechIndustryService,
+            pk=kwargs.get("pk"),
+            vendor=vendor
+        )
+
+        service.delete()
+
+        return Response(
+            {"message": "Tech service deleted successfully."},
+            status=status.HTTP_200_OK
+        )
+
 # -------------------------------
 # Public List View
 # -------------------------------

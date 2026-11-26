@@ -311,7 +311,7 @@ class PendingCheckout(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.expires_at:
-            self.expires_at = timezone.now() + timedelta(minutes=15)
+            self.expires_at = timezone.now() + timedelta(minutes=60)
         super().save(*args, **kwargs)
 
     def is_expired(self):

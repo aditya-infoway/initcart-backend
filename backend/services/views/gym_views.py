@@ -147,7 +147,10 @@ class GymServiceListCreateView(APIView):
 # Update GymService
 # -------------------------------
 class GymServiceUpdateAPIView(generics.RetrieveUpdateAPIView):
-    queryset = GymService.objects.all()
+    def get_queryset(self):
+        return GymService.objects.filter(
+            vendor=self.request.user.vendor
+        )
     serializer_class = GymServiceSerializer
     parser_classes = [MultiPartParser, FormParser]
 
@@ -204,6 +207,19 @@ class GymServiceUpdateAPIView(generics.RetrieveUpdateAPIView):
 
         serializer = self.get_serializer(service, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+    
+    def delete(self, request, *args, **kwargs):
+        service = self.get_object()
+        service.delete()
+
+        return Response(
+            {
+                "success": True,
+                "message": "Gym service deleted successfully."
+            },
+            status=status.HTTP_200_OK
+        )
 
 
 # -------------------------------

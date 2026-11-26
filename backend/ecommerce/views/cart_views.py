@@ -19,6 +19,15 @@ from ecommerce.serializers.order_serializers import (
 from ecommerce.models.customer import CustomerProfile
 from ecommerce.utils.campaign_utils import get_campaign_price_for_product  # 👈 ADD THIS IMPORT
 
+# ================= SHIPPING =================
+# True = shipping charge lagega (₹1000 se upar free, neeche ₹50)
+SHIPPING_ENABLED = True
+
+def get_shipping_charge(subtotal):
+    if not SHIPPING_ENABLED:
+        return Decimal("0")
+    return Decimal("0") if subtotal >= Decimal("1000") else Decimal("50")
+# ====================================================
 
 class CartViewSet(viewsets.ModelViewSet):
     serializer_class = CartSerializer
@@ -195,7 +204,7 @@ class CartViewSet(viewsets.ModelViewSet):
         item_count = len(cart_items)
 
         free_shipping_threshold = Decimal("1000")
-        shipping_charge = Decimal("0.00") if subtotal >= free_shipping_threshold else Decimal("50.00")
+        shipping_charge = get_shipping_charge(subtotal)
 
         total = subtotal + shipping_charge
 
@@ -333,15 +342,12 @@ class CheckoutAPIView(APIView):
         from ecommerce.utils.campaign_utils import get_campaign_price_for_product
         from decimal import Decimal
         
-        print(f"Key ID raw: '{settings.RAZORPAY_KEY_ID}'")
-        print(f"Key Secret first/last chars: '{settings.RAZORPAY_KEY_SECRET[:1]}...{settings.RAZORPAY_KEY_SECRET[-1:]}'")
+
 
         # Strip whitespace
         key_id = settings.RAZORPAY_KEY_ID.strip()
         key_secret = settings.RAZORPAY_KEY_SECRET.strip()
-        print(f"After strip - Key ID: '{key_id}'")
-        print(f"After strip - Key Secret: '{key_secret[:5]}...'")
-        
+ 
         # For Razorpay - Get payment details
         razorpay_payment_id = request.data.get('razorpay_payment_id')
         razorpay_order_id = request.data.get('razorpay_order_id')
@@ -355,7 +361,7 @@ class CheckoutAPIView(APIView):
                 import hashlib
                 from ecommerce.models.order import PendingCheckout
 
-                # 🔐 Verify Signature
+                # Verify Signature
                 body = f"{razorpay_order_id}|{razorpay_payment_id}"
                 expected_signature = hmac.new(
                     settings.RAZORPAY_KEY_SECRET.strip().encode(),
@@ -369,22 +375,29 @@ class CheckoutAPIView(APIView):
                         'message': 'Invalid payment signature'
                     }, status=400)
 
-                # 💳 Fetch payment from Razorpay
+                # Fetch payment from Razorpay
                 client = razorpay.Client(
                     auth=(settings.RAZORPAY_KEY_ID.strip(), settings.RAZORPAY_KEY_SECRET.strip())
                 )
 
                 payment = client.payment.fetch(razorpay_payment_id)
 
+                # Live mein kabhi payment 'authorized' reh jaati hai, pehle capture karo
+                if payment['status'] == 'authorized':
+                    client.payment.capture(razorpay_payment_id, payment['amount'])
+                    payment = client.payment.fetch(razorpay_payment_id)
+
                 if payment['status'] != 'captured':
                     return Response({
                         'success': False,
                         'message': 'Payment not completed'
                     }, status=400)
-                if Order.objects.filter(razorpay_order_id=razorpay_order_id).exists():
+                existing_order = Order.objects.filter(razorpay_order_id=razorpay_order_id).first()
+                if existing_order:
                     return Response({
                         "success": True,
-                        "message": "Order already processed"
+                        "message": "Order already processed",
+                        "order_number": existing_order.order_number
                     })
                 # 📦 Get Pending Checkout
                 try:
@@ -397,13 +410,13 @@ class CheckoutAPIView(APIView):
                         "success": False,
                         "message": "Invalid or expired checkout"
                     }, status=400)
-                expires_at = timezone.now() + timedelta(minutes=15)
-                if pending.is_expired():
-                    pending.delete()
-                    return Response({
-                        "success": False,
-                        "message": "Checkout expired."
-                    }, status=400)
+                # expires_at = timezone.now() + timedelta(minutes=15)
+                # if pending.is_expired():
+                #     pending.delete()
+                #     return Response({
+                #         "success": False,
+                #         "message": "Checkout expired."
+                #     }, status=400)
 
                 coupon_code = pending.coupon_code
                 loyalty_points_to_use = pending.loyalty_points_to_use or 0
@@ -461,7 +474,7 @@ class CheckoutAPIView(APIView):
 
                         subtotal += item_price * cart_item.quantity
 
-                    shipping_charge = Decimal("0") if subtotal >= Decimal("1000") else Decimal("50")
+                    shipping_charge = get_shipping_charge(subtotal)
 
                     # 🎟 Coupon validation (FULLY SAFE)
                     discount_amount = Decimal("0.00")
@@ -544,7 +557,8 @@ class CheckoutAPIView(APIView):
                         )
                     from ecommerce.utils.agent_order_utils import resolve_referral_agent
 
-                    referral_code = request.data.get("referral_code")
+                    # Frontend handler referral nahi bhejta, isliye pending se lo
+                    referral_code = pending.referral_code or request.data.get("referral_code")
                     referral_agent = resolve_referral_agent(request.user, referral_code)
 
                     # if referral_agent:
@@ -746,7 +760,7 @@ class CheckoutAPIView(APIView):
                         
                         subtotal += item_price * cart_item.quantity
                     
-                    shipping_charge = Decimal("0") if subtotal >= Decimal("1000") else Decimal("50")
+                    shipping_charge = get_shipping_charge(subtotal)
                     
                     # Apply coupon if valid
                     discount_amount = Decimal("0.00")
@@ -1340,7 +1354,7 @@ class CreateRazorpayOrderAPIView(APIView):
 
                 subtotal += item_price * cart_item.quantity
 
-            shipping_charge = Decimal("0") if subtotal >= Decimal("1000") else Decimal("50")
+            shipping_charge = get_shipping_charge(subtotal)
 
             # 🎟 Coupon validation
             discount_amount = Decimal("0.00")

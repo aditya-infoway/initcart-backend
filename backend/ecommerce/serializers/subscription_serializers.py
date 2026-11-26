@@ -3,6 +3,7 @@ from decimal import Decimal
 from ecommerce.models.subscription import SubscriptionPlan
 from ecommerce.models.vendor_subscription import VendorSubscription
 
+
 class SubscriptionPlanSerializer(serializers.ModelSerializer):
     service_type_display = serializers.CharField(
         source='get_service_type_display',
@@ -27,57 +28,83 @@ class SubscriptionPlanSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at'
         ]
-    
+        # DRF ka default unique_together validator hata diya,
+        # neeche validate() me apna custom message wala check hai
+        validators = []
+
     def to_representation(self, instance):
         """Convert Decimal to float for JSON serialization"""
         representation = super().to_representation(instance)
-        
-        # Convert Decimal amount to float with 2 decimal precision
+
         if 'amount' in representation and representation['amount'] is not None:
             if isinstance(representation['amount'], Decimal):
-                # Round to 2 decimal places and convert to float
-                representation['amount'] = float(Decimal(representation['amount']).quantize(Decimal('0.00')))
+                representation['amount'] = float(
+                    Decimal(representation['amount']).quantize(Decimal('0.00'))
+                )
             elif isinstance(representation['amount'], str):
                 try:
-                    # Convert string to Decimal, then to float with rounding
                     dec_amount = Decimal(representation['amount'])
                     representation['amount'] = float(dec_amount.quantize(Decimal('0.00')))
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, ArithmeticError):
                     representation['amount'] = 0.0
-        
+
         return representation
-    
+
     def to_internal_value(self, data):
         """Convert incoming data to proper Decimal"""
         data = data.copy()
-        
-        # Handle amount conversion
+
         if 'amount' in data and data['amount'] is not None:
             try:
-                # Convert string/float to Decimal with 2 decimal places
                 if isinstance(data['amount'], str):
                     data['amount'] = Decimal(data['amount']).quantize(Decimal('0.00'))
                 elif isinstance(data['amount'], (int, float)):
                     data['amount'] = Decimal(str(data['amount'])).quantize(Decimal('0.00'))
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, ArithmeticError):
                 raise serializers.ValidationError({
                     'amount': 'Enter a valid number.'
                 })
-        
+
         return super().to_internal_value(data)
-    
+
     def validate_amount(self, value):
         """Validate amount field"""
         if value < 0:
             raise serializers.ValidationError("Amount cannot be negative.")
-        
-        # Ensure it has exactly 2 decimal places
         return value.quantize(Decimal('0.00'))
+
+    def validate(self, attrs):
+        """Ek service type ke liye ek duration ka sirf ek hi plan ho sakta hai"""
+        service_type = attrs.get(
+            'service_type', getattr(self.instance, 'service_type', None)
+        )
+        subscription_type = attrs.get(
+            'subscription_type', getattr(self.instance, 'subscription_type', None)
+        )
+
+        qs = SubscriptionPlan.objects.filter(
+            service_type=service_type,
+            subscription_type=subscription_type
+        )
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+
+        if qs.exists():
+            service_label = dict(SubscriptionPlan.SERVICE_CHOICES).get(
+                service_type, service_type
+            )
+            raise serializers.ValidationError({
+                'subscription_type': (
+                    f"{service_label} ke liye '{subscription_type}' already exist. "
+                    f"if same duration exist , you can not create second."
+                )
+            })
+        return attrs
 
 
 class VendorSubscriptionSerializer(serializers.ModelSerializer):
     subscription_plan = SubscriptionPlanSerializer(read_only=True)
-    
+
     class Meta:
         model = VendorSubscription
         fields = [

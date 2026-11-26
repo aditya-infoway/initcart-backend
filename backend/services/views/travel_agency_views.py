@@ -272,6 +272,30 @@ class PublicTravelAgencyDetailView(generics.RetrieveAPIView):
             raise ValidationError("Service not found or not yet approved")    
     
     
+# --------------------------------
+# DELETE Travel Agency Service
+# Separate Delete API
+# --------------------------------
 
-    
+class TravelAgencyServiceDeleteAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        vendor = request.user.vendor
+
+        service = get_object_or_404(
+            TravelAgencyService,
+            pk=pk,
+            vendor=vendor
+        )
+
+        service.delete()
+
+        return Response(
+            {
+                "success": True,
+                "message": "Travel agency service deleted successfully."
+            },
+            status=status.HTTP_200_OK
+        )
      

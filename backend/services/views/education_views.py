@@ -10,6 +10,7 @@ from rest_framework.exceptions import ValidationError
 from services.models.education import EducationNewService, EducationNewServiceImage
 from services.models.subcategory import ServiceSubcategory
 from services.serializers.education_serializers import EducationNewServiceSerializer
+from ecommerce.models.vendor import Vendor
 
 
 # -----------------------------------------------
@@ -185,3 +186,35 @@ class EducationServiceApprovalAPIView(APIView):
             "status": service.status,
             "approved_by": service.approved_by.id if service.approved_by else None
         })
+
+
+
+from services.models.education import EducationNewService
+
+
+class EducationNewServiceDeleteAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        vendor = get_object_or_404(Vendor, user=request.user)
+
+        service = get_object_or_404(
+            EducationNewService,
+            pk=pk,
+            vendor=vendor
+        )
+
+        if service.main_image:
+            service.main_image.delete(save=False)
+
+        for img in service.multi_images.all():
+            if img.image:
+                img.image.delete(save=False)
+            img.delete()
+
+        service.delete()
+
+        return Response(
+            {"message": "Education service deleted successfully"},
+            status=status.HTTP_200_OK
+        )    

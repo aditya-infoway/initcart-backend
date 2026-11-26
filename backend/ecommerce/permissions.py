@@ -1,6 +1,7 @@
 # ecommerce/permissions.py
 from rest_framework import permissions
 from ecommerce.models.vendor import Vendor
+from rest_framework.exceptions import NotAuthenticated
 
 class IsVendorAuthenticated(permissions.BasePermission):
     """
@@ -349,3 +350,22 @@ class IsFranchiseOrPagePermittedEmployee(BasePermission):
             return perm.can_view
 
         return getattr(user, "role", None) in self.BRANCH_ROLES   # ✅ FIX
+
+
+
+
+
+
+class NotDeletedCustomer(BasePermission):
+    """Deleted customer ko customer APIs par 'account_deleted' code ke saath reject karta hai."""
+    def has_permission(self, request, view):
+        user = request.user
+        if user and user.is_authenticated:
+            from ecommerce.models.customer import CustomerProfile
+            if CustomerProfile.objects.filter(user=user, is_deleted=True).exists():
+                raise NotAuthenticated(detail={
+                    "success": False,
+                    "message": "This account has been deleted.",
+                    "code": "account_deleted",
+                })
+        return True    

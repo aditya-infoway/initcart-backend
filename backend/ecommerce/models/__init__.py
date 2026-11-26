@@ -12,6 +12,7 @@ from .vendor_subscription import VendorSubscription
 from .product import Product, ProductStock, ProductGallery
 from .category import Category, SubCategory, SubSubCategory
 from ecommerce.models.top_seller import TopSellerRequest  # noqa: F401
+from ecommerce.models.qrcards import QRCard
 
 __all__ = [
     'Vendor', 
@@ -28,4 +29,5 @@ __all__ = [
     'Category',
     'SubCategory',
     'SubSubCategory',
+    'QRCard',
 ]

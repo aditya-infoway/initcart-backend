@@ -6,11 +6,12 @@ from rest_framework.authentication import TokenAuthentication
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from ecommerce.models.order import Order , VendorDeliveryInfo
 from ecommerce.serializers.order_serializers import OrderSerializer
+from ecommerce.permissions import NotDeletedCustomer
 
 
 class OrderDetailAPIView(APIView):
     authentication_classes = [TokenAuthentication, JWTAuthentication]
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, NotDeletedCustomer]
     
     def get(self, request):
         """Get order details by order number"""
@@ -87,7 +88,7 @@ class OrderDetailAPIView(APIView):
             
 class OrderListAPIView(APIView):
     authentication_classes = [TokenAuthentication, JWTAuthentication]
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, NotDeletedCustomer]
     
     def get(self, request):
         #  Allow customers and both user types

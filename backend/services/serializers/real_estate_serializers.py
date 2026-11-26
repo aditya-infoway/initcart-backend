@@ -526,6 +526,13 @@ class VendorPropertyDashboardSerializer(serializers.Serializer):
     recent_properties = PropertyListSerializer(many=True)
 
 class PropertyUpdateSerializer(serializers.ModelSerializer):
+    main_image = serializers.FileField(write_only=True, required=False)
+    thumbnail_image = serializers.FileField(write_only=True, required=False)
+    additional_images = serializers.ListField(
+        child=serializers.FileField(), write_only=True, required=False, default=list
+    )
+    document_file = serializers.FileField(write_only=True, required=False, allow_null=True)
+
     class Meta:
         model = Property
         fields = [
@@ -542,17 +549,65 @@ class PropertyUpdateSerializer(serializers.ModelSerializer):
             'short_description', 'seo_title', 'seo_description', 'seo_keywords',
             'virtual_tour_url', 'floor_plan', 'landmark',
             'amenities', 'nearby_facilities', 'subcategory',
+            # files
+            'main_image', 'thumbnail_image', 'additional_images', 'document_file',
         ]
-    
+
     def validate(self, data):
-        # When updating, status should go back to pending if approved fields are changed
         if self.instance and self.instance.status == 'approved':
-            # Important: When vendor edits approved property, it should go for re-approval
             self.instance.status = 'pending'
             self.instance.save()
         return data
 
-# Public Property Serializers
+    def update(self, instance, validated_data):
+        print("UPDATE CALLED, keys:", list(validated_data.keys()))  # debug
+
+        main_image = validated_data.pop('main_image', None)
+        thumbnail_image = validated_data.pop('thumbnail_image', None)
+        additional_images = validated_data.pop('additional_images', [])
+        document_file = validated_data.pop('document_file', None)
+
+        raw_ids = self.initial_data.get('delete_image_ids')
+        try:
+            delete_ids = json.loads(raw_ids) if raw_ids else []
+        except (TypeError, json.JSONDecodeError):
+            delete_ids = []
+
+        # JSON fields string aaye to parse karo
+        for key in ('amenities', 'nearby_facilities'):
+            val = validated_data.get(key)
+            if isinstance(val, str):
+                try:
+                    validated_data[key] = json.loads(val)
+                except json.JSONDecodeError:
+                    validated_data.pop(key)
+
+        if document_file:
+            instance.documents = document_file
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        if delete_ids:
+            instance.images.filter(id__in=delete_ids, image_type='additional').delete()
+
+        if main_image:
+            instance.images.filter(image_type='main').delete()
+            PropertyImage.objects.create(property=instance, image=main_image,
+                                         image_type='main', display_order=1)
+
+        if thumbnail_image:
+            instance.images.filter(image_type='thumbnail').delete()
+            PropertyImage.objects.create(property=instance, image=thumbnail_image,
+                                         image_type='thumbnail', display_order=2)
+
+        if additional_images:
+            start = instance.images.filter(image_type='additional').count() + 3
+            for idx, img in enumerate(additional_images, start=start):
+                PropertyImage.objects.create(property=instance, image=img,
+                                             image_type='additional', display_order=idx)
+        return instance
 class PublicPropertyListSerializer(serializers.ModelSerializer):
     main_image = serializers.SerializerMethodField()
     thumbnail_image = serializers.SerializerMethodField()
@@ -590,7 +645,6 @@ class PublicPropertyListSerializer(serializers.ModelSerializer):
             return thumbnail_image.image.url
         return None
 # services/serializers/real_estate_serializers.py
-
 class PublicPropertyDetailSerializer(serializers.ModelSerializer):
     images = PropertyImageSerializer(many=True, read_only=True)
     price_per_sqft = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
@@ -622,7 +676,7 @@ class PublicPropertyDetailSerializer(serializers.ModelSerializer):
             'documents', 'document_url'
         ]
     
-    # ✅ CORRECT - This method should be at class level, not inside Meta
+    # CORRECT - This method should be at class level, not inside Meta
     def get_normalized_nearby_facilities(self, obj):
         """Normalize nearby facilities keys to lowercase with consistent names"""
         if not obj.nearby_facilities:

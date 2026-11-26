@@ -34,6 +34,7 @@ from services.views.travel_agency_views import (
     TravelAgencyServiceUpdateAPIView,
     PublicTravelAgencyListView,
     PublicTravelAgencyDetailView,
+    TravelAgencyServiceDeleteAPIView,
 )
 from services.views.tech_industry_views import (
     TechIndustryServiceListCreateView,
@@ -70,6 +71,7 @@ from services.views.education_views import (
     PublicEducationListView,
     PublicEducationDetailView,
     EducationServiceApprovalAPIView,
+    EducationNewServiceDeleteAPIView,
 )
 
 from services.views.restaurant_views import (
@@ -197,12 +199,17 @@ urlpatterns = [
      #Travel Agency Services Urls
      path('travelagency-services/', TravelAgencyServiceListCreateView.as_view()),
      path('travelagency-services/<int:pk>/', TravelAgencyServiceUpdateAPIView.as_view()),
+     path('travelagency-services/<int:pk>/delete/', TravelAgencyServiceDeleteAPIView.as_view(), name='travelagency-service-delete'),
      path('public/travel-services/', PublicTravelAgencyListView.as_view(), name='public-travel-list'),
      path('public/travel-services/<int:pk>/', PublicTravelAgencyDetailView.as_view(), name='public-travel-detail'),
      
           # Tech Industry Services Urls (Vendor)
      path('tech-services/', TechIndustryServiceListCreateView.as_view()),
      path('tech-services/<int:pk>/', TechIndustryServiceUpdateAPIView.as_view()),
+     path(
+    'tech-services/<int:pk>/',
+    TechIndustryServiceUpdateAPIView.as_view()
+),
 
      # Tech Industry Public Urls
      path('public/tech-services/', PublicTechIndustryListView.as_view(), name='public-tech-list'),
@@ -241,6 +248,11 @@ urlpatterns = [
     path('public/education-services/', PublicEducationListView.as_view(), name='public-education-list'),
     path('public/education-service/<int:id>/', PublicEducationDetailView.as_view(), name='public-education-detail'),
     path('education-service-approve/<int:pk>/', EducationServiceApprovalAPIView.as_view(), name='education-service-approve'),
+path(
+    'education-services/<int:pk>/remove-record/',
+    EducationNewServiceDeleteAPIView.as_view(),
+    name='education-new-service-delete'
+),
     
         # Restaurant Service URLs
     path('restaurant-services/', RestaurantServiceListCreateView.as_view(), name='restaurant-list-create'),

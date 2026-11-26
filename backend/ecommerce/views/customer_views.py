@@ -4,6 +4,9 @@
 #   - CustomerProfileView → works for branch users
 #   - ApplyForAgentView   → branch users can apply for agent
 #   - BranchCustomerActivateView → NEW endpoint: lets branch user opt-in as customer
+#   - _customer_refresh_token helper (client + cv claim)
+#   - CustomerLogoutView → session_version bump (all sessions invalid)
+#   - DeleteAccountView → session_version bump on delete
 # All other views are unchanged from your original file.
 
 from users.models import User
@@ -24,7 +27,7 @@ from ecommerce.serializers.customer_serializers import (
     ChangePasswordSerializer,
 )
 from ecommerce.models.customer import CustomerProfile
-from django.db.models import Q
+from django.db.models import Q, F
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
@@ -35,6 +38,7 @@ from mlm.models.mlm_settings import MLMSettings
 from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
 from ecommerce.models.order import Order
+from ecommerce.permissions import NotDeletedCustomer
 
 
 # ─── helpers ────────────────────────────────────────────────────────────────
@@ -60,6 +64,14 @@ def _ensure_customer_profile(user):
             "state":     "",
         },
     )
+
+def _customer_refresh_token(user):
+    """Customer JWT: client + session version claim ke saath."""
+    profile, _ = _ensure_customer_profile(user)
+    refresh = RefreshToken.for_user(user)
+    refresh["client"] = "customer"
+    refresh["cv"] = profile.session_version
+    return refresh
 
 
 def _profile_dict(profile, request=None):
@@ -192,7 +204,7 @@ class CustomerLoginView(APIView):
             # ────────────────────────────────────────────────────────────────
 
             token, _   = Token.objects.get_or_create(user=user)
-            refresh    = RefreshToken.for_user(user)
+            refresh    = _customer_refresh_token(user)
             profile, _ = _ensure_customer_profile(user)
 
             profile.check_agent_eligibility()
@@ -250,6 +262,10 @@ class CustomerLogoutView(APIView):
 
     def post(self, request):
         try:
+            # is customer ke SAB sessions (website + app) invalid
+            CustomerProfile.objects.filter(user=request.user).update(
+                session_version=F("session_version") + 1
+            )
             Token.objects.filter(user=request.user).delete()
             logout(request)
             return Response({"success": True, "message": "Logged out successfully"})
@@ -259,7 +275,7 @@ class CustomerLogoutView(APIView):
 
 # ─────────────────────────────────────────────────────────────────────────────
 class CustomerProfileView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, NotDeletedCustomer]
 
     def get(self, request):
         try:
@@ -386,7 +402,7 @@ class ApplyForAgentView(APIView):
     Documents required: passport_photo, id_proof (mandatory)
                         gst_certificate, business_license (optional)
     """
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, NotDeletedCustomer]
     parser_classes     = [MultiPartParser, FormParser]
 
     # roles that are allowed to hit this endpoint
@@ -526,7 +542,7 @@ class BranchCustomerActivateView(APIView):
         if user.is_customer():
             profile, _ = _ensure_customer_profile(user)
             token, _   = Token.objects.get_or_create(user=user)
-            refresh    = RefreshToken.for_user(user)
+            refresh    = _customer_refresh_token(user)
             return Response(
                 {
                     "success":  True,
@@ -559,7 +575,7 @@ class BranchCustomerActivateView(APIView):
                     pass
 
         token, _ = Token.objects.get_or_create(user=user)
-        refresh  = RefreshToken.for_user(user)
+        refresh = _customer_refresh_token(user)
 
         return Response(
             {
@@ -631,7 +647,7 @@ class ResetPasswordView(APIView):
 
 
 class ChangePasswordView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, NotDeletedCustomer]
 
     def post(self, request):
         try:
@@ -654,7 +670,7 @@ class ChangePasswordView(APIView):
 # ═══════════════════════════════════════════════════════════════════════════
 
 class CustomerStatsView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, NotDeletedCustomer]
 
     def get(self, request):
         try:
@@ -759,7 +775,7 @@ class DeleteAccountView(APIView):
 
         profile.is_deleted = True
         profile.deleted_at = timezone.now()
-        profile.save(update_fields=["is_deleted", "deleted_at"])
+        profile.session_version += 1
+        profile.save(update_fields=["is_deleted", "deleted_at", "session_version"])
 
-        return Response({"success": True, "message": "Your account has been deleted."})    
-
+        return Response({"success": True, "message": "Your account has been deleted."})

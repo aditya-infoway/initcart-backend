@@ -228,7 +228,19 @@ class SaloonServiceUpdateAPIView(generics.RetrieveUpdateAPIView):
 
         serializer = self.get_serializer(service, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
-       
+
+    def delete(self, request, *args, **kwargs):
+        service = self.get_object()
+
+        service.delete()
+
+        return Response(
+            {
+                "success": True,
+                "message": "Salon service deleted successfully."
+            },
+            status=status.HTTP_200_OK
+        )
     
 from rest_framework.permissions import AllowAny
 
@@ -255,7 +267,7 @@ class PublicSalonListView(generics.ListAPIView):
     serializer_class = SaloonServiceSerializer
     
     def get_queryset(self):
-        queryset = SaloonService.objects.filter(status='approved', is_active=True, subcategory__status='Active')
+        queryset = SaloonService.objects.filter(vendor=self.request.user.vendor, status='approved', is_active=True, subcategory__status='Active')
         
         # Filter by subcategory name if provided
         subcategory = self.request.query_params.get('subcategory', None)
